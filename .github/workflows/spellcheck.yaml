@@ -9,7 +9,7 @@ on:
 jobs:
   spellcheck:
     name: 📝 Codebook Spellcheck
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-slim
 
     steps:
       - name: 📥 Checkout repository
