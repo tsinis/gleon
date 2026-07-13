@@ -1,0 +1,73 @@
+name: ci
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: 🚀 Build & Test
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v7.0.0
+
+      - name: 🦀 Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
+        with:
+          components: rustfmt, clippy
+
+      - name: ✨ Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: 🔍 Lint with clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: 💾 Cache cargo-deny and cargo-audit databases
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/cargo-deny
+            ~/.cargo/bin/cargo-audit
+            ~/.cargo/advisories
+          key: ${{ runner.os }}-cargo-audit-deny
+
+      - name: 🛡️ Install cargo-deny and cargo-audit
+        run: |
+          if ! command -v cargo-deny &> /dev/null; then
+            cargo install cargo-deny
+          fi
+          if ! command -v cargo-audit &> /dev/null; then
+            cargo install cargo-audit
+          fi
+
+      - name: 🛑 Run cargo-deny checks
+        run: cargo deny check
+
+      - name: 🔒 Run cargo-audit checks
+        run: cargo audit
+
+      - name: 🧪 Run tests
+        if: github.event_name != 'pull_request'
+        run: cargo test --workspace
+
+      - name: 📦 Install cargo-llvm-cov
+        if: github.event_name == 'pull_request'
+        run: cargo install cargo-llvm-cov
+
+      - name: 📊 Generate code coverage
+        if: github.event_name == 'pull_request'
+        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+
+      - name: 📤 Upload coverage to Codecov
+        if: github.event_name == 'pull_request'
+        uses: codecov/codecov-action@v7.0.0
+        with:
+          files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}

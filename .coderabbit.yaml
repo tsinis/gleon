@@ -1,0 +1,135 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+language: "en"
+tone_instructions: "Senior-level review. Prioritize Rust performance, memory safety, and low-level correctness."
+early_access: true
+
+reviews:
+  profile: "assertive"
+  high_level_summary: true
+  collapse_walkthrough: true
+  changed_files_summary: true
+  sequence_diagrams: false
+  poem: false
+  in_progress_fortune: false
+  estimate_code_review_effort: true
+  suggested_labels: true
+  auto_apply_labels: true
+  suggested_reviewers: false
+  enable_prompt_for_ai_agents: true
+
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    ignore_title_keywords:
+      - "WIP"
+      - "DO NOT MERGE"
+      - "LLM IGNORE"
+
+  labeling_instructions:
+    # Conventional commit types.
+    - label: "enhancement"
+      instructions: "New user-facing functionality or capability added."
+    - label: "fix"
+      instructions: "Bug fix — corrects incorrect behavior or a regression."
+    - label: "documentation"
+      instructions: "Documentation-only changes (README, AGENTS.md, doc comments, etc.)."
+    - label: "refactor"
+      instructions: "Code restructuring with no change in external behavior."
+    - label: "test"
+      instructions: "Adding or updating tests only, no production code changes."
+    - label: "ci"
+      instructions: "Changes to CI/CD workflows, GitHub Actions, or build pipelines."
+    - label: "chore"
+      instructions: "Routine maintenance — dependency bumps, tooling config, formatting."
+    - label: "perf"
+      instructions: "Performance improvement with no functional change."
+    - label: "dependencies"
+      instructions: "Changes to build system, Cargo.toml, or workspace dependencies."
+
+  path_filters:
+    - "!**/*.lock"
+    - "!build/**"
+    - "!**/target/**"
+
+  path_instructions:
+    - path: "**/*.rs"
+      instructions: >
+        Review Rust code with extra care for idiomatic patterns, safety, and performance:
+        - Prefer safe Rust. Unsafe blocks must have explicit, correct safety comments.
+        - Ensure error handling is robust, using thiserror in libraries.
+        - Verify image processing logic (pixel comparisons, anti-aliasing detection, masks).
+        - Verify coordinate math and image scale bounds are handled safely.
+
+    - path: ".github/workflows/*.yaml"
+      instructions: >
+        GitHub Actions CI workflows. Ensure path triggers match the source files, and dependencies/linters (rustfmt, clippy, codebook-lsp) are correctly configured.
+
+  pre_merge_checks:
+    title:
+      mode: "warning"
+      requirements: >
+        PR title MUST follow Conventional Commits format:
+        `type(optional-scope): description`. Allowed types: feat, fix, docs,
+        refactor, test, ci, chore, perf, deps. Title should be
+        lowercase after the colon, max ~72 characters total.
+    description:
+      mode: "warning"
+    docstrings:
+      mode: "off"
+
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: true
+
+  slop_detection:
+    enabled: true
+
+  tools:
+    clippy:
+      enabled: true
+    actionlint:
+      enabled: true
+    yamllint:
+      enabled: true
+    markdownlint:
+      enabled: true
+    gitleaks:
+      enabled: true
+    shellcheck:
+      enabled: true
+
+chat:
+  art: false
+  auto_reply: true
+
+knowledge_base:
+  web_search:
+    enabled: true
+  learnings:
+    scope: "local"
+  issues:
+    scope: "local"
+  pull_requests:
+    scope: "local"
+
+code_generation:
+  docstrings:
+    language: "en-US"
+    path_instructions:
+      - path: "**/*.rs"
+        instructions: >
+          Use `///` doc comments (not `//!`). Include a `# Safety` section for
+          any unsafe function. Explain what the function does in terms a Rust
+          developer would understand.
+  unit_tests:
+    path_instructions:
+      - path: "**/*.rs"
+        instructions: >
+          Place tests in a `#[cfg(test)] mod tests` block at the bottom of the file.
+          Test both success and error paths.

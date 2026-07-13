@@ -1,0 +1,34 @@
+name: spellcheck
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  spellcheck:
+    name: 📝 Codebook Spellcheck
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v7.0.0
+
+      - name: 💾 Cache cargo registry and build
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+          key: ${{ runner.os }}-cargo-codebook
+
+      - name: 📦 Install Codebook LSP
+        run: |
+          if ! command -v codebook-lsp &> /dev/null; then
+            cargo install codebook-lsp
+          fi
+
+      - name: 🔍 Run Codebook Spellcheck
+        run: codebook-lsp lint .
