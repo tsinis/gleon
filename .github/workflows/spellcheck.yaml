@@ -17,7 +17,7 @@ jobs:
 
       - name: 📦 Install Codebook LSP
         run: |
-          gh release download v0.3.41 --repo blopker/codebook --pattern '*linux*x86_64*' --output codebook.tar.gz
+          gh release download --repo blopker/codebook --pattern '*x86_64*linux*' --output codebook.tar.gz
           tar -xzf codebook.tar.gz
           sudo mv codebook-lsp /usr/local/bin/
         env:
