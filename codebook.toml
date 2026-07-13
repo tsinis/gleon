@@ -18,6 +18,7 @@ words = [
     "bcbd",
     "beb",
     "bfe",
+    "blopker",
     "caed",
     "cafa",
     "cdf",
@@ -27,6 +28,7 @@ words = [
     "cli",
     "clippy",
     "codecov",
+    "cov",
     "dcacd",
     "ddae",
     "ddba",
@@ -61,5 +63,6 @@ words = [
     "thiserror",
     "tsinis",
     "udeps",
+    "xzf",
     "yamllint",
 ]

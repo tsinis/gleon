@@ -15,20 +15,13 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v7.0.0
 
-      - name: 💾 Cache cargo registry and build
-        uses: actions/cache@v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-          key: ${{ runner.os }}-cargo-codebook
-
       - name: 📦 Install Codebook LSP
         run: |
-          if ! command -v codebook-lsp &> /dev/null; then
-            cargo install codebook-lsp
-          fi
+          gh release download v0.3.41 --repo blopker/codebook --pattern '*linux*x86_64*' --output codebook.tar.gz
+          tar -xzf codebook.tar.gz
+          sudo mv codebook-lsp /usr/local/bin/
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: 🔍 Run Codebook Spellcheck
         run: codebook-lsp lint .
