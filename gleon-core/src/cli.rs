@@ -40,8 +40,8 @@ pub enum Commands {
     Push,
     /// Merge branch manifest into main's manifest
     Merge {
-        /// The branch to merge
-        branch: String,
+        /// The target branch to merge into main
+        target_branch: String,
     },
     /// Clean up unreferenced baseline blobs
     Gc,
@@ -94,7 +94,7 @@ mod tests {
         assert_eq!(
             cli.command,
             Commands::Merge {
-                branch: "feature-branch".to_string()
+                target_branch: "feature-branch".to_string()
             }
         );
         Ok(())

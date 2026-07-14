@@ -29,10 +29,10 @@ fn main() {
         Commands::Push => {
             println!("Subcommand push is not fully implemented yet");
         }
-        Commands::Merge { branch } => {
+        Commands::Merge { target_branch } => {
             println!(
                 "Subcommand merge for branch '{}' is not fully implemented yet",
-                branch
+                target_branch
             );
         }
         Commands::Gc => {
