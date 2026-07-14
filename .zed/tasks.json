@@ -2,31 +2,37 @@
   {
     "label": "Preflight Fullsuite",
     "command": "cargo make check-all",
+    "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": true
   },
   {
     "label": "Preflight Format",
     "command": "cargo make fmt",
+    "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": true
   },
   {
     "label": "Preflight Clippy",
     "command": "cargo make clippy",
+    "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": true
   },
   {
     "label": "Preflight Test",
     "command": "cargo make test",
+    "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": true
   },
   {
     "label": "Preflight Deny",
     "command": "cargo make deny",
+    "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": true
   },
   {
     "label": "Preflight Audit",
     "command": "cargo make audit",
+    "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": true
   }
 ]
