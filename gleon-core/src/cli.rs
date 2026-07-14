@@ -52,6 +52,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn verify_cli() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+    }
+
+    #[test]
     fn test_parse_branch_flag() -> Result<(), clap::Error> {
         let args = ["gleon", "-b", "feature-test", "status"];
         let cli = Cli::try_parse_from(args)?;
