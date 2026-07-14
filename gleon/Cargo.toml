@@ -9,6 +9,11 @@ license.workspace = true
 gleon-core = { path = "../gleon-core" }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
 
 [package.metadata.cargo-udeps.ignore]
 normal = ["gleon-core"]
