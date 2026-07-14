@@ -5,11 +5,11 @@ use gleon_core::cli::{Cli, Commands};
 use tracing::info;
 
 fn main() {
-    // Initialize tracing subscriber for logging
+    let cli = Cli::parse();
+
+    // Initialize tracing subscriber for logging (after parse so --help/--version exit cleanly)
     tracing_subscriber::fmt::init();
     info!("Gleon CLI starting up...");
-
-    let cli = Cli::parse();
     match cli.command {
         Commands::Status => {
             println!("Subcommand status is not fully implemented yet");
