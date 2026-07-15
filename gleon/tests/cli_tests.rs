@@ -62,6 +62,66 @@ fn test_merge_placeholder() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn test_diff_placeholder() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.arg("diff")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "Subcommand diff is not fully implemented yet",
+        ));
+    Ok(())
+}
+
+#[test]
+fn test_test_placeholder() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.arg("test")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "Subcommand test is not fully implemented yet",
+        ));
+    Ok(())
+}
+
+#[test]
+fn test_pull_placeholder() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.arg("pull")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "Subcommand pull is not fully implemented yet",
+        ));
+    Ok(())
+}
+
+#[test]
+fn test_push_placeholder() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.arg("push")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "Subcommand push is not fully implemented yet",
+        ));
+    Ok(())
+}
+
+#[test]
+fn test_gc_placeholder() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.arg("gc")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "Subcommand gc is not fully implemented yet",
+        ));
+    Ok(())
+}
+
+#[test]
 fn test_invalid_subcommand() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("gleon")?;
     cmd.arg("invalid-command").assert().failure();

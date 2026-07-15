@@ -24,7 +24,7 @@ pub struct Cli {
 }
 
 /// The available subcommands in Gleon.
-#[derive(Subcommand, Debug, Clone, PartialEq)]
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum Commands {
     /// Print resolved configuration and active status
     Status,
