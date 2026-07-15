@@ -61,6 +61,7 @@ words = [
     "shellcheck",
     "smallvec",
     "smallvec",
+    "ssim",
     "thiserror",
     "tsinis",
     "udeps",
