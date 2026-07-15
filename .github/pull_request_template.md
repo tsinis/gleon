@@ -12,7 +12,7 @@
 
 ## Checklist
 
-- [ ] My code follows the project guidelines ([AGENTS.md](../AGENTS.md)
+- [ ] My code has open Issue tickets related to the changes (if applicable)
 - [ ] I ran the local quality check `cargo make check-all` (or `Preflight Fullsuite` in Zed)
 - [ ] Linter (clippy) and formatting (rustfmt) issues are resolved
 - [ ] Automated tests covering new changes have been added (if applicable)

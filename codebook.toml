@@ -67,3 +67,4 @@ words = [
     "xzf",
     "yamllint",
 ]
+ignore_paths = ["Cargo.lock"]

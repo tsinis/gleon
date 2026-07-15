@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 
 language: "en"
-tone_instructions: "Senior-level review. Prioritize Rust performance, memory safety, and low-level correctness."
+tone_instructions: "Senior-level review. Prioritize Rust performance, memory safety, and idiomatic code. Be concise, factual, direct, and ruthlessly honest."
 early_access: true
 
 reviews:
@@ -61,6 +61,8 @@ reviews:
         - Ensure error handling is robust, using thiserror in libraries.
         - Verify image processing logic (pixel comparisons, anti-aliasing detection, masks).
         - Verify coordinate math and image scale bounds are handled safely.
+        - Watch out for `clap` argument ID shadowing between global flags and subcommand arguments.
+        - When reviewing integration tests utilizing `assert_cmd` / `Command::cargo_bin`, ensure they are conditionally compiled with `#[cfg(not(miri))]` as Miri cannot execute compiled binaries.
 
     - path: ".github/workflows/*.yaml"
       instructions: >
