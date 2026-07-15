@@ -18,6 +18,14 @@ pub struct Cli {
     #[arg(short = 'p', long = "platform", global = true)]
     pub platform: Option<String>,
 
+    /// Enable verbose logging (DEBUG level)
+    #[arg(short = 'v', long = "verbose", global = true, conflicts_with = "quiet")]
+    pub verbose: bool,
+
+    /// Suppress informational output (only show WARN/ERROR)
+    #[arg(short = 'q', long = "quiet", global = true)]
+    pub quiet: bool,
+
     /// The subcommand to execute
     #[command(subcommand)]
     pub command: Commands,
@@ -103,6 +111,34 @@ mod tests {
                 target_branch: "feature-branch".to_string()
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_verbose_flag() -> Result<(), clap::Error> {
+        let args = ["gleon", "-v", "status"];
+        let cli = Cli::try_parse_from(args)?;
+        assert!(cli.verbose);
+        assert!(!cli.quiet);
+
+        let args_long = ["gleon", "--verbose", "status"];
+        let cli_long = Cli::try_parse_from(args_long)?;
+        assert!(cli_long.verbose);
+        assert!(!cli_long.quiet);
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_quiet_flag() -> Result<(), clap::Error> {
+        let args = ["gleon", "-q", "status"];
+        let cli = Cli::try_parse_from(args)?;
+        assert!(cli.quiet);
+        assert!(!cli.verbose);
+
+        let args_long = ["gleon", "--quiet", "status"];
+        let cli_long = Cli::try_parse_from(args_long)?;
+        assert!(cli_long.quiet);
+        assert!(!cli_long.verbose);
         Ok(())
     }
 
