@@ -55,6 +55,7 @@ words = [
     "miri",
     "nextest",
     "powerset",
+    "rustfmt",
     "rustlib",
     "rustup",
     "shellcheck",

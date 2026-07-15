@@ -1,8 +1,8 @@
 name: ci
 
 on:
-  # push:
-  #   branches: ["main"]
+  push:
+    branches: ["main"]
   pull_request:
     branches: ["main"]
 
@@ -54,19 +54,15 @@ jobs:
         run: cargo audit
 
       - name: 🧪 Run tests
-        if: github.event_name != 'pull_request'
         run: cargo test --workspace
 
       - name: 📦 Install cargo-llvm-cov
-        if: github.event_name == 'pull_request'
         run: cargo install cargo-llvm-cov
 
       - name: 📊 Generate code coverage
-        if: github.event_name == 'pull_request'
         run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
 
       - name: 📤 Upload coverage to Codecov
-        if: github.event_name == 'pull_request'
         uses: codecov/codecov-action@v7.0.0
         with:
           files: lcov.info
