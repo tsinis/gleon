@@ -15,6 +15,7 @@ fn test_help() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(not(miri))]
 #[test]
 fn test_no_arguments_shows_help() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("gleon")?;

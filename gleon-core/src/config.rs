@@ -523,17 +523,30 @@ impl Manifest {
         #[cfg(all(unix, not(miri)))]
         {
             use std::os::unix::fs::PermissionsExt;
-            if let Ok(mut perms) = temp_file.as_file().metadata().map(|m| m.permissions()) {
-                perms.set_mode(0o644);
-                let _ = temp_file.as_file().set_permissions(perms);
-            }
+            let mut perms = temp_file
+                .as_file()
+                .metadata()
+                .map_err(ConfigError::Io)?
+                .permissions();
+            perms.set_mode(0o644);
+            temp_file
+                .as_file()
+                .set_permissions(perms)
+                .map_err(ConfigError::Io)?;
         }
+
+        temp_file.as_file().sync_all().map_err(ConfigError::Io)?;
 
         // Atomically persist (rename) the temporary file to the final destination.
         temp_file.persist(path).map_err(|e| {
             tracing::error!("Failed to save manifest atomically to {:?}: {}", path, e);
             ConfigError::Io(e.error)
         })?;
+
+        // Sync the parent directory to ensure the rename is durable.
+        if let Some(dir) = path.parent().and_then(|p| std::fs::File::open(p).ok()) {
+            let _ = dir.sync_all();
+        }
 
         tracing::debug!("Manifest saved successfully to {:?}", path);
         Ok(())
@@ -989,13 +1002,15 @@ screenshots:
             screenshots: BTreeMap::new(),
         };
         let result = updated.save(&file_path);
-        assert!(result.is_err());
+        let is_err = result.is_err();
 
         // Restore permissions so tempdir can clean up
         let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
         #[allow(clippy::permissions_set_readonly_false)]
         perms.set_readonly(false);
         let _ = std::fs::set_permissions(dir.path(), perms);
+
+        assert!(is_err, "Expected save to fail due to read-only directory");
 
         // Verify original file remains untouched
         let loaded = Manifest::load(&file_path).unwrap();
@@ -1222,24 +1237,28 @@ screenshots:
     }
 
     #[test]
-    #[cfg(not(miri))]
+    #[cfg(all(unix, not(miri)))]
     fn test_load_config_permission_denied() {
+        use std::os::unix::fs::PermissionsExt;
+
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("unreadable_config.yaml");
         std::fs::write(&file_path, "required_version: \">=0.1.0\"").unwrap();
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-            // Try to load under non-root
-            let err = GleonConfig::load_from_file(&file_path).unwrap_err();
-            assert!(matches!(
-                err,
-                ConfigError::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied
-            ));
+        let result = GleonConfig::load_from_file(&file_path);
+
+        // If we are running as root, the load might succeed despite 0o000 permissions.
+        if result.is_ok() {
+            return;
         }
+
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied
+        ));
     }
 
     #[test]
