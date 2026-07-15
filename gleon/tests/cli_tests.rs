@@ -1,6 +1,7 @@
 #![cfg(not(miri))]
 
 use assert_cmd::Command;
+use predicates::prelude::*;
 
 #[test]
 fn test_help() -> Result<(), Box<dyn std::error::Error>> {
@@ -128,6 +129,7 @@ fn test_invalid_subcommand() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(not(miri))]
 #[test]
 fn test_verbose_flag_coverage() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("gleon")?;
@@ -137,10 +139,13 @@ fn test_verbose_flag_coverage() -> Result<(), Box<dyn std::error::Error>> {
         .success()
         .stdout(predicates::str::contains(
             "Subcommand status is not fully implemented yet",
-        ));
+        ))
+        .stdout(predicates::str::contains("INFO"))
+        .stdout(predicates::str::contains("Gleon CLI starting up..."));
     Ok(())
 }
 
+#[cfg(not(miri))]
 #[test]
 fn test_quiet_flag_coverage() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("gleon")?;
@@ -150,6 +155,7 @@ fn test_quiet_flag_coverage() -> Result<(), Box<dyn std::error::Error>> {
         .success()
         .stdout(predicates::str::contains(
             "Subcommand status is not fully implemented yet",
-        ));
+        ))
+        .stdout(predicates::str::contains("Gleon CLI starting up...").not());
     Ok(())
 }

@@ -1,5 +1,4 @@
 required_version: '>=0.1.0'
-platform: ''
 screenshots:
 - include: '**/*.png'
   mode: pixel

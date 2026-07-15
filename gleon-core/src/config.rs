@@ -101,6 +101,91 @@ impl Serialize for Dimension {
     }
 }
 
+/// A compiled glob pattern for fast file matching, serialized as a simple string.
+#[derive(Debug, Clone)]
+pub struct GlobPattern(pub globset::Glob);
+
+impl GlobPattern {
+    /// Create a new `GlobPattern` from a raw string.
+    pub fn new(raw: &str) -> Result<Self, globset::Error> {
+        let compiled = globset::GlobBuilder::new(raw)
+            .literal_separator(true)
+            .build()?;
+        Ok(Self(compiled))
+    }
+
+    /// Get the raw string representation.
+    pub fn as_str(&self) -> &str {
+        self.0.glob()
+    }
+
+    /// Access the compiled `globset::Glob`.
+    pub fn as_glob(&self) -> &globset::Glob {
+        &self.0
+    }
+}
+
+impl PartialEq for GlobPattern {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+impl Eq for GlobPattern {}
+
+impl<'de> Deserialize<'de> for GlobPattern {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        let compiled = globset::GlobBuilder::new(&raw)
+            .literal_separator(true)
+            .build()
+            .map_err(serde::de::Error::custom)?;
+        Ok(GlobPattern(compiled))
+    }
+}
+
+impl Serialize for GlobPattern {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+/// A strongly-typed 32-byte hash (e.g. SHA256 or Blake3), serialized as a 64-character hex string.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ImageHash(pub [u8; 32]);
+
+impl<'de> Deserialize<'de> for ImageHash {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        if s.len() != 64 {
+            return Err(serde::de::Error::custom(
+                "Hash must be exactly 64 characters long",
+            ));
+        }
+        let mut bytes = [0u8; 32];
+        hex::decode_to_slice(&s, &mut bytes).map_err(serde::de::Error::custom)?;
+        Ok(ImageHash(bytes))
+    }
+}
+
+impl Serialize for ImageHash {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let hex_str = hex::encode(self.0);
+        serializer.serialize_str(&hex_str)
+    }
+}
+
 /// The root configuration structure for Gleon.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -108,44 +193,46 @@ pub struct GleonConfig {
     /// The required version range of the CLI to run this configuration.
     pub required_version: semver::VersionReq,
     /// The platform identifier for which these rules apply (e.g. macos-aarch64).
-    #[serde(default)]
-    pub platform: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
     /// List of screenshot match rules.
     pub screenshots: Vec<ScreenshotRule>,
     /// Globs of paths to exclude from testing.
-    #[serde(default, with = "string_or_vec")]
-    pub exclude: Vec<String>,
+    #[serde(default, with = "item_or_vec")]
+    pub exclude: Vec<GlobPattern>,
 }
 
-/// Helper module for serde to deserialize a single string or a list of strings into a `Vec<String>`.
-pub mod string_or_vec {
+/// Helper module for serde to deserialize a single item or a list of items into a `Vec<T>`.
+pub mod item_or_vec {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    pub fn serialize<S>(vec: &Vec<String>, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<T, S>(vec: &Vec<T>, serializer: S) -> Result<S::Ok, S::Error>
     where
+        T: Serialize,
         S: Serializer,
     {
         if vec.len() == 1 {
-            serializer.serialize_str(&vec[0])
+            vec[0].serialize(serializer)
         } else {
             vec.serialize(serializer)
         }
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+    pub fn deserialize<'de, T, D>(deserializer: D) -> Result<Vec<T>, D::Error>
     where
+        T: Deserialize<'de>,
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
         #[serde(untagged)]
-        enum StringOrVec {
-            String(String),
-            Vec(Vec<String>),
+        enum ItemOrVec<T> {
+            Item(T),
+            Vec(Vec<T>),
         }
 
-        match StringOrVec::deserialize(deserializer)? {
-            StringOrVec::String(s) => Ok(vec![s]),
-            StringOrVec::Vec(v) => Ok(v),
+        match ItemOrVec::deserialize(deserializer)? {
+            ItemOrVec::Item(s) => Ok(vec![s]),
+            ItemOrVec::Vec(v) => Ok(v),
         }
     }
 }
@@ -155,8 +242,8 @@ pub mod string_or_vec {
 #[serde(deny_unknown_fields)]
 pub struct ScreenshotRule {
     /// Glob patterns representing the files to include.
-    #[serde(with = "string_or_vec")]
-    pub include: Vec<String>,
+    #[serde(with = "item_or_vec")]
+    pub include: Vec<GlobPattern>,
     /// Diffing mode (pixel or ssim).
     #[serde(default = "default_mode")]
     pub mode: Mode,
@@ -214,7 +301,7 @@ impl Default for DiffConfig {
 #[serde(deny_unknown_fields)]
 pub struct MaskRule {
     /// Image path pattern this mask applies to.
-    pub path: String,
+    pub path: GlobPattern,
     /// List of bounding zones to ignore.
     pub zones: Vec<Zone>,
 }
@@ -322,11 +409,11 @@ pub struct Manifest {
 #[serde(deny_unknown_fields)]
 pub struct ManifestEntry {
     /// SHA-256 hash of the image content.
-    pub hash: String,
+    pub hash: ImageHash,
     /// Optional metadata payload.
     pub meta: Option<serde_json::Value>,
     /// UTC timestamp of the check run.
-    pub timestamp_utc: i64,
+    pub timestamp_utc: chrono::DateTime<chrono::Utc>,
 }
 
 impl Manifest {
@@ -339,7 +426,8 @@ impl Manifest {
             tracing::debug!("Failed to open manifest at {:?}: {}", path, e);
             ConfigError::Io(e)
         })?;
-        let manifest: Manifest = serde_json::from_reader(file).map_err(|e| {
+        let reader = std::io::BufReader::new(file);
+        let manifest: Manifest = serde_json::from_reader(reader).map_err(|e| {
             tracing::error!("Failed to parse JSON manifest at {:?}: {}", path, e);
             ConfigError::JsonParse(e)
         })?;
@@ -364,19 +452,20 @@ impl Manifest {
         })?;
 
         // Create a unique temporary file in the same directory to avoid concurrency issues and symlink attacks.
-        let mut temp_file = tempfile::Builder::new()
+        let temp_file = tempfile::Builder::new()
             .prefix(file_name)
             .suffix(".tmp")
             .tempfile_in(parent)?;
 
         // Write to temporary file with buffered I/O.
-        // If writing or flushing fails, temp_file's RAII drop will automatically clean it up.
-        {
-            use std::io::Write;
-            let mut writer = std::io::BufWriter::new(&mut temp_file);
-            serde_json::to_writer_pretty(&mut writer, self)?;
-            writer.flush()?;
-        }
+        // We transfer ownership of temp_file to BufWriter to avoid a redundant flush on drop.
+        use std::io::Write;
+        let mut writer = std::io::BufWriter::new(temp_file);
+        serde_json::to_writer_pretty(&mut writer, self)?;
+        writer.flush()?;
+        let temp_file = writer
+            .into_inner()
+            .map_err(|e| ConfigError::Io(e.into_error()))?;
 
         // Atomically persist (rename) the temporary file to the final destination.
         temp_file.persist(path).map_err(|e| {
@@ -406,9 +495,12 @@ impl Default for GleonConfig {
 
         Self {
             required_version,
-            platform: String::new(),
+            platform: None,
             screenshots: vec![ScreenshotRule {
-                include: vec!["**/*.png".to_string()],
+                #[allow(clippy::expect_used)]
+                include: vec![
+                    GlobPattern::new("**/*.png").expect("Default glob pattern must be valid"),
+                ],
                 mode: Mode::Pixel,
                 diff: DiffConfig::default(),
                 masks: vec![],
@@ -456,8 +548,8 @@ mod tests {
         let _ = screenshots.insert(
             "src/login.png".to_string(),
             ManifestEntry {
-                hash: "abcdef1234567890".to_string(),
-                timestamp_utc: 1710000000,
+                hash: ImageHash([0; 32]),
+                timestamp_utc: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
                 meta: Some(serde_json::Value::Object(meta_map)),
             },
         );
@@ -488,12 +580,12 @@ mod tests {
             config.required_version,
             VersionReq::parse(">=0.1.0").unwrap()
         );
-        assert_eq!(config.platform, "macos-aarch64");
-        assert_eq!(config.exclude, vec!["**/ignored/**"]);
+        assert_eq!(config.platform.as_deref(), Some("macos-aarch64"));
+        assert_eq!(config.exclude[0].as_str(), "**/ignored/**");
         assert_eq!(config.screenshots.len(), 1);
 
         let rule = &config.screenshots[0];
-        assert_eq!(rule.include, vec!["src/login.png"]);
+        assert_eq!(rule.include[0].as_str(), "src/login.png");
         assert_eq!(rule.mode, Mode::Ssim);
         assert_eq!(rule.diff.threshold, 0.05);
         assert!(!rule.diff.anti_alias);
@@ -501,7 +593,7 @@ mod tests {
         assert_eq!(rule.masks.len(), 1);
 
         let mask = &rule.masks[0];
-        assert_eq!(mask.path, "mask1");
+        assert_eq!(mask.path.as_str(), "mask1");
         assert_eq!(mask.zones.len(), 1);
 
         let zone = &mask.zones[0];
@@ -527,10 +619,7 @@ mod tests {
         let path = PathBuf::from("nonexistent_config_file.yaml");
         let result = GleonConfig::load_from_file(&path);
         assert!(result.is_err());
-        match result.unwrap_err() {
-            ConfigError::NotFound(p) => assert_eq!(p, path),
-            _ => panic!("Expected ConfigError::NotFound"),
-        }
+        assert!(matches!(result.unwrap_err(), ConfigError::NotFound(p) if p == path));
     }
 
     #[test]
@@ -598,13 +687,10 @@ screenshots:
 
         // Invalid versions
         let err = config.verify_version("0.0.9").unwrap_err();
-        match err {
-            ConfigError::IncompatibleVersion(req, cur) => {
-                assert_eq!(req, ">=0.1.0");
-                assert_eq!(cur, "0.0.9");
-            }
-            _ => panic!("Expected IncompatibleVersion error"),
-        }
+        assert!(matches!(
+            err,
+            ConfigError::IncompatibleVersion(req, cur) if req == ">=0.1.0" && cur == "0.0.9"
+        ));
 
         // Malformed current version string
         assert!(config.verify_version("not-a-semver").is_err());
@@ -621,10 +707,10 @@ screenshots:
         let config: GleonConfig = serde_yaml::from_str(yaml).unwrap();
         let result = config.validate();
         assert!(result.is_err());
-        match result.unwrap_err() {
-            ConfigError::Validation(msg) => assert!(msg.contains("screenshots")),
-            other => panic!("Expected Validation error, got: {other}"),
-        }
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::Validation(msg) if msg.contains("screenshots")
+        ));
     }
 
     #[test]
@@ -637,10 +723,10 @@ screenshots:
         let config: GleonConfig = serde_yaml::from_str(yaml).unwrap();
         let result = config.validate();
         assert!(result.is_err());
-        match result.unwrap_err() {
-            ConfigError::Validation(msg) => assert!(msg.contains("include")),
-            other => panic!("Expected Validation error, got: {other}"),
-        }
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::Validation(msg) if msg.contains("include")
+        ));
     }
 
     #[test]
@@ -652,8 +738,8 @@ screenshots:
         let _ = screenshots.insert(
             "src/login.png".to_string(),
             ManifestEntry {
-                hash: "abcdef1234567890".to_string(),
-                timestamp_utc: 1710000000,
+                hash: ImageHash([0; 32]),
+                timestamp_utc: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
                 meta: Some(serde_json::json!({ "device": "iPhone 15" })),
             },
         );
@@ -687,8 +773,8 @@ screenshots:
         let _ = screenshots.insert(
             "test.png".to_string(),
             ManifestEntry {
-                hash: "123".to_string(),
-                timestamp_utc: 456,
+                hash: ImageHash([0; 32]),
+                timestamp_utc: chrono::DateTime::from_timestamp(456, 0).unwrap(),
                 meta: None,
             },
         );
@@ -703,6 +789,7 @@ screenshots:
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn test_manifest_atomic_save_failure_preserves_original() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("manifest.json");
@@ -716,24 +803,28 @@ screenshots:
         // Make the directory read-only to make the tempfile creation fail.
         let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
         perms.set_readonly(true);
-        if std::fs::set_permissions(dir.path(), perms).is_ok() {
-            // Verify if the write permission check works (so we are not root)
-            let test_file = dir.path().join("test_write.txt");
-            if std::fs::write(&test_file, b"test").is_err() {
-                let updated = Manifest {
-                    version: 2,
-                    screenshots: BTreeMap::new(),
-                };
-                let result = updated.save(&file_path);
-                assert!(result.is_err());
-            }
+        std::fs::set_permissions(dir.path(), perms).unwrap();
 
-            // Restore permissions so tempdir can clean up
-            let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
-            #[allow(clippy::permissions_set_readonly_false)]
-            perms.set_readonly(false);
-            let _ = std::fs::set_permissions(dir.path(), perms);
-        }
+        // Verify if the write permission check works
+        let test_file = dir.path().join("test_write.txt");
+        let write_result = std::fs::write(&test_file, b"test");
+        assert!(
+            write_result.is_err(),
+            "Directory should be read-only but writing succeeded!"
+        );
+
+        let updated = Manifest {
+            version: 2,
+            screenshots: BTreeMap::new(),
+        };
+        let result = updated.save(&file_path);
+        assert!(result.is_err());
+
+        // Restore permissions so tempdir can clean up
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        let _ = std::fs::set_permissions(dir.path(), perms);
 
         // Verify original file remains untouched
         let loaded = Manifest::load(&file_path).unwrap();
@@ -752,10 +843,7 @@ screenshots:
         };
         let result = manifest.save(&invalid_path);
         assert!(result.is_err());
-        match result.unwrap_err() {
-            ConfigError::Io(_) => {}
-            _ => panic!("Expected ConfigError::Io"),
-        }
+        assert!(matches!(result.unwrap_err(), ConfigError::Io(_)));
     }
 
     #[test]
@@ -789,10 +877,10 @@ screenshots:
     }
 
     #[test]
-    fn test_string_or_vec_parsing() {
+    fn test_item_or_vec_parsing() {
         #[derive(Debug, Serialize, Deserialize, PartialEq)]
         struct TestStruct {
-            #[serde(with = "string_or_vec")]
+            #[serde(with = "item_or_vec")]
             values: Vec<String>,
         }
 
@@ -813,6 +901,34 @@ screenshots:
     }
 
     #[test]
+    fn test_glob_pattern_validation() {
+        // 1. Literal path (no wildcards)
+        let lit_pat: GlobPattern = serde_yaml::from_str("\"test/pic.png\"").unwrap();
+        assert_eq!(lit_pat.as_str(), "test/pic.png");
+        let matcher = lit_pat.as_glob().compile_matcher();
+        assert!(matcher.is_match("test/pic.png"));
+        assert!(!matcher.is_match("test/other.png"));
+        assert!(!matcher.is_match("test/pic.png.bak"));
+
+        // 2. Wildcard pattern
+        let wild_pat: GlobPattern = serde_yaml::from_str("\"test/*.png\"").unwrap();
+        assert_eq!(wild_pat.as_str(), "test/*.png");
+        let matcher = wild_pat.as_glob().compile_matcher();
+        assert!(matcher.is_match("test/pic.png"));
+        assert!(matcher.is_match("test/other.png"));
+        assert!(!matcher.is_match("test/dir/pic.png"));
+
+        // 3. Double wildcard pattern
+        let double_wild_pat: GlobPattern = serde_yaml::from_str("\"test/**/*.png\"").unwrap();
+        let matcher = double_wild_pat.as_glob().compile_matcher();
+        assert!(matcher.is_match("test/dir/pic.png"));
+
+        // 4. Invalid pattern (unclosed character class)
+        let invalid: Result<GlobPattern, _> = serde_yaml::from_str("\"test/[a-z\"");
+        assert!(invalid.is_err());
+    }
+
+    #[test]
     fn test_manifest_load_corrupted() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("corrupted_manifest.json");
@@ -820,10 +936,7 @@ screenshots:
 
         let result = Manifest::load(&file_path);
         assert!(result.is_err());
-        match result.unwrap_err() {
-            ConfigError::JsonParse(_) => {}
-            _ => panic!("Expected ConfigError::JsonParse"),
-        }
+        assert!(matches!(result.unwrap_err(), ConfigError::JsonParse(_)));
     }
 
     #[test]
@@ -860,8 +973,8 @@ screenshots:
 ";
         let config: GleonConfig = serde_yaml::from_str(minimal_yaml).unwrap();
         // Check structural defaults
-        assert_eq!(config.platform, "");
-        assert_eq!(config.exclude, Vec::<String>::new());
+        assert_eq!(config.platform, None);
+        assert!(config.exclude.is_empty());
         assert_eq!(config.screenshots.len(), 1);
 
         let rule = &config.screenshots[0];
@@ -888,5 +1001,106 @@ screenshots:
 
         // Validate equality
         assert_eq!(original_config, round_tripped_config);
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn test_load_config_permission_denied() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("unreadable_config.yaml");
+        std::fs::write(&file_path, "required_version: \">=0.1.0\"").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+            // Try to load under non-root
+            let err = GleonConfig::load_from_file(&file_path).unwrap_err();
+            assert!(matches!(
+                err,
+                ConfigError::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied
+            ));
+        }
+    }
+
+    #[test]
+    fn test_manifest_save_invalid_filename() {
+        let manifest = Manifest {
+            version: 1,
+            screenshots: BTreeMap::new(),
+        };
+        let err = manifest.save(Path::new("/")).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::Io(e) if e.kind() == std::io::ErrorKind::InvalidInput
+        ));
+    }
+
+    #[test]
+    fn test_manifest_save_persist_failure() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("manifest_dir");
+        std::fs::create_dir(&file_path).unwrap(); // make it a directory
+
+        let manifest = Manifest {
+            version: 1,
+            screenshots: BTreeMap::new(),
+        };
+
+        // Try to save to a path which is a directory (persist fails)
+        let err = manifest.save(&file_path).unwrap_err();
+        assert!(matches!(err, ConfigError::Io(_)));
+    }
+
+    #[test]
+    fn test_manifest_load_not_found() {
+        let path = PathBuf::from("nonexistent_manifest_file.json");
+        let err = Manifest::load(&path).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::Io(e) if e.kind() == std::io::ErrorKind::NotFound
+        ));
+    }
+
+    #[test]
+    fn test_manifest_save_creates_parent_dir() {
+        let dir = tempdir().unwrap();
+        let nested_path = dir.path().join("subdir/nested/manifest.json");
+
+        let manifest = Manifest {
+            version: 1,
+            screenshots: BTreeMap::new(),
+        };
+        manifest.save(&nested_path).unwrap();
+
+        assert!(nested_path.exists());
+        let loaded = Manifest::load(&nested_path).unwrap();
+        assert_eq!(loaded.version, 1);
+    }
+
+    #[test]
+    fn test_load_config_validation_failure() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("invalid_config.yaml");
+        std::fs::write(&file_path, "required_version: \">=0.1.0\"\nscreenshots: []").unwrap();
+
+        let err = GleonConfig::load_from_file(&file_path).unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(_)));
+    }
+
+    #[test]
+    fn test_manifest_save_create_dir_all_failure() {
+        let dir = tempdir().unwrap();
+        let blocker_file = dir.path().join("blocker-file");
+        std::fs::write(&blocker_file, b"data").unwrap();
+
+        let nested_path = blocker_file.join("subdir/manifest.json");
+        let manifest = Manifest {
+            version: 1,
+            screenshots: BTreeMap::new(),
+        };
+        let err = manifest.save(&nested_path).unwrap_err();
+        assert!(matches!(err, ConfigError::Io(_)));
     }
 }

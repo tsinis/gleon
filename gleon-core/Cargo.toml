@@ -14,6 +14,9 @@ serde_json = { workspace = true }
 semver = { workspace = true }
 thiserror = { workspace = true }
 tempfile = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
+globset = { workspace = true }
 
 [package.metadata.cargo-udeps.ignore]
 normal = ["tracing"]

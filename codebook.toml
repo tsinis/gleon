@@ -50,6 +50,7 @@ words = [
     "gfm",
     "gitleaks",
     "gleon",
+    "globset",
     "lcov",
     "learnings",
     "librustc",
