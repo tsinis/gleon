@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "screenshots": {
+    "src/login.png": {
+      "hash": "abcdef1234567890",
+      "meta": {
+        "a_key": "value_a",
+        "b_key": "value_b"
+      },
+      "timestamp_utc": 1710000000
+    }
+  }
+}
