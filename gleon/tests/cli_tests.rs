@@ -127,3 +127,29 @@ fn test_invalid_subcommand() -> Result<(), Box<dyn std::error::Error>> {
     cmd.arg("invalid-command").assert().failure();
     Ok(())
 }
+
+#[test]
+fn test_verbose_flag_coverage() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.arg("-v")
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "Subcommand status is not fully implemented yet",
+        ));
+    Ok(())
+}
+
+#[test]
+fn test_quiet_flag_coverage() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.arg("-q")
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "Subcommand status is not fully implemented yet",
+        ));
+    Ok(())
+}

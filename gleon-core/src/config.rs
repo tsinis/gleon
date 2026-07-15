@@ -258,11 +258,14 @@ impl GleonConfig {
         let path = path.as_ref();
         tracing::debug!("Loading configuration from {:?}", path);
 
-        if !path.exists() {
-            tracing::error!("Configuration file not found at {:?}", path);
-            return Err(ConfigError::NotFound(path.to_path_buf()));
-        }
-        let file = std::fs::File::open(path)?;
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                tracing::error!("Configuration file not found at {:?}", path);
+                return Err(ConfigError::NotFound(path.to_path_buf()));
+            }
+            Err(error) => return Err(ConfigError::Io(error)),
+        };
         let config: GleonConfig = serde_yaml::from_reader(file)?;
         config.validate()?;
         Ok(config)
@@ -359,29 +362,27 @@ impl Manifest {
         let file_name = path.file_name().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid file name")
         })?;
-        let mut tmp_name = file_name.to_os_string();
-        tmp_name.push(".tmp");
-        let tmp_path = parent.join(tmp_name);
 
-        // Write to temporary file with buffered I/O and rename atomically.
-        // Ensure the temporary file is cleaned up if any step fails.
-        let result = (|| -> Result<(), ConfigError> {
-            {
-                use std::io::Write;
-                let file = std::fs::File::create(&tmp_path)?;
-                let mut writer = std::io::BufWriter::new(file);
-                serde_json::to_writer_pretty(&mut writer, self)?;
-                writer.flush()?;
-            }
-            std::fs::rename(&tmp_path, path)?;
-            Ok(())
-        })();
+        // Create a unique temporary file in the same directory to avoid concurrency issues and symlink attacks.
+        let mut temp_file = tempfile::Builder::new()
+            .prefix(file_name)
+            .suffix(".tmp")
+            .tempfile_in(parent)?;
 
-        if let Err(e) = result {
-            tracing::error!("Failed to save manifest atomically to {:?}: {:?}", path, e);
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(e);
+        // Write to temporary file with buffered I/O.
+        // If writing or flushing fails, temp_file's RAII drop will automatically clean it up.
+        {
+            use std::io::Write;
+            let mut writer = std::io::BufWriter::new(&mut temp_file);
+            serde_json::to_writer_pretty(&mut writer, self)?;
+            writer.flush()?;
         }
+
+        // Atomically persist (rename) the temporary file to the final destination.
+        temp_file.persist(path).map_err(|e| {
+            tracing::error!("Failed to save manifest atomically to {:?}: {}", path, e);
+            ConfigError::Io(e.error)
+        })?;
 
         tracing::debug!("Manifest saved successfully to {:?}", path);
         Ok(())
@@ -712,18 +713,27 @@ screenshots:
         };
         original.save(&file_path).unwrap();
 
-        // Create a directory where the temp file would be written
-        let tmp_file_path = dir.path().join("manifest.json.tmp");
-        std::fs::create_dir(&tmp_file_path).unwrap();
+        // Make the directory read-only to make the tempfile creation fail.
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_readonly(true);
+        if std::fs::set_permissions(dir.path(), perms).is_ok() {
+            // Verify if the write permission check works (so we are not root)
+            let test_file = dir.path().join("test_write.txt");
+            if std::fs::write(&test_file, b"test").is_err() {
+                let updated = Manifest {
+                    version: 2,
+                    screenshots: BTreeMap::new(),
+                };
+                let result = updated.save(&file_path);
+                assert!(result.is_err());
+            }
 
-        // Try to save, it should fail to write to the temp path because it's a directory.
-        let updated = Manifest {
-            version: 2,
-            screenshots: BTreeMap::new(),
-        };
-
-        let result = updated.save(&file_path);
-        assert!(result.is_err());
+            // Restore permissions so tempdir can clean up
+            let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            let _ = std::fs::set_permissions(dir.path(), perms);
+        }
 
         // Verify original file remains untouched
         let loaded = Manifest::load(&file_path).unwrap();
@@ -732,7 +742,10 @@ screenshots:
 
     #[test]
     fn test_manifest_io_error_on_save() {
-        let invalid_path = PathBuf::from("/nonexistent_directory_123/manifest.json");
+        let dir = tempdir().unwrap();
+        let non_directory = dir.path().join("not-a-directory");
+        std::fs::write(&non_directory, b"blocker").unwrap();
+        let invalid_path = non_directory.join("manifest.json");
         let manifest = Manifest {
             version: 1,
             screenshots: BTreeMap::new(),
@@ -871,9 +884,9 @@ screenshots:
         let serialized = serde_yaml::to_string(&original_config).unwrap();
 
         // Deserialize back
-        let roundtripped_config: GleonConfig = serde_yaml::from_str(&serialized).unwrap();
+        let round_tripped_config: GleonConfig = serde_yaml::from_str(&serialized).unwrap();
 
         // Validate equality
-        assert_eq!(original_config, roundtripped_config);
+        assert_eq!(original_config, round_tripped_config);
     }
 }
