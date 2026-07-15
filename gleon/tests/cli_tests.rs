@@ -16,6 +16,16 @@ fn test_help() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn test_no_arguments_shows_help() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.assert()
+        .failure() // clap exits with 2 when required subcommand is missing
+        .stderr(predicates::str::contains("Usage:"))
+        .stderr(predicates::str::contains("Commands:"));
+    Ok(())
+}
+
+#[test]
 fn test_version() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("gleon")?;
     cmd.arg("--version")

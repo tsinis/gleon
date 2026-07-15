@@ -29,6 +29,10 @@ pub enum ConfigError {
     #[error("Incompatible version. Required: {0}, Current: {1}")]
     IncompatibleVersion(String, String),
 
+    /// Gleon CLI version string is not a valid semver format.
+    #[error("Invalid version format: {0}")]
+    InvalidVersionFormat(String),
+
     /// Configuration is semantically invalid (e.g. empty screenshots list).
     #[error("Invalid configuration: {0}")]
     Validation(String),
@@ -69,23 +73,29 @@ impl<'de> Deserialize<'de> for Dimension {
             Str(String),
         }
 
-        let raw = RawDimension::deserialize(deserializer)?;
-        match raw {
+        RawDimension::deserialize(deserializer).and_then(|raw| match raw {
             RawDimension::Integer(px) => Ok(Dimension::Pixels(px)),
             RawDimension::Str(s) => {
                 let trimmed = s.trim();
                 if let Some(pct) = trimmed.strip_suffix('%') {
-                    let val: f64 = pct.trim().parse().map_err(D::Error::custom)?;
-                    if !(0.0..=100.0).contains(&val) {
-                        return Err(D::Error::custom("percentage must be between 0.0 and 100.0"));
-                    }
-                    Ok(Dimension::Percent(val))
+                    pct.trim()
+                        .parse::<f64>()
+                        .map_err(D::Error::custom)
+                        .and_then(|val| {
+                            if (0.0..=100.0).contains(&val) {
+                                Ok(Dimension::Percent(val))
+                            } else {
+                                Err(D::Error::custom("percentage must be between 0.0 and 100.0"))
+                            }
+                        })
                 } else {
-                    let val: u32 = trimmed.parse().map_err(D::Error::custom)?;
-                    Ok(Dimension::Pixels(val))
+                    trimmed
+                        .parse::<u32>()
+                        .map(Dimension::Pixels)
+                        .map_err(D::Error::custom)
                 }
             }
-        }
+        })
     }
 }
 
@@ -108,10 +118,10 @@ pub struct GlobPattern(pub globset::Glob);
 impl GlobPattern {
     /// Create a new `GlobPattern` from a raw string.
     pub fn new(raw: &str) -> Result<Self, globset::Error> {
-        let compiled = globset::GlobBuilder::new(raw)
+        globset::GlobBuilder::new(raw)
             .literal_separator(true)
-            .build()?;
-        Ok(Self(compiled))
+            .build()
+            .map(Self)
     }
 
     /// Get the raw string representation.
@@ -164,15 +174,17 @@ impl<'de> Deserialize<'de> for ImageHash {
     where
         D: Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        if s.len() != 64 {
-            return Err(serde::de::Error::custom(
-                "Hash must be exactly 64 characters long",
-            ));
-        }
-        let mut bytes = [0u8; 32];
-        hex::decode_to_slice(&s, &mut bytes).map_err(serde::de::Error::custom)?;
-        Ok(ImageHash(bytes))
+        String::deserialize(deserializer).and_then(|s| {
+            if s.len() != 64 {
+                return Err(serde::de::Error::custom(
+                    "Hash must be exactly 64 characters long",
+                ));
+            }
+            let mut bytes = [0u8; 32];
+            hex::decode_to_slice(&s, &mut bytes)
+                .map_err(serde::de::Error::custom)
+                .map(|_| ImageHash(bytes))
+        })
     }
 }
 
@@ -183,6 +195,12 @@ impl Serialize for ImageHash {
     {
         let hex_str = hex::encode(self.0);
         serializer.serialize_str(&hex_str)
+    }
+}
+
+impl std::fmt::Display for ImageHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", hex::encode(self.0))
     }
 }
 
@@ -230,10 +248,10 @@ pub mod item_or_vec {
             Vec(Vec<T>),
         }
 
-        match ItemOrVec::deserialize(deserializer)? {
-            ItemOrVec::Item(s) => Ok(vec![s]),
-            ItemOrVec::Vec(v) => Ok(v),
-        }
+        ItemOrVec::deserialize(deserializer).map(|res| match res {
+            ItemOrVec::Item(s) => vec![s],
+            ItemOrVec::Vec(v) => v,
+        })
     }
 }
 
@@ -277,13 +295,15 @@ fn deserialize_ratio<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let val: f64 = Deserialize::deserialize(deserializer)?;
-    if !(0.0..=1.0).contains(&val) {
-        return Err(serde::de::Error::custom(
-            "Value must be between 0.0 and 1.0",
-        ));
-    }
-    Ok(val)
+    f64::deserialize(deserializer).and_then(|val| {
+        if (0.0..=1.0).contains(&val) {
+            Ok(val)
+        } else {
+            Err(serde::de::Error::custom(
+                "Value must be between 0.0 and 1.0",
+            ))
+        }
+    })
 }
 
 impl Default for DiffConfig {
@@ -361,12 +381,8 @@ impl GleonConfig {
 
     /// Verifies if the current CLI version satisfies the configuration's required_version.
     pub fn verify_version(&self, current_version: &str) -> Result<(), ConfigError> {
-        let current = semver::Version::parse(current_version).map_err(|_| {
-            ConfigError::IncompatibleVersion(
-                self.required_version.to_string(),
-                current_version.to_string(),
-            )
-        })?;
+        let current = semver::Version::parse(current_version)
+            .map_err(|_| ConfigError::InvalidVersionFormat(current_version.to_string()))?;
 
         if !self.required_version.matches(&current) {
             return Err(ConfigError::IncompatibleVersion(
@@ -444,6 +460,7 @@ pub struct ManifestEntry {
     /// SHA-256 hash of the image content.
     pub hash: ImageHash,
     /// Optional metadata payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<serde_json::Value>,
     /// UTC timestamp of the check run.
     pub timestamp_utc: chrono::DateTime<chrono::Utc>,
@@ -499,6 +516,18 @@ impl Manifest {
         let temp_file = writer
             .into_inner()
             .map_err(|e| ConfigError::Io(e.into_error()))?;
+
+        // Set standard 0o644 permissions before persisting, because tempfile
+        // creates files with 0o600 by default (which might cause PermissionDenied
+        // in shared CI/CD environments).
+        #[cfg(all(unix, not(miri)))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(mut perms) = temp_file.as_file().metadata().map(|m| m.permissions()) {
+                perms.set_mode(0o644);
+                let _ = temp_file.as_file().set_permissions(perms);
+            }
+        }
 
         // Atomically persist (rename) the temporary file to the final destination.
         temp_file.persist(path).map_err(|e| {
@@ -733,7 +762,11 @@ screenshots:
         ));
 
         // Malformed current version string
-        assert!(config.verify_version("not-a-semver").is_err());
+        let err2 = config.verify_version("not-a-semver").unwrap_err();
+        assert!(matches!(
+            err2,
+            ConfigError::InvalidVersionFormat(cur) if cur == "not-a-semver"
+        ));
     }
 
     #[test]
@@ -795,6 +828,7 @@ screenshots:
 
     #[test]
     fn test_validation_invalid_mask_percentages() {
+        // Test invalid width percentage
         let mut config = GleonConfig::default();
         config.screenshots[0].masks = vec![MaskRule {
             path: GlobPattern::new("src/test.png").unwrap(),
@@ -811,6 +845,59 @@ screenshots:
             result.unwrap_err(),
             ConfigError::Validation(msg) if msg.contains("width percentage must be between 0.0 and 100.0")
         ));
+
+        // Test invalid height percentage
+        let mut config2 = GleonConfig::default();
+        config2.screenshots[0].masks = vec![MaskRule {
+            path: GlobPattern::new("src/test.png").unwrap(),
+            zones: vec![Zone {
+                x: 0,
+                y: 0,
+                width: Dimension::Pixels(100),
+                height: Dimension::Percent(-10.0),
+            }],
+        }];
+        let result2 = config2.validate();
+        assert!(result2.is_err());
+        assert!(matches!(
+            result2.unwrap_err(),
+            ConfigError::Validation(msg) if msg.contains("height percentage must be between 0.0 and 100.0")
+        ));
+    }
+
+    #[test]
+    fn test_image_hash_invalid_length_deserialization() {
+        // 63 characters
+        let json_short = "\"a0f2705b0b2e88b8e0e7a2b97cbb1f32a0f2705b0b2e88b8e0e7a2b97cbb1f3\"";
+        let res_short: Result<ImageHash, _> = serde_json::from_str(json_short);
+        assert!(res_short.is_err());
+        assert!(
+            res_short
+                .unwrap_err()
+                .to_string()
+                .contains("Hash must be exactly 64 characters long")
+        );
+
+        // 65 characters
+        let json_long = "\"a0f2705b0b2e88b8e0e7a2b97cbb1f32a0f2705b0b2e88b8e0e7a2b97cbb1f321\"";
+        let res_long: Result<ImageHash, _> = serde_json::from_str(json_long);
+        assert!(res_long.is_err());
+        assert!(
+            res_long
+                .unwrap_err()
+                .to_string()
+                .contains("Hash must be exactly 64 characters long")
+        );
+    }
+
+    #[test]
+    fn test_image_hash_display() {
+        let hash = ImageHash([0u8; 32]);
+        let formatted = format!("{}", hash);
+        assert_eq!(
+            formatted,
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        );
     }
 
     #[test]
@@ -958,6 +1045,49 @@ screenshots:
         // Test invalid format
         let d_invalid: Result<Dimension, _> = serde_yaml::from_str("\"not_a_number\"");
         assert!(d_invalid.is_err());
+
+        // Test invalid float inside percentage
+        let d_invalid_pct_float: Result<Dimension, _> = serde_yaml::from_str("\"abc%\"");
+        assert!(d_invalid_pct_float.is_err());
+    }
+
+    #[test]
+    fn test_image_hash_deserialization_errors() {
+        // Non-string type (number)
+        let res_num: Result<ImageHash, _> = serde_json::from_str("123");
+        assert!(res_num.is_err());
+
+        // Invalid hex characters (64 chars long)
+        let json_invalid_hex =
+            "\"not-a-hex-string-at-all-but-sixty-four-characters-long-xxxxxxxxx\"";
+        let res_hex: Result<ImageHash, _> = serde_json::from_str(json_invalid_hex);
+        assert!(res_hex.is_err());
+    }
+
+    #[test]
+    fn test_item_or_vec_errors() {
+        #[derive(Deserialize, Serialize, Debug, PartialEq)]
+        struct TestItem {
+            #[serde(with = "item_or_vec")]
+            values: Vec<String>,
+        }
+        // Passing an invalid type (number) where string/vec is expected
+        let res: Result<TestItem, _> = serde_yaml::from_str("values: 123");
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_diff_config_invalid_type() {
+        // threshold is a string, not a float
+        let invalid_yaml = "
+required_version: \">=0.1.0\"
+screenshots:
+  - include: \"test.png\"
+    diff:
+      threshold: \"not-a-float\"
+";
+        let result: Result<GleonConfig, _> = serde_yaml::from_str(invalid_yaml);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1010,6 +1140,10 @@ screenshots:
         // 4. Invalid pattern (unclosed character class)
         let invalid: Result<GlobPattern, _> = serde_yaml::from_str("\"test/[a-z\"");
         assert!(invalid.is_err());
+
+        // 5. Invalid pattern via new() directly
+        let invalid_new = GlobPattern::new("test/[a-z");
+        assert!(invalid_new.is_err());
     }
 
     #[test]
