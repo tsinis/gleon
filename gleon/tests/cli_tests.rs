@@ -159,3 +159,11 @@ fn test_quiet_flag_coverage() -> Result<(), Box<dyn std::error::Error>> {
         .stdout(predicates::str::contains("Gleon CLI starting up...").not());
     Ok(())
 }
+
+#[cfg(not(miri))]
+#[test]
+fn test_conflicting_verbose_and_quiet() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.arg("-v").arg("-q").arg("status").assert().failure();
+    Ok(())
+}

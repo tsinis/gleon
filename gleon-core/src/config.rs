@@ -353,7 +353,8 @@ impl GleonConfig {
             }
             Err(error) => return Err(ConfigError::Io(error)),
         };
-        let config: GleonConfig = serde_yaml::from_reader(file)?;
+        let reader = std::io::BufReader::new(file);
+        let config: GleonConfig = serde_yaml::from_reader(reader)?;
         config.validate()?;
         Ok(config)
     }
@@ -388,6 +389,38 @@ impl GleonConfig {
                 return Err(ConfigError::Validation(format!(
                     "screenshots[{i}].include must contain at least one glob pattern"
                 )));
+            }
+            if !(0.0..=1.0).contains(&rule.diff.threshold) {
+                return Err(ConfigError::Validation(format!(
+                    "screenshots[{i}].diff.threshold must be between 0.0 and 1.0 (got {})",
+                    rule.diff.threshold
+                )));
+            }
+            if !(0.0..=1.0).contains(&rule.diff.min_similarity) {
+                return Err(ConfigError::Validation(format!(
+                    "screenshots[{i}].diff.min_similarity must be between 0.0 and 1.0 (got {})",
+                    rule.diff.min_similarity
+                )));
+            }
+            for (j, mask) in rule.masks.iter().enumerate() {
+                for (k, zone) in mask.zones.iter().enumerate() {
+                    match zone.width {
+                        Dimension::Percent(pct) if !(0.0..=100.0).contains(&pct) => {
+                            return Err(ConfigError::Validation(format!(
+                                "screenshots[{i}].masks[{j}].zones[{k}].width percentage must be between 0.0 and 100.0 (got {pct}%)"
+                            )));
+                        }
+                        _ => {}
+                    }
+                    match zone.height {
+                        Dimension::Percent(pct) if !(0.0..=100.0).contains(&pct) => {
+                            return Err(ConfigError::Validation(format!(
+                                "screenshots[{i}].masks[{j}].zones[{k}].height percentage must be between 0.0 and 100.0 (got {pct}%)"
+                            )));
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
         Ok(())
@@ -486,12 +519,19 @@ const DEFAULT_VERSION_REQ: &str = ">=0.1.0";
 
 impl Default for GleonConfig {
     fn default() -> Self {
+        static DEFAULT_VERSION: std::sync::OnceLock<semver::VersionReq> =
+            std::sync::OnceLock::new();
+
         // SAFETY rationale: DEFAULT_VERSION_REQ is a compile-time constant
-        // validated by unit tests. Using expect() here rather than unwrap()
-        // to satisfy clippy::unwrap_used while keeping the panic message clear.
+        // validated by unit tests. Using expect() inside OnceLock to satisfy
+        // clippy::unwrap_used while keeping the panic message clear.
         #[allow(clippy::expect_used)]
-        let required_version = semver::VersionReq::parse(DEFAULT_VERSION_REQ)
-            .expect("DEFAULT_VERSION_REQ must be a valid semver requirement");
+        let required_version = DEFAULT_VERSION
+            .get_or_init(|| {
+                semver::VersionReq::parse(DEFAULT_VERSION_REQ)
+                    .expect("DEFAULT_VERSION_REQ must be a valid semver requirement")
+            })
+            .clone();
 
         Self {
             required_version,
@@ -726,6 +766,50 @@ screenshots:
         assert!(matches!(
             result.unwrap_err(),
             ConfigError::Validation(msg) if msg.contains("include")
+        ));
+    }
+
+    #[test]
+    fn test_validation_invalid_threshold() {
+        let mut config = GleonConfig::default();
+        config.screenshots[0].diff.threshold = 1.5;
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::Validation(msg) if msg.contains("threshold must be between 0.0 and 1.0")
+        ));
+    }
+
+    #[test]
+    fn test_validation_invalid_min_similarity() {
+        let mut config = GleonConfig::default();
+        config.screenshots[0].diff.min_similarity = -0.1;
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::Validation(msg) if msg.contains("min_similarity must be between 0.0 and 1.0")
+        ));
+    }
+
+    #[test]
+    fn test_validation_invalid_mask_percentages() {
+        let mut config = GleonConfig::default();
+        config.screenshots[0].masks = vec![MaskRule {
+            path: GlobPattern::new("src/test.png").unwrap(),
+            zones: vec![Zone {
+                x: 0,
+                y: 0,
+                width: Dimension::Percent(150.0),
+                height: Dimension::Pixels(100),
+            }],
+        }];
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::Validation(msg) if msg.contains("width percentage must be between 0.0 and 100.0")
         ));
     }
 
