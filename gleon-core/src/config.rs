@@ -517,9 +517,8 @@ impl Manifest {
             .into_inner()
             .map_err(|e| ConfigError::Io(e.into_error()))?;
 
-        // Set standard 0o644 permissions before persisting, because tempfile
-        // creates files with 0o600 by default (which might cause PermissionDenied
-        // in shared CI/CD environments).
+        // If the target path already exists, preserve its existing permissions.
+        // Otherwise, retain the temporary file's default secure permissions (e.g., 0o600).
         #[cfg(all(unix, not(miri)))]
         {
             use std::os::unix::fs::PermissionsExt;
