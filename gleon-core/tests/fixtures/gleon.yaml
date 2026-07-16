@@ -1,0 +1,18 @@
+required_version: ">=0.1.0"
+platform: "macos-aarch64"
+exclude:
+  - "**/ignored/**"
+screenshots:
+  - include: "src/login.png"
+    mode: "ssim"
+    diff:
+      threshold: 0.05
+      anti_alias: false
+      min_similarity: 0.98
+    masks:
+      - path: "mask1"
+        zones:
+          - x: 10
+            y: 20
+            width: 100
+            height: "20%"

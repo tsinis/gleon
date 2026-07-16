@@ -1,0 +1,10 @@
+required_version: '>=0.1.0'
+screenshots:
+- include: '**/*.png'
+  mode: pixel
+  diff:
+    threshold: 0.1
+    anti_alias: true
+    min_similarity: 0.95
+  masks: []
+exclude: []

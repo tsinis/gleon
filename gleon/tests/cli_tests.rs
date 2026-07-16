@@ -1,6 +1,7 @@
 #![cfg(not(miri))]
 
 use assert_cmd::Command;
+use predicates::prelude::*;
 
 #[test]
 fn test_help() -> Result<(), Box<dyn std::error::Error>> {
@@ -11,6 +12,17 @@ fn test_help() -> Result<(), Box<dyn std::error::Error>> {
         .stdout(predicates::str::contains(
             "Universal visual regression testing CLI",
         ));
+    Ok(())
+}
+
+#[cfg(not(miri))]
+#[test]
+fn test_no_arguments_shows_help() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.assert()
+        .failure() // clap exits with 2 when required subcommand is missing
+        .stderr(predicates::str::contains("Usage:"))
+        .stderr(predicates::str::contains("Commands:"));
     Ok(())
 }
 
@@ -125,5 +137,44 @@ fn test_gc_placeholder() -> Result<(), Box<dyn std::error::Error>> {
 fn test_invalid_subcommand() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("gleon")?;
     cmd.arg("invalid-command").assert().failure();
+    Ok(())
+}
+
+#[cfg(not(miri))]
+#[test]
+fn test_verbose_flag_coverage() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.arg("-v")
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "Subcommand status is not fully implemented yet",
+        ))
+        .stdout(predicates::str::contains("INFO"))
+        .stdout(predicates::str::contains("Gleon CLI starting up..."));
+    Ok(())
+}
+
+#[cfg(not(miri))]
+#[test]
+fn test_quiet_flag_coverage() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.arg("-q")
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "Subcommand status is not fully implemented yet",
+        ))
+        .stdout(predicates::str::contains("Gleon CLI starting up...").not());
+    Ok(())
+}
+
+#[cfg(not(miri))]
+#[test]
+fn test_conflicting_verbose_and_quiet() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.arg("-v").arg("-q").arg("status").assert().failure();
     Ok(())
 }

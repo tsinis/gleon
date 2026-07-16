@@ -7,8 +7,18 @@ use tracing::info;
 fn main() {
     let cli = Cli::parse();
 
-    // Initialize tracing subscriber for logging (after parse so --help/--version exit cleanly)
-    tracing_subscriber::fmt::init();
+    // Determine the log level based on CLI flags
+    let log_level = if cli.quiet {
+        tracing::Level::WARN
+    } else if cli.verbose {
+        tracing::Level::DEBUG
+    } else {
+        tracing::Level::INFO
+    };
+
+    // Initialize tracing subscriber for logging
+    tracing_subscriber::fmt().with_max_level(log_level).init();
+
     info!("Gleon CLI starting up...");
     match cli.command {
         Commands::Status => {
