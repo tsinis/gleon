@@ -251,6 +251,14 @@ impl PlatformResolver {
         env: &PlatformEnv,
         config: Option<&PlatformConfig>,
     ) -> Result<PlatformInfo, PlatformError> {
+        // Parse GLEON_PLATFORM if set
+        let env_fields = env
+            .platform
+            .as_deref()
+            .map(PlatformFields::parse_key_value)
+            .transpose()
+            .map_err(PlatformError::ParseError)?;
+
         // 1. Check if cli_platform is specified. It acts as a CLI opaque override.
         if let Some(opaque_val) = cli_platform {
             let has_overrides = cli_os.is_some()
@@ -259,20 +267,31 @@ impl PlatformResolver {
                 || !cli_labels.is_empty()
                 || env.os.is_some()
                 || env.arch.is_some()
-                || env.renderer.is_some();
+                || env.renderer.is_some()
+                || env_fields.is_some();
 
             if has_overrides {
                 let mut overrides = Vec::new();
-                if cli_os.is_some() || env.os.is_some() {
+                if cli_os.is_some()
+                    || env.os.is_some()
+                    || env_fields.as_ref().is_some_and(|f| f.os.is_some())
+                {
                     overrides.push("OS");
                 }
-                if cli_arch.is_some() || env.arch.is_some() {
+                if cli_arch.is_some()
+                    || env.arch.is_some()
+                    || env_fields.as_ref().is_some_and(|f| f.arch.is_some())
+                {
                     overrides.push("Architecture");
                 }
-                if cli_renderer.is_some() || env.renderer.is_some() {
+                if cli_renderer.is_some()
+                    || env.renderer.is_some()
+                    || env_fields.as_ref().is_some_and(|f| f.renderer.is_some())
+                {
                     overrides.push("Renderer");
                 }
-                if !cli_labels.is_empty() {
+                if !cli_labels.is_empty() || env_fields.as_ref().is_some_and(|f| f.labels.is_some())
+                {
                     overrides.push("Labels");
                 }
                 return Err(PlatformError::OpaqueConflict(overrides.join(", ")));
@@ -331,14 +350,6 @@ impl PlatformResolver {
                 labels: BTreeMap::new(),
             });
         }
-
-        // Parse GLEON_PLATFORM if set
-        let env_fields = env
-            .platform
-            .as_deref()
-            .map(PlatformFields::parse_key_value)
-            .transpose()
-            .map_err(PlatformError::ParseError)?;
 
         // Resolve fields step-by-step
         let raw_os = env
@@ -913,6 +924,22 @@ labels:
         let labels = vec![("theme".to_string(), "dark".to_string())];
         let res =
             PlatformResolver::resolve(None, None, None, &labels, Some("custom-opaque"), &env, None);
+        assert!(res.is_err());
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains("OS"));
+        assert!(err.contains("Architecture"));
+        assert!(err.contains("Renderer"));
+        assert!(err.contains("Labels"));
+    }
+
+    #[test]
+    fn test_resolve_cli_platform_conflict_with_env_platform() {
+        let env = PlatformEnv {
+            platform: Some("os=linux,arch=x86_64,renderer=chrome,theme=dark".to_string()),
+            ..Default::default()
+        };
+        let res =
+            PlatformResolver::resolve(None, None, None, &[], Some("custom-opaque"), &env, None);
         assert!(res.is_err());
         let err = res.unwrap_err().to_string();
         assert!(err.contains("OS"));

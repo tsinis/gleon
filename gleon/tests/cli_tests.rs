@@ -306,3 +306,16 @@ fn test_status_cli_platform_conflict() -> Result<(), Box<dyn std::error::Error>>
         .stderr(predicates::str::contains("structured overrides"));
     Ok(())
 }
+
+#[test]
+fn test_status_cli_platform_conflict_with_env_platform() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.env("GLEON_PLATFORM", "os=linux,arch=x86_64")
+        .arg("--platform")
+        .arg("custom-opaque")
+        .arg("status")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("opaque platform configuration"));
+    Ok(())
+}
