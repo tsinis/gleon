@@ -10,8 +10,8 @@ pub enum PlatformError {
     InvalidSegment(String),
     #[error("Failed to parse platform string: {0}")]
     ParseError(String),
-    #[error("Label key '{0}' is reserved — use --{0} flag instead")]
-    ReservedLabelKey(String),
+    #[error("Label key '{0}' is reserved — use --{1} flag instead")]
+    ReservedLabelKey(String, String),
 }
 
 /// Resolved platform identity, used for baseline isolation.
@@ -44,7 +44,7 @@ pub struct PlatformFields {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlatformConfig {
-    /// Opaque string — used as-is for the storage key.
+    /// Opaque string — validated and normalized (lowercased) for the storage key.
     Opaque(String),
     /// Structured fields — resolved dynamically.
     Structured(PlatformFields),
@@ -247,10 +247,47 @@ impl PlatformResolver {
         cli_arch: Option<&str>,
         cli_renderer: Option<&str>,
         cli_labels: &[(String, String)],
+        cli_platform: Option<&str>,
         env: &PlatformEnv,
         config: Option<&PlatformConfig>,
     ) -> Result<PlatformInfo, PlatformError> {
-        // 1. Check GLEON_PLATFORM env var. If config is Opaque, env.platform overrides it entirely.
+        // 1. Check if cli_platform is specified. It acts as a CLI opaque override.
+        if let Some(opaque_val) = cli_platform {
+            let has_overrides = cli_os.is_some()
+                || cli_arch.is_some()
+                || cli_renderer.is_some()
+                || !cli_labels.is_empty()
+                || env.os.is_some()
+                || env.arch.is_some()
+                || env.renderer.is_some();
+
+            if has_overrides {
+                let mut overrides = Vec::new();
+                if cli_os.is_some() || env.os.is_some() {
+                    overrides.push("OS");
+                }
+                if cli_arch.is_some() || env.arch.is_some() {
+                    overrides.push("Architecture");
+                }
+                if cli_renderer.is_some() || env.renderer.is_some() {
+                    overrides.push("Renderer");
+                }
+                if !cli_labels.is_empty() {
+                    overrides.push("Labels");
+                }
+                return Err(PlatformError::OpaqueConflict(overrides.join(", ")));
+            }
+
+            let validated_opaque = validate_segment(opaque_val)?;
+            return Ok(PlatformInfo {
+                os: validated_opaque,
+                arch: None,
+                renderer: None,
+                labels: BTreeMap::new(),
+            });
+        }
+
+        // 2. Check GLEON_PLATFORM env var. If config is Opaque, env.platform overrides it entirely.
         // If config is Structured, env.platform only overrides fields specified in it.
         let active_config =
             if env.platform.is_some() && matches!(config, Some(PlatformConfig::Opaque(_))) {
@@ -356,7 +393,11 @@ impl PlatformResolver {
         let mut insert_label = |k: &str, v: &str| -> Result<(), PlatformError> {
             let valid_key = validate_segment(k)?;
             if RESERVED_KEYS.contains(&valid_key.as_str()) {
-                return Err(PlatformError::ReservedLabelKey(valid_key));
+                let suggested = match valid_key.as_str() {
+                    "architecture" => "arch".to_string(),
+                    other => other.to_string(),
+                };
+                return Err(PlatformError::ReservedLabelKey(valid_key, suggested));
             }
             let valid_val = validate_segment(v)?;
             resolved_labels.insert(valid_key, valid_val);
@@ -510,13 +551,13 @@ labels:
         let env = PlatformEnv::default();
 
         // No overrides: succeeds
-        let res = PlatformResolver::resolve(None, None, None, &[], &env, Some(&config));
+        let res = PlatformResolver::resolve(None, None, None, &[], None, &env, Some(&config));
         assert!(res.is_ok());
         assert_eq!(res.unwrap().os, "custom-opaque");
 
         // Override architecture: conflict
         let res_conflict =
-            PlatformResolver::resolve(None, Some("x86_64"), None, &[], &env, Some(&config));
+            PlatformResolver::resolve(None, Some("x86_64"), None, &[], None, &env, Some(&config));
         assert!(res_conflict.is_err());
         assert!(matches!(
             res_conflict.unwrap_err(),
@@ -535,8 +576,8 @@ labels:
 
         // 1. Config only (no CLI, no Env) -> uses config
         let empty_env = PlatformEnv::default();
-        let res =
-            PlatformResolver::resolve(None, None, None, &[], &empty_env, Some(&config)).unwrap();
+        let res = PlatformResolver::resolve(None, None, None, &[], None, &empty_env, Some(&config))
+            .unwrap();
         assert_eq!(res.os, "config-os");
         assert_eq!(res.arch.as_deref(), Some("config-arch"));
         assert_eq!(res.renderer.as_deref(), Some("config-renderer"));
@@ -547,6 +588,7 @@ labels:
             Some("cli-arch"),
             Some("cli-renderer"),
             &[],
+            None,
             &empty_env,
             Some(&config),
         )
@@ -565,6 +607,7 @@ labels:
             Some("cli-arch"),
             Some("cli-renderer"),
             &[],
+            None,
             &env_platform,
             Some(&config),
         )
@@ -586,6 +629,7 @@ labels:
             Some("cli-arch"),
             Some("cli-renderer"),
             &[],
+            None,
             &specific_env,
             Some(&config),
         )
@@ -601,7 +645,7 @@ labels:
             os: Some("linux".into()),
             ..Default::default()
         };
-        let res = PlatformResolver::resolve(None, None, None, &[], &env, Some(&config));
+        let res = PlatformResolver::resolve(None, None, None, &[], None, &env, Some(&config));
         assert!(matches!(res.unwrap_err(), PlatformError::OpaqueConflict(_)));
     }
 
@@ -612,7 +656,7 @@ labels:
             platform: Some("os=override".into()),
             ..Default::default()
         };
-        let res = PlatformResolver::resolve(None, None, None, &[], &env, Some(&config));
+        let res = PlatformResolver::resolve(None, None, None, &[], None, &env, Some(&config));
         assert!(res.is_ok());
         assert_eq!(res.unwrap().os, "override");
     }
@@ -621,11 +665,19 @@ labels:
     fn test_reserved_label_key_rejected() {
         let env = PlatformEnv::default();
         let labels = vec![("os".into(), "linux".into())];
-        let res = PlatformResolver::resolve(None, None, None, &labels, &env, None);
-        assert!(matches!(
+        let res = PlatformResolver::resolve(None, None, None, &labels, None, &env, None);
+        assert_eq!(
             res.unwrap_err(),
-            PlatformError::ReservedLabelKey(_)
-        ));
+            PlatformError::ReservedLabelKey("os".to_string(), "os".to_string())
+        );
+
+        // Test synonym mapping
+        let labels_syn = vec![("architecture".into(), "x86_64".into())];
+        let res_syn = PlatformResolver::resolve(None, None, None, &labels_syn, None, &env, None);
+        assert_eq!(
+            res_syn.unwrap_err(),
+            PlatformError::ReservedLabelKey("architecture".to_string(), "arch".to_string())
+        );
     }
 
     #[test]
@@ -758,7 +810,7 @@ labels:
     fn test_opaque_validation_fails_on_invalid() {
         let config = PlatformConfig::Opaque("mac os".to_string());
         let env = PlatformEnv::default();
-        let res = PlatformResolver::resolve(None, None, None, &[], &env, Some(&config));
+        let res = PlatformResolver::resolve(None, None, None, &[], None, &env, Some(&config));
         assert!(res.is_err());
         assert!(matches!(res.unwrap_err(), PlatformError::InvalidSegment(_)));
     }
@@ -767,16 +819,19 @@ labels:
     fn test_reserved_label_case_insensitive_rejected() {
         let env = PlatformEnv::default();
         let labels = vec![("OS".to_string(), "linux".to_string())];
-        let res = PlatformResolver::resolve(None, None, None, &labels, &env, None);
-        assert!(res.is_err());
-        assert!(matches!(
+        let res = PlatformResolver::resolve(None, None, None, &labels, None, &env, None);
+        assert_eq!(
             res.unwrap_err(),
-            PlatformError::ReservedLabelKey(_)
-        ));
+            PlatformError::ReservedLabelKey("os".to_string(), "os".to_string())
+        );
 
         let labels_mixed = vec![("Platform".to_string(), "macos".to_string())];
-        let res_mixed = PlatformResolver::resolve(None, None, None, &labels_mixed, &env, None);
-        assert!(res_mixed.is_err());
+        let res_mixed =
+            PlatformResolver::resolve(None, None, None, &labels_mixed, None, &env, None);
+        assert_eq!(
+            res_mixed.unwrap_err(),
+            PlatformError::ReservedLabelKey("platform".to_string(), "platform".to_string())
+        );
     }
 
     #[test]
@@ -794,7 +849,8 @@ labels:
             ..Default::default()
         };
 
-        let res = PlatformResolver::resolve(None, None, None, &[], &env, Some(&config)).unwrap();
+        let res =
+            PlatformResolver::resolve(None, None, None, &[], None, &env, Some(&config)).unwrap();
         assert_eq!(res.os, "linux");
         assert_eq!(res.arch.as_deref(), Some("x86_64"));
         assert_eq!(res.renderer.as_deref(), Some("chrome"));
@@ -810,7 +866,53 @@ labels:
             ..Default::default()
         };
         let labels = vec![("theme".to_string(), "dark".to_string())];
-        let res = PlatformResolver::resolve(None, None, None, &labels, &env, Some(&config));
+        let res = PlatformResolver::resolve(None, None, None, &labels, None, &env, Some(&config));
+        assert!(res.is_err());
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains("OS"));
+        assert!(err.contains("Architecture"));
+        assert!(err.contains("Renderer"));
+        assert!(err.contains("Labels"));
+    }
+
+    #[test]
+    fn test_resolve_cli_platform_success() {
+        let env = PlatformEnv::default();
+        let res =
+            PlatformResolver::resolve(None, None, None, &[], Some("custom-opaque"), &env, None)
+                .unwrap();
+        assert_eq!(res.os, "custom-opaque");
+        assert_eq!(res.arch, None);
+        assert_eq!(res.renderer, None);
+    }
+
+    #[test]
+    fn test_resolve_cli_platform_conflict() {
+        let env = PlatformEnv::default();
+        let res = PlatformResolver::resolve(
+            None,
+            Some("x86_64"),
+            None,
+            &[],
+            Some("custom-opaque"),
+            &env,
+            None,
+        );
+        assert!(res.is_err());
+        assert!(matches!(res.unwrap_err(), PlatformError::OpaqueConflict(_)));
+    }
+
+    #[test]
+    fn test_resolve_cli_platform_conflict_all() {
+        let env = PlatformEnv {
+            os: Some("linux".to_string()),
+            arch: Some("x86_64".to_string()),
+            renderer: Some("chrome".to_string()),
+            ..Default::default()
+        };
+        let labels = vec![("theme".to_string(), "dark".to_string())];
+        let res =
+            PlatformResolver::resolve(None, None, None, &labels, Some("custom-opaque"), &env, None);
         assert!(res.is_err());
         let err = res.unwrap_err().to_string();
         assert!(err.contains("OS"));

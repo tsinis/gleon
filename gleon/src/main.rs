@@ -31,10 +31,10 @@ fn main() {
             Ok(ctx) => {
                 let info = ctx.platform;
                 info!("Platform resolved successfully");
-                println!(
-                    "Key: {}",
-                    info.to_key().unwrap_or_else(|e| format!("ERROR: {}", e))
-                );
+                let key = info
+                    .to_key()
+                    .expect("PlatformInfo is guaranteed to produce a key");
+                println!("Key: {}", key);
                 println!("OS: {}", info.os);
                 if let Some(ref arch) = info.arch {
                     println!("Architecture: {}", arch);

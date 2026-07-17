@@ -69,7 +69,7 @@ fn test_status_minimal_with_overrides() -> Result<(), Box<dyn std::error::Error>
     let mut cmd = Command::cargo_bin("gleon")?;
     cmd.arg("--config")
         .arg("tests/fixtures/platform/minimal.yaml")
-        .arg("--platform")
+        .arg("--os")
         .arg("windows")
         .arg("--arch")
         .arg("x86_64")
@@ -86,7 +86,7 @@ fn test_status_opaque_conflict_error() -> Result<(), Box<dyn std::error::Error>>
     let mut cmd = Command::cargo_bin("gleon")?;
     cmd.arg("--config")
         .arg("tests/fixtures/platform/macos-opaque.yaml")
-        .arg("--platform")
+        .arg("--os")
         .arg("linux")
         .arg("status")
         .assert()
@@ -277,5 +277,32 @@ fn test_status_with_env_vars() -> Result<(), Box<dyn std::error::Error>> {
         .stdout(predicates::str::contains("Architecture: x86_64"))
         .stdout(predicates::str::contains("Renderer: firefox"))
         .stdout(predicates::str::contains("Key: 5:linux-6:x86_64-7:firefox"));
+    Ok(())
+}
+
+#[test]
+fn test_status_cli_platform_success() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.arg("--platform")
+        .arg("custom-opaque")
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Key: 13:custom-opaque"))
+        .stdout(predicates::str::contains("OS: custom-opaque"));
+    Ok(())
+}
+
+#[test]
+fn test_status_cli_platform_conflict() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.arg("--platform")
+        .arg("custom-opaque")
+        .arg("--arch")
+        .arg("x86_64")
+        .arg("status")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("structured overrides"));
     Ok(())
 }

@@ -15,7 +15,7 @@ pub struct Cli {
     pub branch: Option<String>,
 
     /// Override the OS component of the platform context (e.g. macos, linux, windows)
-    #[arg(long = "os", visible_alias = "platform", global = true)]
+    #[arg(long = "os", global = true)]
     pub os: Option<String>,
 
     /// Override the CPU architecture component of the platform context (e.g. aarch64, x86_64)
@@ -29,6 +29,10 @@ pub struct Cli {
     /// Additional isolation labels (repeatable: --label key=val)
     #[arg(long = "label", global = true, value_parser = parse_label)]
     pub labels: Vec<(String, String)>,
+
+    /// Override the active platform with an opaque custom string
+    #[arg(short = 'p', long = "platform", global = true)]
+    pub platform: Option<String>,
 
     /// Enable verbose logging (DEBUG level)
     #[arg(short = 'v', long = "verbose", global = true, conflicts_with = "quiet")]
@@ -118,7 +122,7 @@ mod tests {
     fn test_parse_platform_flags() -> Result<(), clap::Error> {
         let args = [
             "gleon",
-            "--platform",
+            "--os",
             "linux",
             "--arch",
             "x86_64",
@@ -141,6 +145,15 @@ mod tests {
                 ("locale".to_string(), "en".to_string())
             ]
         );
+        assert_eq!(cli.command, Commands::Stage);
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_legacy_platform_flag() -> Result<(), clap::Error> {
+        let args = ["gleon", "--platform", "custom-opaque", "stage"];
+        let cli = Cli::try_parse_from(args)?;
+        assert_eq!(cli.platform, Some("custom-opaque".to_string()));
         assert_eq!(cli.command, Commands::Stage);
         Ok(())
     }
