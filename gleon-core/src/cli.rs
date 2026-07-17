@@ -48,11 +48,11 @@ pub struct Cli {
 }
 
 pub(crate) fn parse_label(s: &str) -> Result<(String, String), String> {
-    let pos = s
-        .find('=')
+    let (key, val) = s
+        .split_once('=')
         .ok_or_else(|| format!("invalid label: no '=' found in '{}'", s))?;
-    let key = s[..pos].trim().to_string();
-    let val = s[pos + 1..].trim().to_string();
+    let key = key.trim().to_string();
+    let val = val.trim().to_string();
     if key.is_empty() {
         return Err("invalid label: key cannot be empty".to_string());
     }

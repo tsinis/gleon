@@ -296,11 +296,12 @@ impl PlatformResolver {
         }
 
         // Parse GLEON_PLATFORM if set
-        let env_fields = if let Some(ref s) = env.platform {
-            Some(PlatformFields::parse_key_value(s).map_err(PlatformError::ParseError)?)
-        } else {
-            None
-        };
+        let env_fields = env
+            .platform
+            .as_deref()
+            .map(PlatformFields::parse_key_value)
+            .transpose()
+            .map_err(PlatformError::ParseError)?;
 
         // Resolve fields step-by-step
         let raw_os = env
@@ -469,17 +470,38 @@ labels:
   theme: dark
 ";
         let config_struct: PlatformConfig = serde_yaml::from_str(yaml_struct).unwrap();
-        if let PlatformConfig::Structured(fields) = config_struct {
-            assert_eq!(fields.os.as_deref(), Some("linux"));
-            assert_eq!(fields.arch.as_deref(), Some("x86_64"));
-            assert_eq!(fields.renderer.as_deref(), Some("chrome"));
-            assert_eq!(
-                fields.labels.unwrap().get("theme").map(|s| s.as_str()),
-                Some("dark")
-            );
-        } else {
-            panic!("Expected structured config");
-        }
+        assert_eq!(
+            config_struct,
+            PlatformConfig::Structured(PlatformFields {
+                os: Some("linux".to_string()),
+                arch: Some("x86_64".to_string()),
+                renderer: Some("chrome".to_string()),
+                labels: {
+                    let mut map = BTreeMap::new();
+                    map.insert("theme".to_string(), "dark".to_string());
+                    Some(map)
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn test_platform_config_deserialization_from_value() {
+        use serde::Deserialize;
+        let val = serde_json::Value::String("custom-opaque".to_string());
+        let config = PlatformConfig::deserialize(val).unwrap();
+        assert_eq!(config, PlatformConfig::Opaque("custom-opaque".to_string()));
+    }
+
+    #[test]
+    fn test_platform_config_expecting() {
+        use serde::Deserialize;
+        let val = serde_json::Value::Number(42.into());
+        let err = PlatformConfig::deserialize(val).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("a string or a map representing structured platform config")
+        );
     }
 
     #[test]
@@ -766,7 +788,7 @@ labels:
             labels: None,
         });
 
-        // env.platform specifies only renderer=chrome. Config's os/arch should be preserved.
+        // env.platform specifies only renderer=chrome. Config os/arch should be preserved.
         let env = PlatformEnv {
             platform: Some("renderer=chrome".to_string()),
             ..Default::default()

@@ -24,7 +24,10 @@ fn main() {
 
     info!("Gleon CLI starting up...");
     match cli.command {
-        Commands::Status => match gleon_core::context::ResolvedContext::from_cli(&cli) {
+        Commands::Status => match gleon_core::context::ResolvedContext::from_cli(
+            &cli,
+            &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        ) {
             Ok(ctx) => {
                 let info = ctx.platform;
                 info!("Platform resolved successfully");
