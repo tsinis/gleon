@@ -268,7 +268,9 @@ impl PlatformResolver {
                 || env.os.is_some()
                 || env.arch.is_some()
                 || env.renderer.is_some()
-                || env_fields.is_some();
+                || env_fields.as_ref().is_some_and(|f| {
+                    f.os.is_some() || f.arch.is_some() || f.renderer.is_some() || f.labels.is_some()
+                });
 
             if has_overrides {
                 let mut overrides = Vec::new();
@@ -946,5 +948,21 @@ labels:
         assert!(err.contains("Architecture"));
         assert!(err.contains("Renderer"));
         assert!(err.contains("Labels"));
+    }
+
+    #[test]
+    fn test_resolve_cli_platform_success_with_empty_env_platform() {
+        let env = PlatformEnv {
+            platform: Some("".to_string()),
+            ..Default::default()
+        };
+        let res =
+            PlatformResolver::resolve(None, None, None, &[], Some("custom-opaque"), &env, None);
+        assert!(res.is_ok());
+        let info = res.unwrap();
+        assert_eq!(info.os, "custom-opaque");
+        assert_eq!(info.arch, None);
+        assert_eq!(info.renderer, None);
+        assert!(info.labels.is_empty());
     }
 }
