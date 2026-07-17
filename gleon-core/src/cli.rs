@@ -14,7 +14,23 @@ pub struct Cli {
     #[arg(short = 'b', long = "branch", global = true)]
     pub branch: Option<String>,
 
-    /// Override the active platform context (e.g. macos-aarch64)
+    /// Override the OS component of the platform context (e.g. macos, linux, windows)
+    #[arg(long = "os", global = true)]
+    pub os: Option<String>,
+
+    /// Override the CPU architecture component of the platform context (e.g. aarch64, x86_64)
+    #[arg(long = "arch", global = true)]
+    pub arch: Option<String>,
+
+    /// Override the renderer identifier of the platform context (e.g. flutter-3.22, chrome-126)
+    #[arg(long = "renderer", global = true)]
+    pub renderer: Option<String>,
+
+    /// Additional isolation labels (repeatable: --label key=val)
+    #[arg(long = "label", global = true, value_parser = parse_label)]
+    pub labels: Vec<(String, String)>,
+
+    /// Override the active platform with an opaque custom string
     #[arg(short = 'p', long = "platform", global = true)]
     pub platform: Option<String>,
 
@@ -26,9 +42,28 @@ pub struct Cli {
     #[arg(short = 'q', long = "quiet", global = true)]
     pub quiet: bool,
 
+    /// Path to a custom configuration file
+    #[arg(short = 'c', long = "config", global = true)]
+    pub config: Option<std::path::PathBuf>,
+
     /// The subcommand to execute
     #[command(subcommand)]
     pub command: Commands,
+}
+
+pub(crate) fn parse_label(s: &str) -> Result<(String, String), String> {
+    let (key, val) = s
+        .split_once('=')
+        .ok_or_else(|| format!("invalid label: no '=' found in '{}'", s))?;
+    let key = key.trim().to_string();
+    let val = val.trim().to_string();
+    if key.is_empty() {
+        return Err("invalid label: key cannot be empty".to_string());
+    }
+    if val.is_empty() {
+        return Err("invalid label: value cannot be empty".to_string());
+    }
+    Ok((key, val))
 }
 
 /// The available subcommands in Gleon.
@@ -84,20 +119,42 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_platform_flag() -> Result<(), clap::Error> {
-        let args = ["gleon", "-p", "ios-17", "stage"];
+    fn test_parse_platform_flags() -> Result<(), clap::Error> {
+        let args = [
+            "gleon",
+            "--os",
+            "linux",
+            "--arch",
+            "x86_64",
+            "--renderer",
+            "chrome",
+            "--label",
+            "theme=dark",
+            "--label",
+            "locale=en",
+            "stage",
+        ];
         let cli = Cli::try_parse_from(args)?;
-        assert_eq!(cli.platform, Some("ios-17".to_string()));
+        assert_eq!(cli.os, Some("linux".to_string()));
+        assert_eq!(cli.arch, Some("x86_64".to_string()));
+        assert_eq!(cli.renderer, Some("chrome".to_string()));
+        assert_eq!(
+            cli.labels,
+            vec![
+                ("theme".to_string(), "dark".to_string()),
+                ("locale".to_string(), "en".to_string())
+            ]
+        );
         assert_eq!(cli.command, Commands::Stage);
         Ok(())
     }
 
     #[test]
-    fn test_parse_platform_flag_long() -> Result<(), clap::Error> {
-        let args = ["gleon", "--platform", "android-33", "gc"];
+    fn test_parse_legacy_platform_flag() -> Result<(), clap::Error> {
+        let args = ["gleon", "--platform", "custom-opaque", "stage"];
         let cli = Cli::try_parse_from(args)?;
-        assert_eq!(cli.platform, Some("android-33".to_string()));
-        assert_eq!(cli.command, Commands::Gc);
+        assert_eq!(cli.platform, Some("custom-opaque".to_string()));
+        assert_eq!(cli.command, Commands::Stage);
         Ok(())
     }
 
@@ -147,5 +204,13 @@ mod tests {
         let args = ["gleon", "--invalid-flag", "status"];
         let result = Cli::try_parse_from(args);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_label_errors() {
+        assert!(parse_label("no_equals_sign").is_err());
+        assert!(parse_label("=value").is_err());
+        assert!(parse_label("key=").is_err());
+        assert!(parse_label("  =  ").is_err());
     }
 }

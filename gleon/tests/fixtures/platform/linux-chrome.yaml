@@ -1,0 +1,10 @@
+required_version: ">=0.1.0"
+platform:
+  os: "linux"
+  arch: "x86_64"
+  renderer: "chrome"
+  labels:
+    theme: "dark"
+    locale: "en_US"
+screenshots:
+  - include: "**/*.png"

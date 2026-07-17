@@ -1,5 +1,6 @@
 //! Configuration and manifest models for Gleon.
 
+use crate::platform::PlatformConfig;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -212,7 +213,7 @@ pub struct GleonConfig {
     pub required_version: semver::VersionReq,
     /// The platform identifier for which these rules apply (e.g. macos-aarch64).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub platform: Option<String>,
+    pub platform: Option<PlatformConfig>,
     /// List of screenshot match rules.
     pub screenshots: Vec<ScreenshotRule>,
     /// Globs of paths to exclude from testing.
@@ -544,7 +545,6 @@ impl Manifest {
             ConfigError::Io(e.error)
         })?;
 
-        // Sync the parent directory to ensure the rename is durable.
         if let Some(dir) = path.parent().and_then(|p| std::fs::File::open(p).ok()) {
             let _ = dir.sync_all();
         }
@@ -663,7 +663,10 @@ mod tests {
             config.required_version,
             VersionReq::parse(">=0.1.0").unwrap()
         );
-        assert_eq!(config.platform.as_deref(), Some("macos-aarch64"));
+        assert_eq!(
+            config.platform,
+            Some(PlatformConfig::Opaque("macos-aarch64".to_string()))
+        );
         assert_eq!(config.exclude[0].as_str(), "**/ignored/**");
         assert_eq!(config.screenshots.len(), 1);
 

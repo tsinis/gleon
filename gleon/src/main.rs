@@ -16,14 +16,44 @@ fn main() {
         tracing::Level::INFO
     };
 
-    // Initialize tracing subscriber for logging
-    tracing_subscriber::fmt().with_max_level(log_level).init();
+    // Initialize tracing subscriber for logging, directing log output to stderr
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_max_level(log_level)
+        .init();
 
     info!("Gleon CLI starting up...");
     match cli.command {
-        Commands::Status => {
-            println!("Subcommand status is not fully implemented yet");
-        }
+        Commands::Status => match gleon_core::context::ResolvedContext::from_cli(
+            &cli,
+            &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        ) {
+            Ok(ctx) => {
+                let info = ctx.platform;
+                info!("Platform resolved successfully");
+                let key = info
+                    .to_key()
+                    .expect("PlatformInfo is guaranteed to produce a key");
+                println!("Key: {}", key);
+                println!("OS: {}", info.os);
+                if let Some(ref arch) = info.arch {
+                    println!("Architecture: {}", arch);
+                }
+                if let Some(ref r) = info.renderer {
+                    println!("Renderer: {}", r);
+                }
+                if !info.labels.is_empty() {
+                    println!("Labels:");
+                    for (k, v) in info.labels {
+                        println!("  {} = {}", k, v);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Error resolving platform: {}", e);
+                std::process::exit(1);
+            }
+        },
         Commands::Stage => {
             println!("Subcommand stage is not fully implemented yet");
         }
