@@ -115,12 +115,11 @@ impl PlatformFields {
         let mut fields = Self::default();
         if s.contains('=') {
             for part in s.split(',') {
-                let mut kv = part.splitn(2, '=');
-                let key = kv.next().ok_or_else(|| "Empty key".to_string())?.trim();
-                let val = kv
-                    .next()
-                    .ok_or_else(|| format!("Missing value for key {}", key))?
-                    .trim();
+                let (key, val) = part
+                    .split_once('=')
+                    .ok_or_else(|| format!("invalid format: no '=' found in '{}'", part))?;
+                let key = key.trim();
+                let val = val.trim();
 
                 if val.is_empty() {
                     return Err(format!("Empty value for key '{}'", key));
@@ -136,15 +135,11 @@ impl PlatformFields {
                     }
                 }
             }
+        } else if let Some((os, arch)) = s.split_once('-') {
+            fields.os = Some(os.to_string());
+            fields.arch = Some(arch.to_string());
         } else {
-            // Simple string fallback: e.g. "macos-aarch64"
-            if s.contains('-') {
-                let parts: Vec<&str> = s.splitn(2, '-').collect();
-                fields.os = Some(parts[0].to_string());
-                fields.arch = Some(parts[1].to_string());
-            } else {
-                fields.os = Some(s.to_string());
-            }
+            fields.os = Some(s.to_string());
         }
 
         Ok(fields)

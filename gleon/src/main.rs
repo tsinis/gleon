@@ -24,36 +24,50 @@ fn main() {
 
     info!("Gleon CLI starting up...");
     match cli.command {
-        Commands::Status => match gleon_core::context::ResolvedContext::from_cli(
-            &cli,
-            &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-        ) {
-            Ok(ctx) => {
-                let info = ctx.platform;
-                info!("Platform resolved successfully");
-                let key = info
-                    .to_key()
-                    .expect("PlatformInfo is guaranteed to produce a key");
-                println!("Key: {}", key);
-                println!("OS: {}", info.os);
-                if let Some(ref arch) = info.arch {
-                    println!("Architecture: {}", arch);
+        Commands::Status => {
+            let current_dir =
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let branch = match gleon_core::git::GitResolver::resolve_branch_impl(
+                cli.branch.as_deref(),
+                &current_dir,
+                &gleon_core::git::OsEnv,
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("Error resolving branch: {}", e);
+                    std::process::exit(1);
                 }
-                if let Some(ref r) = info.renderer {
-                    println!("Renderer: {}", r);
-                }
-                if !info.labels.is_empty() {
-                    println!("Labels:");
-                    for (k, v) in info.labels {
-                        println!("  {} = {}", k, v);
+            };
+
+            match gleon_core::context::ResolvedContext::from_cli(&cli, &current_dir) {
+                Ok(ctx) => {
+                    let info = ctx.platform;
+                    info!("Platform resolved successfully");
+                    let key = info
+                        .to_key()
+                        .expect("PlatformInfo is guaranteed to produce a key");
+                    println!("Branch: {}", branch);
+                    println!("Key: {}", key);
+                    println!("OS: {}", info.os);
+                    if let Some(ref arch) = info.arch {
+                        println!("Architecture: {}", arch);
+                    }
+                    if let Some(ref r) = info.renderer {
+                        println!("Renderer: {}", r);
+                    }
+                    if !info.labels.is_empty() {
+                        println!("Labels:");
+                        for (k, v) in info.labels {
+                            println!("  {} = {}", k, v);
+                        }
                     }
                 }
+                Err(e) => {
+                    eprintln!("Error resolving platform: {}", e);
+                    std::process::exit(1);
+                }
             }
-            Err(e) => {
-                eprintln!("Error resolving platform: {}", e);
-                std::process::exit(1);
-            }
-        },
+        }
         Commands::Stage => {
             println!("Subcommand stage is not fully implemented yet");
         }

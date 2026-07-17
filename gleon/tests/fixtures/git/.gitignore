@@ -1,0 +1,8 @@
+# Ignore goldens
+**/goldens/**/*.png
+
+# Ignore scratch
+scratch/
+
+# Ignore specific file
+secret.txt
