@@ -192,4 +192,12 @@ mod tests {
         let result = Cli::try_parse_from(args);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_parse_label_errors() {
+        assert!(parse_label("no_equals_sign").is_err());
+        assert!(parse_label("=value").is_err());
+        assert!(parse_label("key=").is_err());
+        assert!(parse_label("  =  ").is_err());
+    }
 }

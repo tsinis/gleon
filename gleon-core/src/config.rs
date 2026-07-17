@@ -545,11 +545,8 @@ impl Manifest {
             ConfigError::Io(e.error)
         })?;
 
-        // Sync the parent directory to ensure the rename is durable.
-        if let Some(dir) = path.parent().and_then(|p| std::fs::File::open(p).ok())
-            && let Err(e) = dir.sync_all()
-        {
-            tracing::debug!("Failed to sync parent directory: {}", e);
+        if let Some(dir) = path.parent().and_then(|p| std::fs::File::open(p).ok()) {
+            let _ = dir.sync_all();
         }
 
         tracing::debug!("Manifest saved successfully to {:?}", path);

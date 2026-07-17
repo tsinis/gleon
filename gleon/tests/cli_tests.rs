@@ -45,7 +45,7 @@ fn test_status_linux_chrome() -> Result<(), Box<dyn std::error::Error>> {
         .success()
         .stderr(predicates::str::contains("Platform resolved successfully"))
         .stdout(predicates::str::contains(
-            "Key: linux-x86_64-chrome-locale.en_us-theme.dark",
+            "Key: 5:linux-6:x86_64-6:chrome-6:locale=5:en_us-5:theme=4:dark",
         ))
         .stdout(predicates::str::contains("OS: linux"));
     Ok(())
@@ -60,7 +60,7 @@ fn test_status_macos_opaque() -> Result<(), Box<dyn std::error::Error>> {
         .assert()
         .success()
         .stderr(predicates::str::contains("Platform resolved successfully"))
-        .stdout(predicates::str::contains("Key: macos-aarch64"));
+        .stdout(predicates::str::contains("Key: 13:macos-aarch64"));
     Ok(())
 }
 
@@ -77,7 +77,7 @@ fn test_status_minimal_with_overrides() -> Result<(), Box<dyn std::error::Error>
         .assert()
         .success()
         .stderr(predicates::str::contains("Platform resolved successfully"))
-        .stdout(predicates::str::contains("Key: windows-x86_64"));
+        .stdout(predicates::str::contains("Key: 7:windows-6:x86_64"));
     Ok(())
 }
 
@@ -260,5 +260,22 @@ fn test_quiet_flag_coverage() -> Result<(), Box<dyn std::error::Error>> {
 fn test_conflicting_verbose_and_quiet() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("gleon")?;
     cmd.arg("-v").arg("-q").arg("status").assert().failure();
+    Ok(())
+}
+
+#[test]
+fn test_status_with_env_vars() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.env("GLEON_OS", "linux")
+        .env("GLEON_ARCH", "x86_64")
+        .env("GLEON_RENDERER", "firefox")
+        .env("GLEON_PLATFORM", "os=linux,arch=x86_64,renderer=firefox")
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("OS: linux"))
+        .stdout(predicates::str::contains("Architecture: x86_64"))
+        .stdout(predicates::str::contains("Renderer: firefox"))
+        .stdout(predicates::str::contains("Key: 5:linux-6:x86_64-7:firefox"));
     Ok(())
 }

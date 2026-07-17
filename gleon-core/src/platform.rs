@@ -185,20 +185,20 @@ impl PlatformInfo {
             PlatformError::InvalidSegment(format!("OS '{}' is empty or invalid", self.os))
         })?;
 
-        let mut parts = vec![os];
+        let mut parts = vec![format!("{}:{}", os.len(), os)];
 
         if let Some(ref arch) = self.arch {
             let clean_arch = validate_segment(arch).map_err(|_| {
                 PlatformError::InvalidSegment(format!("Architecture '{}' is invalid", arch))
             })?;
-            parts[0] = format!("{}-{}", parts[0], clean_arch);
+            parts.push(format!("{}:{}", clean_arch.len(), clean_arch));
         }
 
         if let Some(ref renderer) = self.renderer {
             let clean_renderer = validate_segment(renderer).map_err(|_| {
                 PlatformError::InvalidSegment(format!("Renderer '{}' is invalid", renderer))
             })?;
-            parts.push(clean_renderer);
+            parts.push(format!("{}:{}", clean_renderer.len(), clean_renderer));
         }
 
         for (k, v) in &self.labels {
@@ -211,7 +211,7 @@ impl PlatformInfo {
                     v, k
                 ))
             })?;
-            parts.push(format!("{}.{}", key, val));
+            parts.push(format!("{}:{}={}:{}", key.len(), key, val.len(), val));
         }
 
         Ok(parts.join("-"))
@@ -250,8 +250,14 @@ impl PlatformResolver {
         env: &PlatformEnv,
         config: Option<&PlatformConfig>,
     ) -> Result<PlatformInfo, PlatformError> {
-        // 1. Check GLEON_PLATFORM env var. It overrides the config entirely.
-        let active_config = if env.platform.is_some() { None } else { config };
+        // 1. Check GLEON_PLATFORM env var. If config is Opaque, env.platform overrides it entirely.
+        // If config is Structured, env.platform only overrides fields specified in it.
+        let active_config =
+            if env.platform.is_some() && matches!(config, Some(PlatformConfig::Opaque(_))) {
+                None
+            } else {
+                config
+            };
 
         // 2. Check for Opaque config conflict.
         if let Some(PlatformConfig::Opaque(opaque_val)) = active_config {
@@ -280,8 +286,9 @@ impl PlatformResolver {
                 return Err(PlatformError::OpaqueConflict(overrides.join(", ")));
             }
 
+            let validated_opaque = validate_segment(opaque_val)?;
             return Ok(PlatformInfo {
-                os: opaque_val.clone(),
+                os: validated_opaque,
                 arch: None,
                 renderer: None,
                 labels: BTreeMap::new(),
@@ -346,10 +353,10 @@ impl PlatformResolver {
         const RESERVED_KEYS: &[&str] = &["os", "platform", "arch", "architecture", "renderer"];
 
         let mut insert_label = |k: &str, v: &str| -> Result<(), PlatformError> {
-            if RESERVED_KEYS.contains(&k) {
-                return Err(PlatformError::ReservedLabelKey(k.to_string()));
-            }
             let valid_key = validate_segment(k)?;
+            if RESERVED_KEYS.contains(&valid_key.as_str()) {
+                return Err(PlatformError::ReservedLabelKey(valid_key));
+            }
             let valid_val = validate_segment(v)?;
             resolved_labels.insert(valid_key, valid_val);
             Ok(())
@@ -403,7 +410,7 @@ mod tests {
             renderer: None,
             labels: BTreeMap::new(),
         };
-        assert_eq!(info.to_key().unwrap(), "macos-aarch64");
+        assert_eq!(info.to_key().unwrap(), "5:macos-7:aarch64");
 
         let mut labels = BTreeMap::new();
         labels.insert("theme".to_string(), "dark".to_string());
@@ -418,7 +425,7 @@ mod tests {
         // Labels are sorted alphabetically: locale, theme
         assert_eq!(
             info_rich.to_key().unwrap(),
-            "linux-x86_64-flutter-3.22-locale.en_us-theme.dark"
+            "5:linux-6:x86_64-12:flutter-3.22-6:locale=5:en_us-5:theme=4:dark"
         );
     }
 
@@ -670,5 +677,123 @@ labels:
             labels,
         };
         assert!(info.to_key().is_err());
+    }
+
+    #[test]
+    fn test_platform_config_serialization() {
+        let opaque = PlatformConfig::Opaque("custom-opaque".to_string());
+        let serialized_opaque = serde_yaml::to_string(&opaque).unwrap();
+        assert_eq!(serialized_opaque.trim(), "custom-opaque");
+
+        let structured = PlatformConfig::Structured(PlatformFields {
+            os: Some("linux".to_string()),
+            arch: Some("x86_64".to_string()),
+            renderer: None,
+            labels: None,
+        });
+        let serialized_struct = serde_yaml::to_string(&structured).unwrap();
+        assert!(serialized_struct.contains("os: linux"));
+        assert!(serialized_struct.contains("arch: x86_64"));
+    }
+
+    #[test]
+    fn test_platform_config_json_deserialization() {
+        let json = "\"custom-opaque\"";
+        let config: PlatformConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config, PlatformConfig::Opaque("custom-opaque".to_string()));
+    }
+
+    #[test]
+    fn test_parse_key_value_edge_cases() {
+        let empty = PlatformFields::parse_key_value("").unwrap();
+        assert_eq!(empty, PlatformFields::default());
+
+        let simple_no_hyphen = PlatformFields::parse_key_value("macos").unwrap();
+        assert_eq!(simple_no_hyphen.os.as_deref(), Some("macos"));
+        assert_eq!(simple_no_hyphen.arch, None);
+    }
+
+    #[test]
+    fn test_to_key_length_prefixed_format() {
+        let info = PlatformInfo {
+            os: "linux".to_string(),
+            arch: Some("x86_64".to_string()),
+            renderer: Some("chrome".to_string()),
+            labels: {
+                let mut map = BTreeMap::new();
+                map.insert("theme".to_string(), "dark".to_string());
+                map
+            },
+        };
+        // Expect: 5:linux-6:x86_64-6:chrome-5:theme=4:dark
+        assert_eq!(
+            info.to_key().unwrap(),
+            "5:linux-6:x86_64-6:chrome-5:theme=4:dark"
+        );
+    }
+
+    #[test]
+    fn test_opaque_validation_fails_on_invalid() {
+        let config = PlatformConfig::Opaque("mac os".to_string());
+        let env = PlatformEnv::default();
+        let res = PlatformResolver::resolve(None, None, None, &[], &env, Some(&config));
+        assert!(res.is_err());
+        assert!(matches!(res.unwrap_err(), PlatformError::InvalidSegment(_)));
+    }
+
+    #[test]
+    fn test_reserved_label_case_insensitive_rejected() {
+        let env = PlatformEnv::default();
+        let labels = vec![("OS".to_string(), "linux".to_string())];
+        let res = PlatformResolver::resolve(None, None, None, &labels, &env, None);
+        assert!(res.is_err());
+        assert!(matches!(
+            res.unwrap_err(),
+            PlatformError::ReservedLabelKey(_)
+        ));
+
+        let labels_mixed = vec![("Platform".to_string(), "macos".to_string())];
+        let res_mixed = PlatformResolver::resolve(None, None, None, &labels_mixed, &env, None);
+        assert!(res_mixed.is_err());
+    }
+
+    #[test]
+    fn test_partial_env_config_merge() {
+        let config = PlatformConfig::Structured(PlatformFields {
+            os: Some("linux".to_string()),
+            arch: Some("x86_64".to_string()),
+            renderer: Some("firefox".to_string()),
+            labels: None,
+        });
+
+        // env.platform specifies only renderer=chrome. Config's os/arch should be preserved.
+        let env = PlatformEnv {
+            platform: Some("renderer=chrome".to_string()),
+            ..Default::default()
+        };
+
+        let res = PlatformResolver::resolve(None, None, None, &[], &env, Some(&config)).unwrap();
+        assert_eq!(res.os, "linux");
+        assert_eq!(res.arch.as_deref(), Some("x86_64"));
+        assert_eq!(res.renderer.as_deref(), Some("chrome"));
+    }
+
+    #[test]
+    fn test_resolve_opaque_conflict_all_overrides() {
+        let config = PlatformConfig::Opaque("custom-opaque".to_string());
+        let env = PlatformEnv {
+            os: Some("linux".to_string()),
+            arch: Some("x86_64".to_string()),
+            renderer: Some("chrome".to_string()),
+            ..Default::default()
+        };
+        let labels = vec![("theme".to_string(), "dark".to_string())];
+        let res = PlatformResolver::resolve(None, None, None, &labels, &env, Some(&config));
+        assert!(res.is_err());
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains("OS"));
+        assert!(err.contains("Architecture"));
+        assert!(err.contains("Renderer"));
+        assert!(err.contains("Labels"));
     }
 }
