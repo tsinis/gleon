@@ -65,6 +65,7 @@ mod tests {
 
         let cli = Cli {
             branch: None,
+            target_branch: "main".to_string(),
             os: None,
             arch: None,
             renderer: None,
@@ -85,6 +86,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let cli = Cli {
             branch: None,
+            target_branch: "main".to_string(),
             os: None,
             arch: None,
             renderer: None,
@@ -113,6 +115,7 @@ mod tests {
 
         let cli = Cli {
             branch: None,
+            target_branch: "main".to_string(),
             os: None,
             arch: None,
             renderer: None,

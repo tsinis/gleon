@@ -166,9 +166,24 @@ impl Serialize for GlobPattern {
     }
 }
 
-/// A strongly-typed 32-byte hash (e.g. SHA256 or Blake3), serialized as a 64-character hex string.
+/// A strongly-typed image comparison hash, serialized as a `scheme:value` string.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ImageHash(pub [u8; 32]);
+pub struct ImageHash {
+    /// The hashing scheme/algorithm (e.g. "sha256", "phash", "dhash", "ssim").
+    pub scheme: String,
+    /// The hex or alphanumeric representation of the hash.
+    pub value: String,
+}
+
+impl ImageHash {
+    /// Constructs a new ImageHash.
+    pub fn new(scheme: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            scheme: scheme.into(),
+            value: value.into(),
+        }
+    }
+}
 
 impl<'de> Deserialize<'de> for ImageHash {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -176,15 +191,30 @@ impl<'de> Deserialize<'de> for ImageHash {
         D: Deserializer<'de>,
     {
         String::deserialize(deserializer).and_then(|s| {
-            if s.len() != 64 {
+            let (scheme, value) = s
+                .split_once(':')
+                .ok_or_else(|| serde::de::Error::custom("Hash must be in 'scheme:value' format"))?;
+
+            if scheme.is_empty() {
+                return Err(serde::de::Error::custom("Hash scheme cannot be empty"));
+            }
+            if value.is_empty() {
+                return Err(serde::de::Error::custom("Hash value cannot be empty"));
+            }
+
+            if !value
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
                 return Err(serde::de::Error::custom(
-                    "Hash must be exactly 64 characters long",
+                    "Hash value contains invalid characters",
                 ));
             }
-            let mut bytes = [0u8; 32];
-            hex::decode_to_slice(&s, &mut bytes)
-                .map_err(serde::de::Error::custom)
-                .map(|_| ImageHash(bytes))
+
+            Ok(ImageHash {
+                scheme: scheme.to_string(),
+                value: value.to_string(),
+            })
         })
     }
 }
@@ -194,14 +224,14 @@ impl Serialize for ImageHash {
     where
         S: Serializer,
     {
-        let hex_str = hex::encode(self.0);
-        serializer.serialize_str(&hex_str)
+        let s = format!("{}:{}", self.scheme, self.value);
+        serializer.serialize_str(&s)
     }
 }
 
 impl std::fmt::Display for ImageHash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
+        write!(f, "{}:{}", self.scheme, self.value)
     }
 }
 
@@ -446,25 +476,33 @@ impl GleonConfig {
 
 /// The manifest file structure representing previous run results.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Manifest {
-    /// Manifest schema/format version.
-    pub version: u64,
-    /// Map of relative file paths to their metadata entries.
-    /// Uses `BTreeMap` for deterministic key ordering in serialized JSON output.
-    pub screenshots: BTreeMap<String, ManifestEntry>,
+    pub schema_version: u64,
+    pub hash_algo: String,
+    pub pixel_format: String,
+    pub generator_version: String,
+    pub entries: BTreeMap<String, ManifestEntry>,
 }
 
 /// Metadata entry for a single verified screenshot.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ManifestEntry {
-    /// SHA-256 hash of the image content.
     pub hash: ImageHash,
-    /// Optional metadata payload.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub meta: Option<serde_json::Value>,
-    /// UTC timestamp of the check run.
-    pub timestamp_utc: chrono::DateTime<chrono::Utc>,
+    pub width: u32,
+    pub height: u32,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub created_by: String,
+    pub source_commit: String,
+}
+
+/// The index mapping test paths to their respective manifest hashes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestIndex {
+    pub schema_version: u64,
+    pub test_manifests: BTreeMap<String, String>,
 }
 
 impl Manifest {
@@ -554,6 +592,93 @@ impl Manifest {
     }
 }
 
+impl ManifestIndex {
+    /// Load a manifest index from a JSON file.
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+        tracing::debug!("Loading manifest index from {:?}", path);
+
+        let file = std::fs::File::open(path).map_err(|e| {
+            tracing::debug!("Failed to open manifest index at {:?}: {}", path, e);
+            ConfigError::Io(e)
+        })?;
+        let reader = std::io::BufReader::new(file);
+        let index: ManifestIndex = serde_json::from_reader(reader).map_err(|e| {
+            tracing::error!("Failed to parse JSON manifest index at {:?}: {}", path, e);
+            ConfigError::JsonParse(e)
+        })?;
+        Ok(index)
+    }
+
+    /// Save a manifest index to a JSON file atomically.
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), ConfigError> {
+        let path = path.as_ref();
+        tracing::info!("Saving manifest index to {:?}", path);
+
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+
+        if !parent.exists() {
+            tracing::debug!(
+                "Creating parent directories for manifest index: {:?}",
+                parent
+            );
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let file_name = path.file_name().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid file name")
+        })?;
+
+        let temp_file = tempfile::Builder::new()
+            .prefix(file_name)
+            .suffix(".tmp")
+            .tempfile_in(parent)?;
+
+        use std::io::Write;
+        let mut writer = std::io::BufWriter::new(temp_file);
+        serde_json::to_writer_pretty(&mut writer, self)?;
+        writer.flush()?;
+        let temp_file = writer
+            .into_inner()
+            .map_err(|e| ConfigError::Io(e.into_error()))?;
+
+        #[cfg(all(unix, not(miri)))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = temp_file
+                .as_file()
+                .metadata()
+                .map_err(ConfigError::Io)?
+                .permissions();
+            if let Ok(existing) = std::fs::metadata(path) {
+                perms.set_mode(existing.permissions().mode());
+            }
+            temp_file
+                .as_file()
+                .set_permissions(perms)
+                .map_err(ConfigError::Io)?;
+        }
+
+        temp_file.as_file().sync_all().map_err(ConfigError::Io)?;
+
+        temp_file.persist(path).map_err(|e| {
+            tracing::error!(
+                "Failed to save manifest index atomically to {:?}: {}",
+                path,
+                e
+            );
+            ConfigError::Io(e.error)
+        })?;
+
+        if let Some(dir) = path.parent().and_then(|p| std::fs::File::open(p).ok()) {
+            let _ = dir.sync_all();
+        }
+
+        tracing::debug!("Manifest index saved successfully to {:?}", path);
+        Ok(())
+    }
+}
+
 /// Pre-parsed default version requirement, avoiding `unwrap()` at runtime.
 ///
 /// This is safe because the string `">=0.1.0"` is a valid semver requirement
@@ -612,34 +737,60 @@ mod tests {
     }
 
     #[test]
+    fn test_image_hash_prefixed_serialization() {
+        let hash = ImageHash::new(
+            "sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        );
+        let json = serde_json::to_string(&hash).unwrap();
+        assert_eq!(
+            json,
+            "\"sha256:0000000000000000000000000000000000000000000000000000000000000000\""
+        );
+
+        let deserialized: ImageHash = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, hash);
+
+        // Test different scheme
+        let pixel_hash = ImageHash::new("pixel", "a1b2c3d4");
+        let pixel_json = serde_json::to_string(&pixel_hash).unwrap();
+        assert_eq!(pixel_json, "\"pixel:a1b2c3d4\"");
+        let deserialized_pixel: ImageHash = serde_json::from_str(&pixel_json).unwrap();
+        assert_eq!(deserialized_pixel, pixel_hash);
+
+        // Missing prefix should fail
+        let bad_json = "\"0000000000000000000000000000000000000000000000000000000000000000\"";
+        assert!(serde_json::from_str::<ImageHash>(bad_json).is_err());
+    }
+
+    #[test]
     fn test_manifest_json_snapshot() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("manifest.json");
 
-        let mut screenshots = BTreeMap::new();
-        let mut meta_map = serde_json::Map::new();
-        // Insert out of alphabetical order to test sorting
-        let _ = meta_map.insert(
-            "b_key".to_string(),
-            serde_json::Value::String("value_b".to_string()),
-        );
-        let _ = meta_map.insert(
-            "a_key".to_string(),
-            serde_json::Value::String("value_a".to_string()),
-        );
+        let mut entries = BTreeMap::new();
 
-        let _ = screenshots.insert(
+        let _ = entries.insert(
             "src/login.png".to_string(),
             ManifestEntry {
-                hash: ImageHash([0; 32]),
-                timestamp_utc: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
-                meta: Some(serde_json::Value::Object(meta_map)),
+                hash: ImageHash::new(
+                    "sha256",
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                ),
+                width: 800,
+                height: 600,
+                created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
+                created_by: "Test User <test@example.com>".to_string(),
+                source_commit: "abcdef1234567890".to_string(),
             },
         );
 
         let manifest = Manifest {
-            version: 1,
-            screenshots,
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries,
         };
 
         manifest.save(&file_path).unwrap();
@@ -651,6 +802,28 @@ mod tests {
         let expected_json = std::fs::read_to_string(fixture_path).unwrap();
 
         assert_eq!(generated_json.trim(), expected_json.trim());
+    }
+
+    #[test]
+    fn test_manifest_index_serialization() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("manifest_index.json");
+
+        let mut test_manifests = BTreeMap::new();
+        test_manifests.insert(
+            "tests/ui/login".to_string(),
+            "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef".to_string(),
+        );
+
+        let index = ManifestIndex {
+            schema_version: 1,
+            test_manifests,
+        };
+
+        index.save(&file_path).unwrap();
+
+        let loaded_index = ManifestIndex::load(&file_path).unwrap();
+        assert_eq!(index, loaded_index);
     }
 
     #[test]
@@ -883,37 +1056,35 @@ screenshots:
     }
 
     #[test]
-    fn test_image_hash_invalid_length_deserialization() {
-        // 63 characters
-        let json_short = "\"a0f2705b0b2e88b8e0e7a2b97cbb1f32a0f2705b0b2e88b8e0e7a2b97cbb1f3\"";
-        let res_short: Result<ImageHash, _> = serde_json::from_str(json_short);
-        assert!(res_short.is_err());
-        assert!(
-            res_short
-                .unwrap_err()
-                .to_string()
-                .contains("Hash must be exactly 64 characters long")
-        );
+    fn test_image_hash_invalid_format_deserialization() {
+        // Missing colon
+        let bad_json_1 =
+            "\"sha2560000000000000000000000000000000000000000000000000000000000000000\"";
+        assert!(serde_json::from_str::<ImageHash>(bad_json_1).is_err());
 
-        // 65 characters
-        let json_long = "\"a0f2705b0b2e88b8e0e7a2b97cbb1f32a0f2705b0b2e88b8e0e7a2b97cbb1f321\"";
-        let res_long: Result<ImageHash, _> = serde_json::from_str(json_long);
-        assert!(res_long.is_err());
-        assert!(
-            res_long
-                .unwrap_err()
-                .to_string()
-                .contains("Hash must be exactly 64 characters long")
-        );
+        // Empty scheme
+        let bad_json_2 = "\":00000000\"";
+        assert!(serde_json::from_str::<ImageHash>(bad_json_2).is_err());
+
+        // Empty value
+        let bad_json_3 = "\"sha256:\"";
+        assert!(serde_json::from_str::<ImageHash>(bad_json_3).is_err());
+
+        // Invalid characters
+        let bad_json_4 = "\"sha256:invalid?hash\"";
+        assert!(serde_json::from_str::<ImageHash>(bad_json_4).is_err());
     }
 
     #[test]
     fn test_image_hash_display() {
-        let hash = ImageHash([0u8; 32]);
+        let hash = ImageHash::new(
+            "sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        );
         let formatted = format!("{}", hash);
         assert_eq!(
             formatted,
-            "0000000000000000000000000000000000000000000000000000000000000000"
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000"
         );
     }
 
@@ -926,15 +1097,24 @@ screenshots:
         let _ = screenshots.insert(
             "src/login.png".to_string(),
             ManifestEntry {
-                hash: ImageHash([0; 32]),
-                timestamp_utc: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
-                meta: Some(serde_json::json!({ "device": "iPhone 15" })),
+                hash: ImageHash::new(
+                    "sha256",
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                ),
+                width: 800,
+                height: 600,
+                created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
+                created_by: "Test User <test@example.com>".to_string(),
+                source_commit: "abcdef123".to_string(),
             },
         );
 
         let manifest = Manifest {
-            version: 1,
-            screenshots,
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: screenshots,
         };
 
         manifest.save(&file_path).unwrap();
@@ -948,8 +1128,11 @@ screenshots:
         let file_path = dir.path().join("manifest.json");
 
         let manifest = Manifest {
-            version: 1,
-            screenshots: BTreeMap::new(),
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: BTreeMap::new(),
         };
 
         // Save first time
@@ -961,19 +1144,28 @@ screenshots:
         let _ = screenshots.insert(
             "test.png".to_string(),
             ManifestEntry {
-                hash: ImageHash([0; 32]),
-                timestamp_utc: chrono::DateTime::from_timestamp(456, 0).unwrap(),
-                meta: None,
+                hash: ImageHash::new(
+                    "sha256",
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                ),
+                width: 800,
+                height: 600,
+                created_at: chrono::DateTime::from_timestamp(456, 0).unwrap(),
+                created_by: "Test User <test@example.com>".to_string(),
+                source_commit: "abcdef123".to_string(),
             },
         );
         let updated = Manifest {
-            version: 2,
-            screenshots,
+            schema_version: 2,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: screenshots,
         };
         updated.save(&file_path).unwrap();
 
         let loaded = Manifest::load(&file_path).unwrap();
-        assert_eq!(loaded.version, 2);
+        assert_eq!(loaded.schema_version, 2);
     }
 
     #[test]
@@ -983,8 +1175,11 @@ screenshots:
         let file_path = dir.path().join("manifest.json");
 
         let original = Manifest {
-            version: 1,
-            screenshots: BTreeMap::new(),
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: BTreeMap::new(),
         };
         original.save(&file_path).unwrap();
 
@@ -1000,8 +1195,11 @@ screenshots:
         let mut save_result = None;
         if probe_succeeded {
             let updated = Manifest {
-                version: 2,
-                screenshots: BTreeMap::new(),
+                schema_version: 2,
+                hash_algo: "sha256".to_string(),
+                pixel_format: "rgba".to_string(),
+                generator_version: "1.0.0".to_string(),
+                entries: BTreeMap::new(),
             };
             save_result = Some(updated.save(&file_path));
         }
@@ -1021,7 +1219,7 @@ screenshots:
 
             // Verify original file remains untouched
             let loaded = Manifest::load(&file_path).unwrap();
-            assert_eq!(loaded.version, 1);
+            assert_eq!(loaded.schema_version, 1);
         }
     }
 
@@ -1032,8 +1230,11 @@ screenshots:
         std::fs::write(&non_directory, b"blocker").unwrap();
         let invalid_path = non_directory.join("manifest.json");
         let manifest = Manifest {
-            version: 1,
-            screenshots: BTreeMap::new(),
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: BTreeMap::new(),
         };
         let result = manifest.save(&invalid_path);
         assert!(result.is_err());
@@ -1271,8 +1472,11 @@ screenshots:
     #[test]
     fn test_manifest_save_invalid_filename() {
         let manifest = Manifest {
-            version: 1,
-            screenshots: BTreeMap::new(),
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: BTreeMap::new(),
         };
         let err = manifest.save(Path::new("/")).unwrap_err();
         assert!(matches!(
@@ -1288,8 +1492,11 @@ screenshots:
         std::fs::create_dir(&file_path).unwrap(); // make it a directory
 
         let manifest = Manifest {
-            version: 1,
-            screenshots: BTreeMap::new(),
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: BTreeMap::new(),
         };
 
         // Try to save to a path which is a directory (persist fails)
@@ -1313,14 +1520,17 @@ screenshots:
         let nested_path = dir.path().join("subdir/nested/manifest.json");
 
         let manifest = Manifest {
-            version: 1,
-            screenshots: BTreeMap::new(),
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: BTreeMap::new(),
         };
         manifest.save(&nested_path).unwrap();
 
         assert!(nested_path.exists());
         let loaded = Manifest::load(&nested_path).unwrap();
-        assert_eq!(loaded.version, 1);
+        assert_eq!(loaded.schema_version, 1);
     }
 
     #[test]
@@ -1341,8 +1551,11 @@ screenshots:
 
         let nested_path = blocker_file.join("subdir/manifest.json");
         let manifest = Manifest {
-            version: 1,
-            screenshots: BTreeMap::new(),
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: BTreeMap::new(),
         };
         let err = manifest.save(&nested_path).unwrap_err();
         assert!(matches!(err, ConfigError::Io(_)));

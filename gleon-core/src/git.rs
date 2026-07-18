@@ -25,6 +25,14 @@ pub enum GitError {
     #[error("Resolved branch name contains invalid characters: '{0}'")]
     InvalidBranchName(String),
 
+    /// Repository is a shallow clone lacking history to compute merge-base
+    #[error("Repository is a shallow clone (fetch-depth constraint): {0}")]
+    ShallowClone(String),
+
+    /// Merge base calculation failed
+    #[error("Merge base calculation failed: {0}")]
+    MergeBaseFailed(String),
+
     /// Path is outside the Git repository
     #[error("Path is outside the Git repository: {0}")]
     OutsideRepository(std::path::PathBuf),
@@ -178,11 +186,17 @@ impl GitResolver {
         }
 
         let mut gitignores_to_add = std::collections::HashSet::new();
+        let mut visited_dirs = std::collections::HashSet::new();
 
         for (abs_path, _) in &processed_paths {
             // Traverse up to repo_root to discover all .gitignore files in the hierarchy
             let mut current = abs_path.parent();
             while let Some(dir) = current {
+                if !visited_dirs.insert(dir.to_path_buf()) {
+                    // Already visited this directory and its parents!
+                    break;
+                }
+
                 let gitignore = dir.join(".gitignore");
                 if gitignore.is_file() {
                     gitignores_to_add.insert(gitignore);
@@ -222,6 +236,77 @@ impl GitResolver {
         }
 
         Ok(true)
+    }
+
+    /// Computes the SHA-256 hash of the raw UTF-8 branch name for safe flat-key storage.
+    pub fn branch_path_token(branch_name: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(branch_name.as_bytes());
+        hex::encode(hasher.finalize())
+    }
+
+    /// Resolves the merge-base between HEAD and the given target branch.
+    /// Detects shallow clones and returns a specific error for fallback logging.
+    pub fn resolve_merge_base(base_dir: &Path, target_branch: &str) -> Result<String, GitError> {
+        let repo = gix::discover(base_dir).map_err(|e| GitError::Discover(e.to_string()))?;
+
+        // Check if the repository is a shallow clone by checking for the existence of .git/shallow
+        if repo.shallow_file().exists() {
+            return Err(GitError::ShallowClone(
+                "Shallow clone detected (.git/shallow exists)".to_string(),
+            ));
+        }
+
+        let head_commit = repo
+            .head_commit()
+            .map_err(|e| GitError::HeadRead(e.to_string()))?;
+        let head_id = head_commit.id;
+
+        let target_id = repo.rev_parse_single(target_branch).map_err(|e| {
+            GitError::MergeBaseFailed(format!(
+                "Failed to resolve target branch '{}': {}",
+                target_branch, e
+            ))
+        })?;
+
+        let base_id = repo
+            .merge_base(head_id, target_id)
+            .map_err(|e| GitError::MergeBaseFailed(e.to_string()))?;
+
+        Ok(base_id.to_string())
+    }
+
+    /// Gets the author name and email of the given commit, defaulting to "unknown".
+    pub fn get_commit_author(base_dir: &Path, commit_sha: &str) -> Result<String, GitError> {
+        let repo = gix::discover(base_dir).map_err(|e| GitError::Discover(e.to_string()))?;
+
+        let id = gix::ObjectId::from_hex(commit_sha.as_bytes())
+            .or_else(|_| repo.rev_parse_single(commit_sha).map(|id| id.detach()))
+            .map_err(|e| {
+                GitError::HeadRead(format!("Invalid commit SHA or ref '{}': {}", commit_sha, e))
+            })?;
+
+        let commit = repo
+            .find_commit(id)
+            .map_err(|e| GitError::HeadRead(format!("Commit not found '{}': {}", id, e)))?;
+
+        let decoded = commit
+            .decode()
+            .map_err(|e| GitError::HeadRead(format!("Failed to decode commit '{}': {}", id, e)))?;
+
+        if let Ok(sig) = gix::actor::SignatureRef::from_bytes(decoded.author.as_ref()) {
+            let actor = sig.actor();
+            let name = actor.name.to_string();
+            let email = actor.email.to_string();
+            if name.is_empty() && email.is_empty() {
+                Ok("unknown".to_string())
+            } else {
+                Ok(format!("{} <{}>", name, email))
+            }
+        } else {
+            Ok("unknown".to_string())
+        }
     }
 }
 
@@ -768,5 +853,81 @@ mod tests {
         let path = Path::new("./file.png");
         let norm = normalize_path(path);
         assert_eq!(norm, Path::new("file.png"));
+    }
+
+    #[test]
+    fn test_branch_path_token() {
+        let token1 = GitResolver::branch_path_token("release");
+        let token2 = GitResolver::branch_path_token("release/1.0");
+        assert_ne!(token1, token2);
+        assert_eq!(token1.len(), 64);
+        assert_eq!(token2.len(), 64);
+    }
+
+    #[test]
+    fn test_get_commit_author_errors_propagated() {
+        let dir = tempdir().unwrap();
+        let result =
+            GitResolver::get_commit_author(dir.path(), "0000000000000000000000000000000000000000");
+        assert!(matches!(result, Err(GitError::Discover(_))));
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn test_get_commit_author_gix() {
+        let dir = tempdir().unwrap();
+        std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["init"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["config", "user.name", "Gleon Author"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["config", "user.email", "author@gleon.dev"])
+            .output()
+            .unwrap();
+
+        std::fs::write(dir.path().join("dummy.txt"), "hello").unwrap();
+        std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["add", "."])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["commit", "-m", "initial commit"])
+            .output()
+            .unwrap();
+
+        let repo = gix::discover(dir.path()).unwrap();
+        let head_commit = repo.head_commit().unwrap();
+        let sha = head_commit.id.to_string();
+
+        let author = GitResolver::get_commit_author(dir.path(), &sha).unwrap();
+        assert_eq!(author, "Gleon Author <author@gleon.dev>");
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn test_resolve_merge_base_shallow_clone_error() {
+        let dir = tempdir().unwrap();
+        std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["init"])
+            .output()
+            .unwrap();
+
+        // Write .git/shallow to simulate a shallow repository
+        let shallow_path = dir.path().join(".git/shallow");
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::write(&shallow_path, "0000000000000000000000000000000000000000\n").unwrap();
+
+        let result = GitResolver::resolve_merge_base(dir.path(), "main");
+        assert!(matches!(result, Err(GitError::ShallowClone(_))));
     }
 }

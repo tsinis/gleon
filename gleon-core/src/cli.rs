@@ -46,6 +46,15 @@ pub struct Cli {
     #[arg(short = 'c', long = "config", global = true)]
     pub config: Option<std::path::PathBuf>,
 
+    /// The target branch to compare against (defaults to 'main')
+    #[arg(
+        long = "target-branch",
+        global = true,
+        env = "GLEON_TARGET_BRANCH",
+        default_value = "main"
+    )]
+    pub target_branch: String,
+
     /// The subcommand to execute
     #[command(subcommand)]
     pub command: Commands,
@@ -115,6 +124,15 @@ mod tests {
         let cli = Cli::try_parse_from(args)?;
         assert_eq!(cli.branch, Some("another-branch".to_string()));
         assert_eq!(cli.command, Commands::Diff);
+        assert_eq!(cli.target_branch, "main"); // Default value
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_target_branch_flag() -> Result<(), clap::Error> {
+        let args = ["gleon", "--target-branch", "develop", "diff"];
+        let cli = Cli::try_parse_from(args)?;
+        assert_eq!(cli.target_branch, "develop");
         Ok(())
     }
 

@@ -235,6 +235,50 @@ impl PlatformEnv {
 pub struct PlatformResolver;
 
 impl PlatformResolver {
+    fn check_opaque_conflict(
+        cli_os: Option<&str>,
+        cli_arch: Option<&str>,
+        cli_renderer: Option<&str>,
+        cli_labels: &[(String, String)],
+        env: &PlatformEnv,
+        env_fields: Option<&PlatformFields>,
+    ) -> Result<(), PlatformError> {
+        let has_overrides = cli_os.is_some()
+            || cli_arch.is_some()
+            || cli_renderer.is_some()
+            || !cli_labels.is_empty()
+            || env.os.is_some()
+            || env.arch.is_some()
+            || env.renderer.is_some()
+            || env_fields.is_some_and(|f| {
+                f.os.is_some() || f.arch.is_some() || f.renderer.is_some() || f.labels.is_some()
+            });
+
+        if has_overrides {
+            let mut overrides = Vec::new();
+            if cli_os.is_some() || env.os.is_some() || env_fields.is_some_and(|f| f.os.is_some()) {
+                overrides.push("OS");
+            }
+            if cli_arch.is_some()
+                || env.arch.is_some()
+                || env_fields.is_some_and(|f| f.arch.is_some())
+            {
+                overrides.push("Architecture");
+            }
+            if cli_renderer.is_some()
+                || env.renderer.is_some()
+                || env_fields.is_some_and(|f| f.renderer.is_some())
+            {
+                overrides.push("Renderer");
+            }
+            if !cli_labels.is_empty() || env_fields.is_some_and(|f| f.labels.is_some()) {
+                overrides.push("Labels");
+            }
+            return Err(PlatformError::OpaqueConflict(overrides.join(", ")));
+        }
+        Ok(())
+    }
+
     /// Resolves the final platform identity by merging all sources.
     /// Priority per field: env > CLI > config > auto-detect (os/arch only).
     pub fn resolve(
@@ -256,43 +300,14 @@ impl PlatformResolver {
 
         // 1. Check if cli_platform is specified. It acts as a CLI opaque override.
         if let Some(opaque_val) = cli_platform {
-            let has_overrides = cli_os.is_some()
-                || cli_arch.is_some()
-                || cli_renderer.is_some()
-                || !cli_labels.is_empty()
-                || env.os.is_some()
-                || env.arch.is_some()
-                || env.renderer.is_some()
-                || env_fields.as_ref().is_some_and(|f| {
-                    f.os.is_some() || f.arch.is_some() || f.renderer.is_some() || f.labels.is_some()
-                });
-
-            if has_overrides {
-                let mut overrides = Vec::new();
-                if cli_os.is_some()
-                    || env.os.is_some()
-                    || env_fields.as_ref().is_some_and(|f| f.os.is_some())
-                {
-                    overrides.push("OS");
-                }
-                if cli_arch.is_some()
-                    || env.arch.is_some()
-                    || env_fields.as_ref().is_some_and(|f| f.arch.is_some())
-                {
-                    overrides.push("Architecture");
-                }
-                if cli_renderer.is_some()
-                    || env.renderer.is_some()
-                    || env_fields.as_ref().is_some_and(|f| f.renderer.is_some())
-                {
-                    overrides.push("Renderer");
-                }
-                if !cli_labels.is_empty() || env_fields.as_ref().is_some_and(|f| f.labels.is_some())
-                {
-                    overrides.push("Labels");
-                }
-                return Err(PlatformError::OpaqueConflict(overrides.join(", ")));
-            }
+            Self::check_opaque_conflict(
+                cli_os,
+                cli_arch,
+                cli_renderer,
+                cli_labels,
+                env,
+                env_fields.as_ref(),
+            )?;
 
             let validated_opaque = validate_segment(opaque_val)?;
             return Ok(PlatformInfo {
@@ -314,30 +329,14 @@ impl PlatformResolver {
 
         // 2. Check for Opaque config conflict.
         if let Some(PlatformConfig::Opaque(opaque_val)) = active_config {
-            let has_overrides = cli_os.is_some()
-                || cli_arch.is_some()
-                || cli_renderer.is_some()
-                || !cli_labels.is_empty()
-                || env.os.is_some()
-                || env.arch.is_some()
-                || env.renderer.is_some();
-
-            if has_overrides {
-                let mut overrides = Vec::new();
-                if cli_os.is_some() || env.os.is_some() {
-                    overrides.push("OS");
-                }
-                if cli_arch.is_some() || env.arch.is_some() {
-                    overrides.push("Architecture");
-                }
-                if cli_renderer.is_some() || env.renderer.is_some() {
-                    overrides.push("Renderer");
-                }
-                if !cli_labels.is_empty() {
-                    overrides.push("Labels");
-                }
-                return Err(PlatformError::OpaqueConflict(overrides.join(", ")));
-            }
+            Self::check_opaque_conflict(
+                cli_os,
+                cli_arch,
+                cli_renderer,
+                cli_labels,
+                env,
+                env_fields.as_ref(),
+            )?;
 
             let validated_opaque = validate_segment(opaque_val)?;
             return Ok(PlatformInfo {
