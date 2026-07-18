@@ -3,13 +3,14 @@ use std::env;
 use std::path::PathBuf;
 
 fn find_repo_root() -> Option<PathBuf> {
-    let current_dir = env::current_dir().ok()?;
-    let mut repo_root = current_dir;
+    let mut repo_root = env::current_dir().ok()?;
     loop {
         if repo_root.join(".git").exists() {
             return Some(repo_root);
         }
-        repo_root = repo_root.parent()?.to_path_buf();
+        if !repo_root.pop() {
+            return None;
+        }
     }
 }
 

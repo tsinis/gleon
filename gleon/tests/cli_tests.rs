@@ -324,21 +324,11 @@ fn test_status_cli_platform_conflict_with_env_platform() -> Result<(), Box<dyn s
 #[test]
 fn test_status_with_real_git_repo() -> Result<(), Box<dyn std::error::Error>> {
     let mut repo_root = std::env::current_dir()?;
-    let mut has_git = false;
-    loop {
-        if repo_root.join(".git").exists() {
-            has_git = true;
-            break;
+    while !repo_root.join(".git").exists() {
+        if !repo_root.pop() {
+            eprintln!("Skipping test: not running inside a git repository");
+            return Ok(());
         }
-        if let Some(parent) = repo_root.parent() {
-            repo_root = parent.to_path_buf();
-        } else {
-            break;
-        }
-    }
-    if !has_git {
-        eprintln!("Skipping test: not running inside a git repository");
-        return Ok(());
     }
 
     let mut cmd = Command::cargo_bin("gleon")?;
