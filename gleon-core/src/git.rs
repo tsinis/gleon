@@ -1039,7 +1039,7 @@ mod tests {
             writeln!(stdin, "tree 4b825dc642cb6eb9a0ff3e4897c85c126437f451").unwrap();
             writeln!(stdin, "author  <> 0 +0000").unwrap();
             writeln!(stdin, "committer Test <test@test.com> 0 +0000").unwrap();
-            writeln!(stdin, "").unwrap();
+            writeln!(stdin).unwrap();
             writeln!(stdin, "empty author").unwrap();
         }
 
