@@ -31,7 +31,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<()> {
-    match cli.command {
+    match &cli.command {
         Commands::Status => {
             let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)?;
             let info = ctx.platform;
@@ -71,7 +71,7 @@ fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<()> {
         Commands::Push => {
             println!("Subcommand push is not fully implemented yet");
         }
-        Commands::Merge { ref target_branch } => {
+        Commands::Merge { target_branch } => {
             println!(
                 "Subcommand merge for branch '{}' is not fully implemented yet",
                 target_branch

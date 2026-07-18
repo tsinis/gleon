@@ -105,7 +105,7 @@ mod tests {
 
         let cli = Cli {
             branch: None,
-            target_branch: "main".to_string(),
+            target_branch: "develop".to_string(),
             os: None,
             arch: None,
             renderer: None,
@@ -122,6 +122,7 @@ mod tests {
                 .unwrap();
         assert!(context.config.is_some());
         assert_eq!(context.branch, "main");
+        assert_eq!(context.target_branch, "develop");
     }
 
     #[test]
@@ -130,7 +131,7 @@ mod tests {
         create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
         let cli = Cli {
             branch: None,
-            target_branch: "main".to_string(),
+            target_branch: "develop".to_string(),
             os: None,
             arch: None,
             renderer: None,
@@ -147,6 +148,7 @@ mod tests {
                 .unwrap();
         assert!(context.config.is_none());
         assert_eq!(context.branch, "main");
+        assert_eq!(context.target_branch, "develop");
     }
 
     #[test]
@@ -163,7 +165,7 @@ mod tests {
 
         let cli = Cli {
             branch: None,
-            target_branch: "main".to_string(),
+            target_branch: "develop".to_string(),
             os: None,
             arch: None,
             renderer: None,
@@ -180,5 +182,6 @@ mod tests {
                 .unwrap();
         assert!(context.config.is_some());
         assert_eq!(context.branch, "main");
+        assert_eq!(context.target_branch, "develop");
     }
 }
