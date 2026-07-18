@@ -184,4 +184,78 @@ mod tests {
         assert_eq!(context.branch, "main");
         assert_eq!(context.target_branch, "develop");
     }
+
+    #[test]
+    fn test_from_cli_production_wrapper() {
+        let dir = tempdir().unwrap();
+        create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
+        let cli = Cli {
+            branch: Some("main".to_string()),
+            target_branch: "develop".to_string(),
+            os: Some("linux".to_string()),
+            arch: Some("x86_64".to_string()),
+            renderer: None,
+            labels: vec![],
+            platform: None,
+            verbose: false,
+            quiet: false,
+            config: None,
+            command: Commands::Status,
+        };
+        let context = ResolvedContext::from_cli(&cli, dir.path()).unwrap();
+        assert_eq!(context.branch, "main");
+    }
+
+    #[test]
+    fn test_from_cli_errors() {
+        let dir = tempdir().unwrap();
+
+        // 1. Platform resolver error
+        let cli_platform_err = Cli {
+            branch: Some("main".to_string()),
+            target_branch: "develop".to_string(),
+            os: None,
+            arch: None,
+            renderer: None,
+            labels: vec![],
+            platform: Some("custom-opaque".to_string()),
+            verbose: false,
+            quiet: false,
+            config: None,
+            command: Commands::Status,
+        };
+        let platform_env_conflict = PlatformEnv {
+            os: Some("linux".to_string()),
+            ..Default::default()
+        };
+        let result = ResolvedContext::from_cli_impl(
+            &cli_platform_err,
+            dir.path(),
+            &EmptyEnv,
+            &platform_env_conflict,
+        );
+        assert!(result.is_err());
+
+        // 2. Git resolver error
+        let cli_git_err = Cli {
+            branch: Some("invalid branch name space".to_string()),
+            target_branch: "develop".to_string(),
+            os: None,
+            arch: None,
+            renderer: None,
+            labels: vec![],
+            platform: None,
+            verbose: false,
+            quiet: false,
+            config: None,
+            command: Commands::Status,
+        };
+        let result = ResolvedContext::from_cli_impl(
+            &cli_git_err,
+            dir.path(),
+            &EmptyEnv,
+            &PlatformEnv::default(),
+        );
+        assert!(result.is_err());
+    }
 }

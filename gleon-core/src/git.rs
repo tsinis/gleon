@@ -940,4 +940,113 @@ mod tests {
         let result = GitResolver::resolve_merge_base(dir.path(), "main");
         assert!(matches!(result, Err(GitError::ShallowClone(_))));
     }
+
+    #[test]
+    #[cfg(all(unix, not(miri)))]
+    fn test_verify_ignored_unreadable_gitignore() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
+        let gitignore_path = dir.path().join(".gitignore");
+        std::fs::write(&gitignore_path, "*.png").unwrap();
+        std::fs::set_permissions(&gitignore_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // If we are root, writing to 0o000 file will succeed.
+        let is_root = std::fs::write(&gitignore_path, "probe").is_ok();
+        if is_root {
+            return;
+        }
+
+        let paths = vec![dir.path().join("file.png")];
+        let result = GitResolver::verify_ignored_impl(&paths, dir.path()).unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn test_resolve_merge_base_invalid_target_branch() {
+        let dir = tempdir().unwrap();
+        std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["init"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["config", "user.name", "Test"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .unwrap();
+
+        std::fs::write(dir.path().join("dummy.txt"), "hello").unwrap();
+        std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["add", "."])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["commit", "-m", "initial commit"])
+            .output()
+            .unwrap();
+
+        let result = GitResolver::resolve_merge_base(dir.path(), "non-existent");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GitError::MergeBaseFailed(_)));
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn test_get_commit_author_invalid_ref() {
+        let dir = tempdir().unwrap();
+        std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["init"])
+            .output()
+            .unwrap();
+
+        let result = GitResolver::get_commit_author(dir.path(), "invalid-ref");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GitError::HeadRead(_)));
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn test_get_commit_author_empty_signature() {
+        let dir = tempdir().unwrap();
+        std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["init"])
+            .output()
+            .unwrap();
+
+        let mut cmd = std::process::Command::new("git");
+        cmd.current_dir(dir.path())
+            .args(["hash-object", "-t", "commit", "-w", "--stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+
+        let child = cmd.spawn().unwrap();
+        use std::io::Write;
+        {
+            let mut stdin = child.stdin.as_ref().unwrap();
+            writeln!(stdin, "tree 4b825dc642cb6eb9a0ff3e4897c85c126437f451").unwrap();
+            writeln!(stdin, "author  <> 0 +0000").unwrap();
+            writeln!(stdin, "committer Test <test@test.com> 0 +0000").unwrap();
+            writeln!(stdin, "").unwrap();
+            writeln!(stdin, "empty author").unwrap();
+        }
+
+        let output = child.wait_with_output().unwrap();
+        let sha = String::from_utf8(output.stdout).unwrap().trim().to_string();
+
+        let author = GitResolver::get_commit_author(dir.path(), &sha).unwrap();
+        assert_eq!(author, "unknown");
+    }
 }

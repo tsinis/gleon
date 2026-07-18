@@ -591,10 +591,10 @@ fn save_json_atomically<T: serde::Serialize, P: AsRef<Path>>(
     })?;
 
     if let Some(dir) = path.parent().and_then(|p| std::fs::File::open(p).ok()) {
-        dir.sync_all().map_err(ConfigError::Io)?;
+        dir.sync_all().map_err(ConfigError::Io)
+    } else {
+        Ok(())
     }
-
-    Ok(())
 }
 
 impl Manifest {
@@ -1246,6 +1246,28 @@ screenshots:
         };
         // This should pass because algorithms are compared case-insensitively.
         assert!(manifest_mixed_case.save(&file_path).is_ok());
+
+        // 5. Non-sha256 algorithm validation (should succeed and skip sha256 specific length checks)
+        let mut entries_phash = BTreeMap::new();
+        entries_phash.insert(
+            "test.png".to_string(),
+            ManifestEntry {
+                hash: ImageHash::new("phash", "abc").unwrap(),
+                width: 10,
+                height: 10,
+                created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
+                created_by: "user".to_string(),
+                source_commit: "abc".to_string(),
+            },
+        );
+        let manifest_phash = Manifest {
+            schema_version: 1,
+            hash_algo: "phash".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: entries_phash,
+        };
+        assert!(manifest_phash.save(&file_path).is_ok());
     }
 
     #[test]
@@ -1318,18 +1340,18 @@ screenshots:
         // Verify if the write permission check works (so we are not root)
         let test_file = dir.path().join("test_write.txt");
         let probe_succeeded = std::fs::write(&test_file, b"test").is_err();
-
-        let mut save_result = None;
-        if probe_succeeded {
-            let updated = Manifest {
-                schema_version: 1,
-                hash_algo: "sha256".to_string(),
-                pixel_format: "rgba".to_string(),
-                generator_version: "1.0.1".to_string(),
-                entries: BTreeMap::new(),
-            };
-            save_result = Some(updated.save(&file_path));
+        if !probe_succeeded {
+            return;
         }
+
+        let updated = Manifest {
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.1".to_string(),
+            entries: BTreeMap::new(),
+        };
+        let save_result = updated.save(&file_path);
 
         // Restore permissions so tempdir can clean up
         let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
@@ -1337,17 +1359,14 @@ screenshots:
         perms.set_readonly(false);
         let _ = std::fs::set_permissions(dir.path(), perms);
 
-        if probe_succeeded {
-            let result = save_result.unwrap();
-            assert!(
-                result.is_err(),
-                "Expected save to fail due to read-only directory"
-            );
+        assert!(
+            save_result.is_err(),
+            "Expected save to fail due to read-only directory"
+        );
 
-            // Verify original file remains untouched
-            let loaded = Manifest::load(&file_path).unwrap();
-            assert_eq!(loaded.generator_version, "1.0.0");
-        }
+        // Verify original file remains untouched
+        let loaded = Manifest::load(&file_path).unwrap();
+        assert_eq!(loaded.generator_version, "1.0.0");
     }
 
     #[test]
@@ -1582,14 +1601,13 @@ screenshots:
 
         std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-        let result = GleonConfig::load_from_file(&file_path);
-
-        // If we are running as root, the load might succeed despite 0o000 permissions.
-        if result.is_ok() {
+        // If we are root, writing to 0o000 file will succeed.
+        let is_root = std::fs::write(&file_path, "probe").is_ok();
+        if is_root {
             return;
         }
 
-        let err = result.unwrap_err();
+        let err = GleonConfig::load_from_file(&file_path).unwrap_err();
         assert!(matches!(
             err,
             ConfigError::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied
