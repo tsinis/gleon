@@ -525,7 +525,7 @@ mod tests {
 
     #[test]
     fn test_git_ref_validation_cases() {
-        // feature/über should be valid
+        // feature/xxx should be valid
         assert!(validate_branch_name("feature/über").is_ok());
         // foo..bar should be invalid (double dot is not allowed in git refs)
         assert!(validate_branch_name("foo..bar").is_err());
@@ -743,26 +743,14 @@ mod tests {
 
         let gitignore_path = dir.path().join(".gitignore");
         let mut file = File::create(&gitignore_path).unwrap();
-        writeln!(file, "*.png").unwrap();
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ =
-                std::fs::set_permissions(&gitignore_path, std::fs::Permissions::from_mode(0o000));
-        }
+        // A double-bracket without a closing one or a consecutive wildcard like ***
+        // will cause a glob compile/parse error in the builder.
+        writeln!(file, "*[").unwrap();
 
         let paths = vec![dir.path().join("file.png")];
+        // verify_ignored_impl returns false if the gitignore file fails parsing but other paths are checked
         let result = GitResolver::verify_ignored_impl(&paths, dir.path()).unwrap();
         assert!(!result);
-
-        // Restore permissions to allow cleanup
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ =
-                std::fs::set_permissions(&gitignore_path, std::fs::Permissions::from_mode(0o644));
-        }
     }
 
     #[test]
