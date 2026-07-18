@@ -1,4 +1,4 @@
-//! Configuration and manifest models for Gleon.
+//! Configuration and manifest models for gleon.
 
 use crate::platform::PlatformConfig;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -26,11 +26,11 @@ pub enum ConfigError {
     #[error("Failed to parse JSON manifest: {0}")]
     JsonParse(#[from] serde_json::Error),
 
-    /// Gleon CLI version does not satisfy the required_version.
+    /// gleon CLI version does not satisfy the required_version.
     #[error("Incompatible version. Required: {0}, Current: {1}")]
     IncompatibleVersion(String, String),
 
-    /// Gleon CLI version string is not a valid semver format.
+    /// gleon CLI version string is not a valid semver format.
     #[error("Invalid version format: {0}")]
     InvalidVersionFormat(String),
 
@@ -250,7 +250,7 @@ impl std::fmt::Display for ImageHash {
     }
 }
 
-/// The root configuration structure for Gleon.
+/// The root configuration structure for gleon.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct GleonConfig {

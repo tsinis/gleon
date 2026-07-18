@@ -1,8 +1,8 @@
-//! CLI Argument parser definition for Gleon.
+//! CLI Argument parser definition for gleon.
 
 use clap::{Parser, Subcommand};
 
-/// The main CLI structure for Gleon.
+/// The main CLI structure for gleon.
 #[derive(Parser, Debug)]
 #[command(
     name = "gleon",
@@ -75,7 +75,7 @@ pub(crate) fn parse_label(s: &str) -> Result<(String, String), String> {
     Ok((key, val))
 }
 
-/// The available subcommands in Gleon.
+/// The available subcommands in gleon.
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum Commands {
     /// Print resolved configuration and active status

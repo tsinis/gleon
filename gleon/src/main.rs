@@ -1,4 +1,4 @@
-//! Gleon CLI wrapper binary.
+//! gleon CLI wrapper binary.
 
 use clap::Parser;
 use gleon_core::cli::{Cli, Commands};
@@ -22,7 +22,7 @@ fn main() -> anyhow::Result<()> {
         .with_max_level(log_level)
         .init();
 
-    info!("Gleon CLI starting up...");
+    info!("gleon CLI starting up...");
 
     let current_dir = std::env::current_dir()
         .map_err(|e| anyhow::anyhow!("Failed to determine current directory: {}", e))?;

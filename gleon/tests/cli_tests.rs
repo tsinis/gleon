@@ -238,7 +238,7 @@ fn test_verbose_flag_coverage() -> Result<(), Box<dyn std::error::Error>> {
         .success()
         .stderr(predicates::str::contains("Platform resolved successfully"))
         .stderr(predicates::str::contains("INFO"))
-        .stderr(predicates::str::contains("Gleon CLI starting up..."));
+        .stderr(predicates::str::contains("gleon CLI starting up..."));
     Ok(())
 }
 
@@ -252,7 +252,7 @@ fn test_quiet_flag_coverage() -> Result<(), Box<dyn std::error::Error>> {
         .assert()
         .success()
         .stderr(predicates::str::contains("Platform resolved successfully").not())
-        .stderr(predicates::str::contains("Gleon CLI starting up...").not());
+        .stderr(predicates::str::contains("gleon CLI starting up...").not());
     Ok(())
 }
 

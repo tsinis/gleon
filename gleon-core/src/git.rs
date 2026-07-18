@@ -893,7 +893,7 @@ mod tests {
             .unwrap();
         std::process::Command::new("git")
             .current_dir(dir.path())
-            .args(["config", "user.name", "Gleon Author"])
+            .args(["config", "user.name", "gleon Author"])
             .output()
             .unwrap();
         std::process::Command::new("git")
@@ -919,7 +919,7 @@ mod tests {
         let sha = head_commit.id.to_string();
 
         let author = GitResolver::get_commit_author(dir.path(), &sha).unwrap();
-        assert_eq!(author, "Gleon Author <author@gleon.dev>");
+        assert_eq!(author, "gleon Author <author@gleon.dev>");
     }
 
     #[test]

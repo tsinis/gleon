@@ -1,3 +1,5 @@
+[![codecov](https://codecov.io/gh/tsinis/gleon/graph/badge.svg?token=KIUODCEVAK)](https://codecov.io/gh/tsinis/gleon)
+
 # gleon
 
 ⛵ `gleon` is a high-performance, developer-first, framework-agnostic visual regression testing CLI built in Rust. It isolates screenshot baselines by platform and Git branch and uses a content-addressed storage (CAS) model for baseline artifacts, minimizing bandwidth and storage overhead in CI pipelines.
@@ -5,7 +7,7 @@
 ## CI/CD Prerequisites (Shallow Clone Constraint)
 
 > [!IMPORTANT]
-> Gleon computes baseline manifests by resolving the `merge-base` commit between the current branch and the target branch (default `main`).
+> gleon computes baseline manifests by resolving the `merge-base` commit between the current branch and the target branch (default `main`).
 > Because default CI checkout actions (such as `actions/checkout` in GitHub Actions) perform a **shallow clone** (e.g. `fetch-depth: 1`), the local repository will lack the historical ancestry needed to compute the `merge-base`.
 >
 > **You must configure your checkout step to fetch full history:**
@@ -14,10 +16,10 @@
 > - name: Checkout code
 >   uses: actions/checkout@v4
 >   with:
->     fetch-depth: 0 # Required for Gleon merge-base resolution
+>     fetch-depth: 0 # Required for gleon merge-base resolution
 > ```
 >
-> If a shallow clone is detected, Gleon will fail immediately returning a hard `GitError::ShallowClone`.
+> If a shallow clone is detected, gleon will fail immediately returning a hard `GitError::ShallowClone`.
 
 ## How to Build and Run Locally
 
@@ -72,7 +74,7 @@ cargo fmt --all
 
 ## Storage Layout and Terminology
 
-Gleon uses two primary types of metadata files to achieve concurrent-safe, low-bandwidth visual diffs:
+`gleon` uses two primary types of metadata files to achieve concurrent-safe, low-bandwidth visual diffs:
 
 1. **`manifest.json`**: Stored locally in each golden screenshots test folder (e.g. `test/goldens/login_test/manifest.json`). It maps individual screenshot files to their content-addressed hashes, width, height, and author metadata.
 2. **`manifest_index.json`**: The top-level index file that maps test folder paths to their respective `manifest.json` file checksums. It is stored remotely under:
