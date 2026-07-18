@@ -254,37 +254,25 @@ impl PlatformResolver {
         env: &PlatformEnv,
         env_fields: Option<&PlatformFields>,
     ) -> Result<(), PlatformError> {
-        let has_overrides = cli_os.is_some()
-            || cli_arch.is_some()
-            || cli_renderer.is_some()
-            || !cli_labels.is_empty()
-            || env.os.is_some()
-            || env.arch.is_some()
+        let mut overrides = Vec::new();
+        if cli_os.is_some() || env.os.is_some() || env_fields.is_some_and(|f| f.os.is_some()) {
+            overrides.push("OS");
+        }
+        if cli_arch.is_some() || env.arch.is_some() || env_fields.is_some_and(|f| f.arch.is_some())
+        {
+            overrides.push("Architecture");
+        }
+        if cli_renderer.is_some()
             || env.renderer.is_some()
-            || env_fields.is_some_and(|f| {
-                f.os.is_some() || f.arch.is_some() || f.renderer.is_some() || f.labels.is_some()
-            });
+            || env_fields.is_some_and(|f| f.renderer.is_some())
+        {
+            overrides.push("Renderer");
+        }
+        if !cli_labels.is_empty() || env_fields.is_some_and(|f| f.labels.is_some()) {
+            overrides.push("Labels");
+        }
 
-        if has_overrides {
-            let mut overrides = Vec::new();
-            if cli_os.is_some() || env.os.is_some() || env_fields.is_some_and(|f| f.os.is_some()) {
-                overrides.push("OS");
-            }
-            if cli_arch.is_some()
-                || env.arch.is_some()
-                || env_fields.is_some_and(|f| f.arch.is_some())
-            {
-                overrides.push("Architecture");
-            }
-            if cli_renderer.is_some()
-                || env.renderer.is_some()
-                || env_fields.is_some_and(|f| f.renderer.is_some())
-            {
-                overrides.push("Renderer");
-            }
-            if !cli_labels.is_empty() || env_fields.is_some_and(|f| f.labels.is_some()) {
-                overrides.push("Labels");
-            }
+        if !overrides.is_empty() {
             return Err(PlatformError::OpaqueConflict(overrides.join(", ")));
         }
         Ok(())

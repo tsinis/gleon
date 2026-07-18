@@ -17,6 +17,7 @@ pub struct ResolvedContext {
     pub config: Option<GleonConfig>,
     pub platform: PlatformInfo,
     pub branch: String,
+    pub target_branch: String,
 }
 
 impl ResolvedContext {
@@ -53,6 +54,7 @@ impl ResolvedContext {
             config,
             platform,
             branch,
+            target_branch: cli.target_branch.clone(),
         })
     }
 }

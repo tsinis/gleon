@@ -17,7 +17,7 @@
 >     fetch-depth: 0 # Required for Gleon merge-base resolution
 > ```
 >
-> If a shallow clone is detected, Gleon will print a loud warning and degrade to using the latest commit of the target branch instead.
+> If a shallow clone is detected, Gleon will fail immediately returning a hard `GitError::ShallowClone`.
 
 ## How to Build and Run Locally
 
