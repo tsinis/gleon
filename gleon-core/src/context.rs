@@ -22,6 +22,16 @@ pub struct ResolvedContext {
 
 impl ResolvedContext {
     pub fn from_cli(cli: &Cli, base_dir: &std::path::Path) -> Result<Self, ContextError> {
+        let env = PlatformEnv::from_env();
+        Self::from_cli_impl(cli, base_dir, &crate::git::OsEnv, &env)
+    }
+
+    pub fn from_cli_impl(
+        cli: &Cli,
+        base_dir: &std::path::Path,
+        env_provider: &dyn crate::git::EnvProvider,
+        platform_env: &PlatformEnv,
+    ) -> Result<Self, ContextError> {
         let (config, _config_specified) = if let Some(ref path) = cli.config {
             (Some(GleonConfig::load_from_file(path)?), true)
         } else {
@@ -33,21 +43,20 @@ impl ResolvedContext {
             }
         };
 
-        let env = PlatformEnv::from_env();
         let platform = PlatformResolver::resolve(
             cli.os.as_deref(),
             cli.arch.as_deref(),
             cli.renderer.as_deref(),
             &cli.labels,
             cli.platform.as_deref(),
-            &env,
+            platform_env,
             config.as_ref().and_then(|c| c.platform.as_ref()),
         )?;
 
         let branch = crate::git::GitResolver::resolve_branch_impl(
             cli.branch.as_deref(),
             base_dir,
-            &crate::git::OsEnv,
+            env_provider,
         )?;
 
         Ok(Self {
@@ -66,6 +75,13 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
     use tempfile::tempdir;
+
+    struct EmptyEnv;
+    impl crate::git::EnvProvider for EmptyEnv {
+        fn get_var(&self, _key: &str) -> Option<String> {
+            None
+        }
+    }
 
     fn create_mock_git_repo(path: &std::path::Path, head_content: &str) {
         let git_dir = path.join(".git");
@@ -101,7 +117,9 @@ mod tests {
             command: Commands::Status,
         };
 
-        let context = ResolvedContext::from_cli(&cli, dir.path()).unwrap();
+        let context =
+            ResolvedContext::from_cli_impl(&cli, dir.path(), &EmptyEnv, &PlatformEnv::default())
+                .unwrap();
         assert!(context.config.is_some());
         assert_eq!(context.branch, "main");
     }
@@ -124,7 +142,9 @@ mod tests {
             command: Commands::Status,
         };
 
-        let context = ResolvedContext::from_cli(&cli, dir.path()).unwrap();
+        let context =
+            ResolvedContext::from_cli_impl(&cli, dir.path(), &EmptyEnv, &PlatformEnv::default())
+                .unwrap();
         assert!(context.config.is_none());
         assert_eq!(context.branch, "main");
     }
@@ -155,7 +175,9 @@ mod tests {
             command: Commands::Status,
         };
 
-        let context = ResolvedContext::from_cli(&cli, dir.path()).unwrap();
+        let context =
+            ResolvedContext::from_cli_impl(&cli, dir.path(), &EmptyEnv, &PlatformEnv::default())
+                .unwrap();
         assert!(context.config.is_some());
         assert_eq!(context.branch, "main");
     }
