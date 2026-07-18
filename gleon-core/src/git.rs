@@ -76,24 +76,22 @@ impl GitResolver {
         // 1. CLI branch override
         if let Some(branch) = cli_branch {
             let cleaned = clean_branch_name(branch);
-            validate_branch_name(&cleaned)?;
-            return Ok(cleaned);
+            return validate_branch_name(&cleaned).map(|_| cleaned);
         }
 
         // 2. GLEON_BRANCH env var
-        if let Some(branch) = env.get_var("GLEON_BRANCH") {
-            let cleaned = clean_branch_name(&branch);
-            if !cleaned.is_empty() {
-                validate_branch_name(&cleaned)?;
-                return Ok(cleaned);
-            }
+        if let Some(branch) = env
+            .get_var("GLEON_BRANCH")
+            .map(|b| clean_branch_name(&b))
+            .filter(|c| !c.is_empty())
+        {
+            return validate_branch_name(&branch).map(|_| branch);
         }
 
         // 3. CI env variables (provider specific)
         if let Some(branch) = resolve_ci_branch(env) {
             let cleaned = clean_branch_name(&branch);
-            validate_branch_name(&cleaned)?;
-            return Ok(cleaned);
+            return validate_branch_name(&cleaned).map(|_| cleaned);
         }
 
         // 4. Git discovery
@@ -103,8 +101,7 @@ impl GitResolver {
                     Ok(Some(head_name)) => {
                         let branch = head_name.shorten().to_string();
                         let cleaned = clean_branch_name(&branch);
-                        validate_branch_name(&cleaned)?;
-                        Ok(cleaned)
+                        validate_branch_name(&cleaned).map(|_| cleaned)
                     }
                     Ok(None) => {
                         // Detached HEAD and no env overrides
@@ -239,7 +236,7 @@ fn normalize_path(path: &Path) -> std::path::PathBuf {
             Component::Normal(c) => {
                 normalized.push(c);
             }
-            Component::CurDir => {}
+            Component::CurDir => continue,
             other => {
                 normalized.push(other.as_os_str());
             }
@@ -262,10 +259,8 @@ fn validate_branch_name(name: &str) -> Result<(), GitError> {
             "Branch name cannot be empty".to_string(),
         ));
     }
-    for c in name.chars() {
-        if !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.' && c != '/' {
-            return Err(GitError::InvalidBranchName(name.to_string()));
-        }
+    if gix::refs::PartialName::try_from(name).is_err() {
+        return Err(GitError::InvalidBranchName(name.to_string()));
     }
     Ok(())
 }
@@ -529,6 +524,18 @@ mod tests {
     }
 
     #[test]
+    fn test_git_ref_validation_cases() {
+        // feature/über should be valid
+        assert!(validate_branch_name("feature/über").is_ok());
+        // foo..bar should be invalid (double dot is not allowed in git refs)
+        assert!(validate_branch_name("foo..bar").is_err());
+        // .hidden should be invalid (starts with dot)
+        assert!(validate_branch_name(".hidden").is_err());
+        // foo/ should be invalid (ends with slash)
+        assert!(validate_branch_name("foo/").is_err());
+    }
+
+    #[test]
     fn test_verify_ignored_success() {
         let dir = tempdir().unwrap();
         create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
@@ -618,5 +625,160 @@ mod tests {
         // because the rule specifies "sub/ignored.png", not "ignored.png".
         let result2 = GitResolver::verify_ignored_impl(&paths, dir.path()).unwrap();
         assert!(!result2);
+    }
+
+    #[test]
+    fn test_public_wrappers() {
+        let branch = GitResolver::resolve_branch();
+        assert!(branch.is_ok());
+
+        let ignored = GitResolver::verify_ignored(&["target/debug/test_dummy_file.png"]);
+        assert!(ignored.is_ok());
+    }
+
+    #[test]
+    fn test_verify_ignored_bare_repo() {
+        let dir = tempdir().unwrap();
+        gix::init_bare(dir.path()).unwrap();
+        let paths = vec![dir.path().join("file.png")];
+        let result = GitResolver::verify_ignored_impl(&paths, dir.path());
+        assert!(matches!(
+            result,
+            Err(GitError::Discover(ref msg)) if msg.contains("Bare repository")
+        ));
+    }
+
+    #[test]
+    fn test_resolve_branch_ci_providers() {
+        let dir = tempdir().unwrap();
+
+        // CircleCI
+        let mut vars = HashMap::new();
+        vars.insert("CIRCLECI".to_string(), "true".to_string());
+        vars.insert("CIRCLE_BRANCH".to_string(), "circle-branch".to_string());
+        let env = MockEnv { vars };
+        let result = GitResolver::resolve_branch_impl(None, dir.path(), &env);
+        assert_eq!(result.unwrap(), "circle-branch");
+
+        // Bitbucket
+        let mut vars = HashMap::new();
+        vars.insert("BITBUCKET_COMMIT".to_string(), "123".to_string());
+        vars.insert(
+            "BITBUCKET_BRANCH".to_string(),
+            "bitbucket-branch".to_string(),
+        );
+        let env = MockEnv { vars };
+        let result = GitResolver::resolve_branch_impl(None, dir.path(), &env);
+        assert_eq!(result.unwrap(), "bitbucket-branch");
+
+        // Azure DevOps
+        let mut vars = HashMap::new();
+        vars.insert("TF_BUILD".to_string(), "True".to_string());
+        vars.insert(
+            "BUILD_SOURCEBRANCHNAME".to_string(),
+            "azure-branch".to_string(),
+        );
+        let env = MockEnv { vars };
+        let result = GitResolver::resolve_branch_impl(None, dir.path(), &env);
+        assert_eq!(result.unwrap(), "azure-branch");
+
+        // Travis
+        let mut vars = HashMap::new();
+        vars.insert("TRAVIS".to_string(), "true".to_string());
+        vars.insert("TRAVIS_BRANCH".to_string(), "travis-branch".to_string());
+        let env = MockEnv { vars };
+        let result = GitResolver::resolve_branch_impl(None, dir.path(), &env);
+        assert_eq!(result.unwrap(), "travis-branch");
+
+        // Codemagic
+        let mut vars = HashMap::new();
+        vars.insert("CM_BUILD_ID".to_string(), "123".to_string());
+        vars.insert("CM_BRANCH".to_string(), "codemagic-branch".to_string());
+        let env = MockEnv { vars };
+        let result = GitResolver::resolve_branch_impl(None, dir.path(), &env);
+        assert_eq!(result.unwrap(), "codemagic-branch");
+
+        // Bitrise
+        let mut vars = HashMap::new();
+        vars.insert("BITRISE_IO".to_string(), "true".to_string());
+        vars.insert(
+            "BITRISE_GIT_BRANCH".to_string(),
+            "bitrise-branch".to_string(),
+        );
+        let env = MockEnv { vars };
+        let result = GitResolver::resolve_branch_impl(None, dir.path(), &env);
+        assert_eq!(result.unwrap(), "bitrise-branch");
+    }
+
+    #[test]
+    fn test_validation_empty_branch() {
+        assert!(validate_branch_name("").is_err());
+    }
+
+    #[test]
+    fn test_clean_branch_name_helper() {
+        assert_eq!(
+            clean_branch_name("  refs/heads/feature/branch  "),
+            "feature/branch"
+        );
+        assert_eq!(clean_branch_name("  feature-branch  "), "feature-branch");
+    }
+
+    #[test]
+    fn test_resolve_branch_gix_corrupt_head() {
+        let dir = tempdir().unwrap();
+        // Create a git repo where HEAD contains invalid data to cause HeadRead error
+        create_mock_git_repo(dir.path(), "invalid_data_no_ref_format");
+        let env = MockEnv {
+            vars: HashMap::new(),
+        };
+        let result = GitResolver::resolve_branch_impl(None, dir.path(), &env);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_verify_ignored_invalid_ignore_file() {
+        let dir = tempdir().unwrap();
+        create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
+
+        let gitignore_path = dir.path().join(".gitignore");
+        let mut file = File::create(&gitignore_path).unwrap();
+        writeln!(file, "*.png").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ =
+                std::fs::set_permissions(&gitignore_path, std::fs::Permissions::from_mode(0o000));
+        }
+
+        let paths = vec![dir.path().join("file.png")];
+        let result = GitResolver::verify_ignored_impl(&paths, dir.path()).unwrap();
+        assert!(!result);
+
+        // Restore permissions to allow cleanup
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ =
+                std::fs::set_permissions(&gitignore_path, std::fs::Permissions::from_mode(0o644));
+        }
+    }
+
+    #[test]
+    fn test_resolve_branch_invalid_env_override() {
+        let dir = tempdir().unwrap();
+        let mut vars = HashMap::new();
+        vars.insert("GLEON_BRANCH".to_string(), "invalid name space".to_string());
+        let env = MockEnv { vars };
+        let result = GitResolver::resolve_branch_impl(None, dir.path(), &env);
+        assert!(matches!(result, Err(GitError::InvalidBranchName(_))));
+    }
+
+    #[test]
+    fn test_normalize_path_cur_dir() {
+        let path = Path::new("./file.png");
+        let norm = normalize_path(path);
+        assert_eq!(norm, Path::new("file.png"));
     }
 }

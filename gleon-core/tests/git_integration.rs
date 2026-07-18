@@ -41,8 +41,8 @@ fn test_verify_ignored_outside_repo() {
     let current_dir = env::current_dir().unwrap();
     let workspace_root = current_dir.parent().unwrap();
 
-    // A path completely outside the repository (e.g., /tmp)
-    let outside_path = PathBuf::from("/tmp/some_fake_file.png");
+    // A path completely outside the repository (sibling of workspace root)
+    let outside_path = workspace_root.parent().unwrap().join("some_fake_file.png");
 
     let result = GitResolver::verify_ignored_impl(&[outside_path], workspace_root);
     assert!(
@@ -57,8 +57,8 @@ fn test_verify_ignored_relative_outside_repo() {
     let current_dir = env::current_dir().unwrap();
     let workspace_root = current_dir.parent().unwrap();
 
-    // A relative path escaping the workspace (e.g., ../../../../../../etc/passwd)
-    let outside_path = PathBuf::from("tests/fixtures/git/../../../../../../etc/passwd");
+    // A relative path escaping the workspace
+    let outside_path = PathBuf::from("tests/fixtures/git/../../../../../../some_outside_file.txt");
 
     let result = GitResolver::verify_ignored_impl(&[outside_path], workspace_root);
     assert!(
