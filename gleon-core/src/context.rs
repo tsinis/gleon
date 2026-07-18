@@ -4,16 +4,19 @@ use crate::platform::{PlatformEnv, PlatformError, PlatformInfo, PlatformResolver
 
 #[derive(Debug, thiserror::Error)]
 pub enum ContextError {
-    #[error(transparent)]
+    #[error("Configuration error: {0}")]
     Config(#[from] ConfigError),
-    #[error(transparent)]
+    #[error("Platform error: {0}")]
     Platform(#[from] PlatformError),
+    #[error("Git error: {0}")]
+    Git(#[from] crate::git::GitError),
 }
 
 #[derive(Debug)]
 pub struct ResolvedContext {
     pub config: Option<GleonConfig>,
     pub platform: PlatformInfo,
+    pub branch: String,
 }
 
 impl ResolvedContext {
@@ -40,7 +43,17 @@ impl ResolvedContext {
             config.as_ref().and_then(|c| c.platform.as_ref()),
         )?;
 
-        Ok(Self { config, platform })
+        let branch = crate::git::GitResolver::resolve_branch_impl(
+            cli.branch.as_deref(),
+            base_dir,
+            &crate::git::OsEnv,
+        )?;
+
+        Ok(Self {
+            config,
+            platform,
+            branch,
+        })
     }
 }
 
@@ -52,9 +65,18 @@ mod tests {
     use std::io::Write;
     use tempfile::tempdir;
 
+    fn create_mock_git_repo(path: &std::path::Path, head_content: &str) {
+        let git_dir = path.join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::create_dir_all(git_dir.join("objects")).unwrap();
+        std::fs::create_dir_all(git_dir.join("refs")).unwrap();
+        std::fs::write(git_dir.join("HEAD"), head_content).unwrap();
+    }
+
     #[test]
     fn test_from_cli_with_config_path() {
         let dir = tempdir().unwrap();
+        create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
         let config_path = dir.path().join("my_config.yaml");
         let mut file = File::create(&config_path).unwrap();
         writeln!(
@@ -79,11 +101,13 @@ mod tests {
 
         let context = ResolvedContext::from_cli(&cli, dir.path()).unwrap();
         assert!(context.config.is_some());
+        assert_eq!(context.branch, "main");
     }
 
     #[test]
     fn test_from_cli_no_config_no_default_file() {
         let dir = tempdir().unwrap();
+        create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
         let cli = Cli {
             branch: None,
             target_branch: "main".to_string(),
@@ -100,11 +124,13 @@ mod tests {
 
         let context = ResolvedContext::from_cli(&cli, dir.path()).unwrap();
         assert!(context.config.is_none());
+        assert_eq!(context.branch, "main");
     }
 
     #[test]
     fn test_from_cli_no_config_with_default_file() {
         let dir = tempdir().unwrap();
+        create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
         let default_path = dir.path().join("gleon.yaml");
         let mut file = File::create(&default_path).unwrap();
         writeln!(
@@ -129,5 +155,6 @@ mod tests {
 
         let context = ResolvedContext::from_cli(&cli, dir.path()).unwrap();
         assert!(context.config.is_some());
+        assert_eq!(context.branch, "main");
     }
 }

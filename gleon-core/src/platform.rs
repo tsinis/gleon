@@ -136,6 +136,12 @@ impl PlatformFields {
                 }
             }
         } else if let Some((os, arch)) = s.split_once('-') {
+            if arch.contains('-') {
+                return Err(format!(
+                    "invalid format: ambiguous platform string '{}'. Use 'key=value' comma-separated format for complex platforms",
+                    s
+                ));
+            }
             fields.os = Some(os.to_string());
             fields.arch = Some(arch.to_string());
         } else {
@@ -156,6 +162,11 @@ pub fn validate_segment(s: &str) -> Result<String, PlatformError> {
         ));
     }
     let lowered = trimmed.to_lowercase();
+    if lowered == "." || lowered == ".." {
+        return Err(PlatformError::InvalidSegment(
+            "Segment cannot be '.' or '..' to avoid directory traversal".into(),
+        ));
+    }
     if lowered
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
@@ -502,6 +513,7 @@ mod tests {
         assert_eq!(fields_simple.arch.as_deref(), Some("aarch64"));
 
         assert!(PlatformFields::parse_key_value("os=macos,arch=").is_err());
+        assert!(PlatformFields::parse_key_value("macos-aarch64-extra").is_err());
     }
 
     #[test]
@@ -700,6 +712,8 @@ labels:
         assert!(validate_segment("mac os").is_err());
         assert!(validate_segment("mac/os").is_err());
         assert!(validate_segment("mac!").is_err());
+        assert!(validate_segment(".").is_err());
+        assert!(validate_segment("..").is_err());
     }
 
     #[test]

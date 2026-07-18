@@ -505,21 +505,119 @@ pub struct ManifestIndex {
     pub test_manifests: BTreeMap<String, String>,
 }
 
+fn load_json<T: serde::de::DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<T, ConfigError> {
+    let path = path.as_ref();
+    let file = std::fs::File::open(path).map_err(|e| {
+        tracing::debug!("Failed to open JSON file at {:?}: {}", path, e);
+        ConfigError::Io(e)
+    })?;
+    let reader = std::io::BufReader::new(file);
+    let value: T = serde_json::from_reader(reader).map_err(|e| {
+        tracing::error!("Failed to parse JSON file at {:?}: {}", path, e);
+        ConfigError::JsonParse(e)
+    })?;
+    Ok(value)
+}
+
+fn save_json_atomically<T: serde::Serialize, P: AsRef<Path>>(
+    path: P,
+    value: &T,
+) -> Result<(), ConfigError> {
+    let path = path.as_ref();
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+
+    if !parent.exists() {
+        tracing::debug!("Creating parent directories for JSON path: {:?}", parent);
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid file name")
+    })?;
+
+    let temp_file = tempfile::Builder::new()
+        .prefix(file_name)
+        .suffix(".tmp")
+        .tempfile_in(parent)?;
+
+    use std::io::Write;
+    let mut writer = std::io::BufWriter::new(temp_file);
+    serde_json::to_writer_pretty(&mut writer, value)?;
+    writer.flush()?;
+    let temp_file = writer
+        .into_inner()
+        .map_err(|e| ConfigError::Io(e.into_error()))?;
+
+    #[cfg(all(unix, not(miri)))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = temp_file
+            .as_file()
+            .metadata()
+            .map_err(ConfigError::Io)?
+            .permissions();
+        if let Ok(existing) = std::fs::metadata(path) {
+            perms.set_mode(existing.permissions().mode());
+        } else {
+            perms.set_mode(0o644);
+        }
+        temp_file
+            .as_file()
+            .set_permissions(perms)
+            .map_err(ConfigError::Io)?;
+    }
+
+    temp_file.as_file().sync_all().map_err(ConfigError::Io)?;
+
+    temp_file.persist(path).map_err(|e| {
+        tracing::error!("Failed to save JSON atomically to {:?}: {}", path, e);
+        ConfigError::Io(e.error)
+    })?;
+
+    if let Some(dir) = path.parent().and_then(|p| std::fs::File::open(p).ok()) {
+        let _ = dir.sync_all();
+    }
+
+    Ok(())
+}
+
 impl Manifest {
+    /// Validates that entry schemes match the manifest hash algorithm,
+    /// and that sha256 digests are structurally valid (64 hex characters).
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let algo_lower = self.hash_algo.to_lowercase();
+        for (path, entry) in &self.entries {
+            if entry.hash.scheme.to_lowercase() != algo_lower {
+                return Err(ConfigError::Validation(format!(
+                    "Manifest entry '{}' has hash scheme '{}', but manifest hash_algo is '{}'",
+                    path, entry.hash.scheme, self.hash_algo
+                )));
+            }
+            if algo_lower == "sha256" {
+                if entry.hash.value.len() != 64 {
+                    return Err(ConfigError::Validation(format!(
+                        "Manifest entry '{}' has invalid sha256 hash length: expected 64 hex characters, got {}",
+                        path,
+                        entry.hash.value.len()
+                    )));
+                }
+                if !entry.hash.value.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err(ConfigError::Validation(format!(
+                        "Manifest entry '{}' has invalid sha256 hash value: expected hex characters, got '{}'",
+                        path, entry.hash.value
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Load a manifest from a JSON file.
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         tracing::debug!("Loading manifest from {:?}", path);
-
-        let file = std::fs::File::open(path).map_err(|e| {
-            tracing::debug!("Failed to open manifest at {:?}: {}", path, e);
-            ConfigError::Io(e)
-        })?;
-        let reader = std::io::BufReader::new(file);
-        let manifest: Manifest = serde_json::from_reader(reader).map_err(|e| {
-            tracing::error!("Failed to parse JSON manifest at {:?}: {}", path, e);
-            ConfigError::JsonParse(e)
-        })?;
+        let manifest: Self = load_json(path)?;
+        manifest.validate()?;
         Ok(manifest)
     }
 
@@ -527,66 +625,8 @@ impl Manifest {
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), ConfigError> {
         let path = path.as_ref();
         tracing::info!("Saving manifest to {:?}", path);
-
-        // Determine temporary file path in the same folder to guarantee atomic rename capability
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
-
-        if !parent.exists() {
-            tracing::debug!("Creating parent directories for manifest: {:?}", parent);
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let file_name = path.file_name().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid file name")
-        })?;
-
-        // Create a unique temporary file in the same directory to avoid concurrency issues and symlink attacks.
-        let temp_file = tempfile::Builder::new()
-            .prefix(file_name)
-            .suffix(".tmp")
-            .tempfile_in(parent)?;
-
-        // Write to temporary file with buffered I/O.
-        // We transfer ownership of temp_file to BufWriter to avoid a redundant flush on drop.
-        use std::io::Write;
-        let mut writer = std::io::BufWriter::new(temp_file);
-        serde_json::to_writer_pretty(&mut writer, self)?;
-        writer.flush()?;
-        let temp_file = writer
-            .into_inner()
-            .map_err(|e| ConfigError::Io(e.into_error()))?;
-
-        // If the target path already exists, preserve its existing permissions.
-        // Otherwise, retain the temporary file's default secure permissions (e.g., 0o600).
-        #[cfg(all(unix, not(miri)))]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = temp_file
-                .as_file()
-                .metadata()
-                .map_err(ConfigError::Io)?
-                .permissions();
-            if let Ok(existing) = std::fs::metadata(path) {
-                perms.set_mode(existing.permissions().mode());
-            }
-            temp_file
-                .as_file()
-                .set_permissions(perms)
-                .map_err(ConfigError::Io)?;
-        }
-
-        temp_file.as_file().sync_all().map_err(ConfigError::Io)?;
-
-        // Atomically persist (rename) the temporary file to the final destination.
-        temp_file.persist(path).map_err(|e| {
-            tracing::error!("Failed to save manifest atomically to {:?}: {}", path, e);
-            ConfigError::Io(e.error)
-        })?;
-
-        if let Some(dir) = path.parent().and_then(|p| std::fs::File::open(p).ok()) {
-            let _ = dir.sync_all();
-        }
-
+        self.validate()?;
+        save_json_atomically(path, self)?;
         tracing::debug!("Manifest saved successfully to {:?}", path);
         Ok(())
     }
@@ -597,16 +637,7 @@ impl ManifestIndex {
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         tracing::debug!("Loading manifest index from {:?}", path);
-
-        let file = std::fs::File::open(path).map_err(|e| {
-            tracing::debug!("Failed to open manifest index at {:?}: {}", path, e);
-            ConfigError::Io(e)
-        })?;
-        let reader = std::io::BufReader::new(file);
-        let index: ManifestIndex = serde_json::from_reader(reader).map_err(|e| {
-            tracing::error!("Failed to parse JSON manifest index at {:?}: {}", path, e);
-            ConfigError::JsonParse(e)
-        })?;
+        let index: Self = load_json(path)?;
         Ok(index)
     }
 
@@ -614,66 +645,7 @@ impl ManifestIndex {
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), ConfigError> {
         let path = path.as_ref();
         tracing::info!("Saving manifest index to {:?}", path);
-
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
-
-        if !parent.exists() {
-            tracing::debug!(
-                "Creating parent directories for manifest index: {:?}",
-                parent
-            );
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let file_name = path.file_name().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid file name")
-        })?;
-
-        let temp_file = tempfile::Builder::new()
-            .prefix(file_name)
-            .suffix(".tmp")
-            .tempfile_in(parent)?;
-
-        use std::io::Write;
-        let mut writer = std::io::BufWriter::new(temp_file);
-        serde_json::to_writer_pretty(&mut writer, self)?;
-        writer.flush()?;
-        let temp_file = writer
-            .into_inner()
-            .map_err(|e| ConfigError::Io(e.into_error()))?;
-
-        #[cfg(all(unix, not(miri)))]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = temp_file
-                .as_file()
-                .metadata()
-                .map_err(ConfigError::Io)?
-                .permissions();
-            if let Ok(existing) = std::fs::metadata(path) {
-                perms.set_mode(existing.permissions().mode());
-            }
-            temp_file
-                .as_file()
-                .set_permissions(perms)
-                .map_err(ConfigError::Io)?;
-        }
-
-        temp_file.as_file().sync_all().map_err(ConfigError::Io)?;
-
-        temp_file.persist(path).map_err(|e| {
-            tracing::error!(
-                "Failed to save manifest index atomically to {:?}: {}",
-                path,
-                e
-            );
-            ConfigError::Io(e.error)
-        })?;
-
-        if let Some(dir) = path.parent().and_then(|p| std::fs::File::open(p).ok()) {
-            let _ = dir.sync_all();
-        }
-
+        save_json_atomically(path, self)?;
         tracing::debug!("Manifest index saved successfully to {:?}", path);
         Ok(())
     }
@@ -1120,6 +1092,113 @@ screenshots:
         manifest.save(&file_path).unwrap();
         let loaded = Manifest::load(&file_path).unwrap();
         assert_eq!(manifest, loaded);
+    }
+
+    #[test]
+    fn test_manifest_validation_failures() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("invalid_manifest.json");
+
+        // 1. Hash algorithm mismatch
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            "test.png".to_string(),
+            ManifestEntry {
+                hash: ImageHash::new(
+                    "pixel",
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                ),
+                width: 10,
+                height: 10,
+                created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
+                created_by: "user".to_string(),
+                source_commit: "abc".to_string(),
+            },
+        );
+        let manifest_mismatch = Manifest {
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: entries.clone(),
+        };
+        let save_err = manifest_mismatch.save(&file_path).unwrap_err();
+        assert!(
+            matches!(save_err, ConfigError::Validation(ref msg) if msg.contains("hash scheme"))
+        );
+
+        // 2. Truncated sha256 value (e.g. 63 characters instead of 64)
+        let mut entries_truncated = BTreeMap::new();
+        entries_truncated.insert(
+            "test.png".to_string(),
+            ManifestEntry {
+                hash: ImageHash::new("sha256", "0".repeat(63)),
+                width: 10,
+                height: 10,
+                created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
+                created_by: "user".to_string(),
+                source_commit: "abc".to_string(),
+            },
+        );
+        let manifest_truncated = Manifest {
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: entries_truncated,
+        };
+        let save_err2 = manifest_truncated.save(&file_path).unwrap_err();
+        assert!(
+            matches!(save_err2, ConfigError::Validation(ref msg) if msg.contains("invalid sha256 hash length"))
+        );
+
+        // 3. Non-hex characters in sha256
+        let mut entries_non_hex = BTreeMap::new();
+        entries_non_hex.insert(
+            "test.png".to_string(),
+            ManifestEntry {
+                hash: ImageHash::new("sha256", "z".repeat(64)),
+                width: 10,
+                height: 10,
+                created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
+                created_by: "user".to_string(),
+                source_commit: "abc".to_string(),
+            },
+        );
+        let manifest_non_hex = Manifest {
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: entries_non_hex,
+        };
+        let save_err3 = manifest_non_hex.save(&file_path).unwrap_err();
+        assert!(
+            matches!(save_err3, ConfigError::Validation(ref msg) if msg.contains("invalid sha256 hash value"))
+        );
+
+        // 4. Case-insensitive hash algorithm validation (should succeed)
+        let mut entries_mixed_case = BTreeMap::new();
+        entries_mixed_case.insert(
+            "test.png".to_string(),
+            ManifestEntry {
+                hash: ImageHash::new("sHa256", "0".repeat(64)),
+                width: 10,
+                height: 10,
+                created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
+                created_by: "user".to_string(),
+                source_commit: "abc".to_string(),
+            },
+        );
+        let manifest_mixed_case = Manifest {
+            schema_version: 1,
+            hash_algo: "ShA256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: entries_mixed_case,
+        };
+        // This should pass because algorithms are compared case-insensitively.
+        assert!(manifest_mixed_case.save(&file_path).is_ok());
     }
 
     #[test]

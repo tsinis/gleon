@@ -319,3 +319,15 @@ fn test_status_cli_platform_conflict_with_env_platform() -> Result<(), Box<dyn s
         .stderr(predicates::str::contains("opaque platform configuration"));
     Ok(())
 }
+
+#[test]
+fn test_status_with_real_git_repo() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.arg("status")
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("Platform resolved successfully"))
+        .stdout(predicates::str::contains("Branch:"))
+        .stdout(predicates::str::contains("Key:"));
+    Ok(())
+}

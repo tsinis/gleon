@@ -156,6 +156,7 @@ impl GitResolver {
                 ));
             }
         };
+        let repo_root = normalize_path(repo_root);
 
         // Pre-process paths into absolute and relative counterparts, resolving path traversal
         let mut processed_paths = Vec::with_capacity(paths.len());
@@ -169,15 +170,15 @@ impl GitResolver {
             let abs_path = normalize_path(&abs_path);
 
             // Check if the path is actually inside the repository
-            if !abs_path.starts_with(repo_root) {
+            if !abs_path.starts_with(&repo_root) {
                 return Err(GitError::OutsideRepository(abs_path));
             }
 
-            let rel_path = abs_path.strip_prefix(repo_root).unwrap().to_path_buf();
+            let rel_path = abs_path.strip_prefix(&repo_root).unwrap().to_path_buf();
             processed_paths.push((abs_path, rel_path));
         }
 
-        let mut builder = ignore::gitignore::GitignoreBuilder::new(repo_root);
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(&repo_root);
 
         // Add .git/info/exclude if it exists
         let exclude_path = repo.git_dir().join("info/exclude");
@@ -300,11 +301,19 @@ impl GitResolver {
             let name = actor.name.to_string();
             let email = actor.email.to_string();
             if name.is_empty() && email.is_empty() {
+                tracing::debug!(
+                    "Commit author name and email are empty for commit '{}'",
+                    commit_sha
+                );
                 Ok("unknown".to_string())
             } else {
                 Ok(format!("{} <{}>", name, email))
             }
         } else {
+            tracing::debug!(
+                "Failed to parse author signature bytes for commit '{}'",
+                commit_sha
+            );
             Ok("unknown".to_string())
         }
     }
@@ -722,6 +731,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn test_verify_ignored_bare_repo() {
         let dir = tempdir().unwrap();
         gix::init_bare(dir.path()).unwrap();
