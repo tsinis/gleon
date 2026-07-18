@@ -238,7 +238,7 @@ fn test_verbose_flag_coverage() -> Result<(), Box<dyn std::error::Error>> {
         .success()
         .stderr(predicates::str::contains("Platform resolved successfully"))
         .stderr(predicates::str::contains("INFO"))
-        .stderr(predicates::str::contains("Gleon CLI starting up..."));
+        .stderr(predicates::str::contains("gleon CLI starting up..."));
     Ok(())
 }
 
@@ -252,7 +252,7 @@ fn test_quiet_flag_coverage() -> Result<(), Box<dyn std::error::Error>> {
         .assert()
         .success()
         .stderr(predicates::str::contains("Platform resolved successfully").not())
-        .stderr(predicates::str::contains("Gleon CLI starting up...").not());
+        .stderr(predicates::str::contains("gleon CLI starting up...").not());
     Ok(())
 }
 
@@ -317,5 +317,27 @@ fn test_status_cli_platform_conflict_with_env_platform() -> Result<(), Box<dyn s
         .assert()
         .failure()
         .stderr(predicates::str::contains("opaque platform configuration"));
+    Ok(())
+}
+
+#[cfg(not(miri))]
+#[test]
+fn test_status_with_real_git_repo() -> Result<(), Box<dyn std::error::Error>> {
+    let mut repo_root = std::env::current_dir()?;
+    while !repo_root.join(".git").exists() {
+        if !repo_root.pop() {
+            eprintln!("Skipping test: not running inside a git repository");
+            return Ok(());
+        }
+    }
+
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.current_dir(repo_root)
+        .arg("status")
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("Platform resolved successfully"))
+        .stdout(predicates::str::contains("Branch:"))
+        .stdout(predicates::str::contains("Key:"));
     Ok(())
 }

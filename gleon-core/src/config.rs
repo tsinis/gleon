@@ -1,4 +1,4 @@
-//! Configuration and manifest models for Gleon.
+//! Configuration and manifest models for gleon.
 
 use crate::platform::PlatformConfig;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -26,11 +26,11 @@ pub enum ConfigError {
     #[error("Failed to parse JSON manifest: {0}")]
     JsonParse(#[from] serde_json::Error),
 
-    /// Gleon CLI version does not satisfy the required_version.
+    /// gleon CLI version does not satisfy the required_version.
     #[error("Incompatible version. Required: {0}, Current: {1}")]
     IncompatibleVersion(String, String),
 
-    /// Gleon CLI version string is not a valid semver format.
+    /// gleon CLI version string is not a valid semver format.
     #[error("Invalid version format: {0}")]
     InvalidVersionFormat(String),
 
@@ -166,9 +166,53 @@ impl Serialize for GlobPattern {
     }
 }
 
-/// A strongly-typed 32-byte hash (e.g. SHA256 or Blake3), serialized as a 64-character hex string.
+/// A strongly-typed image comparison hash, serialized as a `scheme:value` string.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ImageHash(pub [u8; 32]);
+pub struct ImageHash {
+    /// The hashing scheme/algorithm (e.g. "sha256", "phash", "dhash", "ssim").
+    scheme: String,
+    /// The hex or alphanumeric representation of the hash.
+    value: String,
+}
+
+fn validate_hash_parts(scheme: &str, value: &str) -> Result<(), String> {
+    if scheme.is_empty() {
+        return Err("Hash scheme cannot be empty".to_string());
+    }
+    if value.is_empty() {
+        return Err("Hash value cannot be empty".to_string());
+    }
+    if !value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err("Hash value contains invalid characters".to_string());
+    }
+    Ok(())
+}
+
+impl ImageHash {
+    /// Constructs a new ImageHash, returning a validation error if invalid.
+    pub fn new(scheme: impl Into<String>, value: impl Into<String>) -> Result<Self, ConfigError> {
+        let scheme_str = scheme.into();
+        let value_str = value.into();
+        validate_hash_parts(&scheme_str, &value_str).map_err(ConfigError::Validation)?;
+        Ok(Self {
+            scheme: scheme_str,
+            value: value_str,
+        })
+    }
+
+    /// Gets the hashing scheme.
+    pub fn scheme(&self) -> &str {
+        &self.scheme
+    }
+
+    /// Gets the hash value.
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+}
 
 impl<'de> Deserialize<'de> for ImageHash {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -176,15 +220,16 @@ impl<'de> Deserialize<'de> for ImageHash {
         D: Deserializer<'de>,
     {
         String::deserialize(deserializer).and_then(|s| {
-            if s.len() != 64 {
-                return Err(serde::de::Error::custom(
-                    "Hash must be exactly 64 characters long",
-                ));
-            }
-            let mut bytes = [0u8; 32];
-            hex::decode_to_slice(&s, &mut bytes)
-                .map_err(serde::de::Error::custom)
-                .map(|_| ImageHash(bytes))
+            let (scheme, value) = s
+                .split_once(':')
+                .ok_or_else(|| serde::de::Error::custom("Hash must be in 'scheme:value' format"))?;
+
+            validate_hash_parts(scheme, value).map_err(serde::de::Error::custom)?;
+
+            Ok(ImageHash {
+                scheme: scheme.to_string(),
+                value: value.to_string(),
+            })
         })
     }
 }
@@ -194,18 +239,18 @@ impl Serialize for ImageHash {
     where
         S: Serializer,
     {
-        let hex_str = hex::encode(self.0);
-        serializer.serialize_str(&hex_str)
+        let s = format!("{}:{}", self.scheme, self.value);
+        serializer.serialize_str(&s)
     }
 }
 
 impl std::fmt::Display for ImageHash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
+        write!(f, "{}:{}", self.scheme, self.value)
     }
 }
 
-/// The root configuration structure for Gleon.
+/// The root configuration structure for gleon.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct GleonConfig {
@@ -446,42 +491,158 @@ impl GleonConfig {
 
 /// The manifest file structure representing previous run results.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Manifest {
-    /// Manifest schema/format version.
-    pub version: u64,
-    /// Map of relative file paths to their metadata entries.
-    /// Uses `BTreeMap` for deterministic key ordering in serialized JSON output.
-    pub screenshots: BTreeMap<String, ManifestEntry>,
+    pub schema_version: u64,
+    pub hash_algo: String,
+    pub pixel_format: String,
+    pub generator_version: String,
+    pub entries: BTreeMap<String, ManifestEntry>,
 }
 
 /// Metadata entry for a single verified screenshot.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ManifestEntry {
-    /// SHA-256 hash of the image content.
     pub hash: ImageHash,
-    /// Optional metadata payload.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub meta: Option<serde_json::Value>,
-    /// UTC timestamp of the check run.
-    pub timestamp_utc: chrono::DateTime<chrono::Utc>,
+    pub width: u32,
+    pub height: u32,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub created_by: String,
+    pub source_commit: String,
+}
+
+pub const SUPPORTED_MANIFEST_SCHEMA_VERSION: u64 = 1;
+pub const SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION: u64 = 1;
+
+/// The index mapping test paths to their respective manifest hashes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestIndex {
+    pub schema_version: u64,
+    pub test_manifests: BTreeMap<String, ImageHash>,
+}
+
+fn load_json<T: serde::de::DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<T, ConfigError> {
+    let path = path.as_ref();
+    let file = std::fs::File::open(path).map_err(|e| {
+        tracing::debug!("Failed to open JSON file at {:?}: {}", path, e);
+        ConfigError::Io(e)
+    })?;
+    let reader = std::io::BufReader::new(file);
+    let value: T = serde_json::from_reader(reader).map_err(|e| {
+        tracing::error!("Failed to parse JSON file at {:?}: {}", path, e);
+        ConfigError::JsonParse(e)
+    })?;
+    Ok(value)
+}
+
+fn save_json_atomically<T: serde::Serialize, P: AsRef<Path>>(
+    path: P,
+    value: &T,
+) -> Result<(), ConfigError> {
+    let path = path.as_ref();
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+
+    if !parent.exists() {
+        tracing::debug!("Creating parent directories for JSON path: {:?}", parent);
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid file name")
+    })?;
+
+    let temp_file = tempfile::Builder::new()
+        .prefix(file_name)
+        .suffix(".tmp")
+        .tempfile_in(parent)?;
+
+    use std::io::Write;
+    let mut writer = std::io::BufWriter::new(temp_file);
+    serde_json::to_writer_pretty(&mut writer, value)?;
+    writer.flush()?;
+    let temp_file = writer
+        .into_inner()
+        .map_err(|e| ConfigError::Io(e.into_error()))?;
+
+    #[cfg(all(unix, not(miri)))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = temp_file
+            .as_file()
+            .metadata()
+            .map_err(ConfigError::Io)?
+            .permissions();
+        if let Ok(existing) = std::fs::metadata(path) {
+            perms.set_mode(existing.permissions().mode());
+        }
+        temp_file
+            .as_file()
+            .set_permissions(perms)
+            .map_err(ConfigError::Io)?;
+    }
+
+    temp_file.as_file().sync_all().map_err(ConfigError::Io)?;
+
+    temp_file.persist(path).map_err(|e| {
+        tracing::error!("Failed to save JSON atomically to {:?}: {}", path, e);
+        ConfigError::Io(e.error)
+    })?;
+
+    if let Some(dir) = path.parent().and_then(|p| std::fs::File::open(p).ok()) {
+        dir.sync_all().map_err(ConfigError::Io)
+    } else {
+        Ok(())
+    }
 }
 
 impl Manifest {
+    /// Validates that entry schemes match the manifest hash algorithm,
+    /// and that sha256 digests are structurally valid (64 hex characters).
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.schema_version != SUPPORTED_MANIFEST_SCHEMA_VERSION {
+            return Err(ConfigError::Validation(format!(
+                "Unsupported manifest schema version: expected {}, got {}",
+                SUPPORTED_MANIFEST_SCHEMA_VERSION, self.schema_version
+            )));
+        }
+        let algo_lower = self.hash_algo.to_lowercase();
+        for (path, entry) in &self.entries {
+            if entry.hash.scheme().to_lowercase() != algo_lower {
+                return Err(ConfigError::Validation(format!(
+                    "Manifest entry '{}' has hash scheme '{}', but manifest hash_algo is '{}'",
+                    path,
+                    entry.hash.scheme(),
+                    self.hash_algo
+                )));
+            }
+            if algo_lower == "sha256" {
+                if entry.hash.value().len() != 64 {
+                    return Err(ConfigError::Validation(format!(
+                        "Manifest entry '{}' has invalid sha256 hash length: expected 64 hex characters, got {}",
+                        path,
+                        entry.hash.value().len()
+                    )));
+                }
+                if !entry.hash.value().chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err(ConfigError::Validation(format!(
+                        "Manifest entry '{}' has invalid sha256 hash value: expected hex characters, got '{}'",
+                        path,
+                        entry.hash.value()
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Load a manifest from a JSON file.
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         tracing::debug!("Loading manifest from {:?}", path);
-
-        let file = std::fs::File::open(path).map_err(|e| {
-            tracing::debug!("Failed to open manifest at {:?}: {}", path, e);
-            ConfigError::Io(e)
-        })?;
-        let reader = std::io::BufReader::new(file);
-        let manifest: Manifest = serde_json::from_reader(reader).map_err(|e| {
-            tracing::error!("Failed to parse JSON manifest at {:?}: {}", path, e);
-            ConfigError::JsonParse(e)
-        })?;
+        let manifest: Self = load_json(path)?;
+        manifest.validate()?;
         Ok(manifest)
     }
 
@@ -489,67 +650,41 @@ impl Manifest {
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), ConfigError> {
         let path = path.as_ref();
         tracing::info!("Saving manifest to {:?}", path);
-
-        // Determine temporary file path in the same folder to guarantee atomic rename capability
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
-
-        if !parent.exists() {
-            tracing::debug!("Creating parent directories for manifest: {:?}", parent);
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let file_name = path.file_name().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid file name")
-        })?;
-
-        // Create a unique temporary file in the same directory to avoid concurrency issues and symlink attacks.
-        let temp_file = tempfile::Builder::new()
-            .prefix(file_name)
-            .suffix(".tmp")
-            .tempfile_in(parent)?;
-
-        // Write to temporary file with buffered I/O.
-        // We transfer ownership of temp_file to BufWriter to avoid a redundant flush on drop.
-        use std::io::Write;
-        let mut writer = std::io::BufWriter::new(temp_file);
-        serde_json::to_writer_pretty(&mut writer, self)?;
-        writer.flush()?;
-        let temp_file = writer
-            .into_inner()
-            .map_err(|e| ConfigError::Io(e.into_error()))?;
-
-        // If the target path already exists, preserve its existing permissions.
-        // Otherwise, retain the temporary file's default secure permissions (e.g., 0o600).
-        #[cfg(all(unix, not(miri)))]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = temp_file
-                .as_file()
-                .metadata()
-                .map_err(ConfigError::Io)?
-                .permissions();
-            if let Ok(existing) = std::fs::metadata(path) {
-                perms.set_mode(existing.permissions().mode());
-            }
-            temp_file
-                .as_file()
-                .set_permissions(perms)
-                .map_err(ConfigError::Io)?;
-        }
-
-        temp_file.as_file().sync_all().map_err(ConfigError::Io)?;
-
-        // Atomically persist (rename) the temporary file to the final destination.
-        temp_file.persist(path).map_err(|e| {
-            tracing::error!("Failed to save manifest atomically to {:?}: {}", path, e);
-            ConfigError::Io(e.error)
-        })?;
-
-        if let Some(dir) = path.parent().and_then(|p| std::fs::File::open(p).ok()) {
-            let _ = dir.sync_all();
-        }
-
+        self.validate()?;
+        save_json_atomically(path, self)?;
         tracing::debug!("Manifest saved successfully to {:?}", path);
+        Ok(())
+    }
+}
+
+impl ManifestIndex {
+    /// Validates that the schema version is supported.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.schema_version != SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION {
+            return Err(ConfigError::Validation(format!(
+                "Unsupported manifest index schema version: expected {}, got {}",
+                SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION, self.schema_version
+            )));
+        }
+        Ok(())
+    }
+
+    /// Load a manifest index from a JSON file.
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+        tracing::debug!("Loading manifest index from {:?}", path);
+        let index: Self = load_json(path)?;
+        index.validate()?;
+        Ok(index)
+    }
+
+    /// Save a manifest index to a JSON file atomically.
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), ConfigError> {
+        let path = path.as_ref();
+        tracing::info!("Saving manifest index to {:?}", path);
+        self.validate()?;
+        save_json_atomically(path, self)?;
+        tracing::debug!("Manifest index saved successfully to {:?}", path);
         Ok(())
     }
 }
@@ -612,34 +747,62 @@ mod tests {
     }
 
     #[test]
+    fn test_image_hash_prefixed_serialization() {
+        let hash = ImageHash::new(
+            "sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap();
+        let json = serde_json::to_string(&hash).unwrap();
+        assert_eq!(
+            json,
+            "\"sha256:0000000000000000000000000000000000000000000000000000000000000000\""
+        );
+
+        let deserialized: ImageHash = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, hash);
+
+        // Test different scheme
+        let pixel_hash = ImageHash::new("pixel", "a1b2c3d4").unwrap();
+        let pixel_json = serde_json::to_string(&pixel_hash).unwrap();
+        assert_eq!(pixel_json, "\"pixel:a1b2c3d4\"");
+        let deserialized_pixel: ImageHash = serde_json::from_str(&pixel_json).unwrap();
+        assert_eq!(deserialized_pixel, pixel_hash);
+
+        // Missing prefix should fail
+        let bad_json = "\"0000000000000000000000000000000000000000000000000000000000000000\"";
+        assert!(serde_json::from_str::<ImageHash>(bad_json).is_err());
+    }
+
+    #[test]
     fn test_manifest_json_snapshot() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("manifest.json");
 
-        let mut screenshots = BTreeMap::new();
-        let mut meta_map = serde_json::Map::new();
-        // Insert out of alphabetical order to test sorting
-        let _ = meta_map.insert(
-            "b_key".to_string(),
-            serde_json::Value::String("value_b".to_string()),
-        );
-        let _ = meta_map.insert(
-            "a_key".to_string(),
-            serde_json::Value::String("value_a".to_string()),
-        );
+        let mut entries = BTreeMap::new();
 
-        let _ = screenshots.insert(
+        let _ = entries.insert(
             "src/login.png".to_string(),
             ManifestEntry {
-                hash: ImageHash([0; 32]),
-                timestamp_utc: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
-                meta: Some(serde_json::Value::Object(meta_map)),
+                hash: ImageHash::new(
+                    "sha256",
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                )
+                .unwrap(),
+                width: 800,
+                height: 600,
+                created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
+                created_by: "Test User <test@example.com>".to_string(),
+                source_commit: "abcdef1234567890".to_string(),
             },
         );
 
         let manifest = Manifest {
-            version: 1,
-            screenshots,
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries,
         };
 
         manifest.save(&file_path).unwrap();
@@ -651,6 +814,32 @@ mod tests {
         let expected_json = std::fs::read_to_string(fixture_path).unwrap();
 
         assert_eq!(generated_json.trim(), expected_json.trim());
+    }
+
+    #[test]
+    fn test_manifest_index_serialization() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("manifest_index.json");
+
+        let mut test_manifests = BTreeMap::new();
+        test_manifests.insert(
+            "tests/ui/login".to_string(),
+            ImageHash::new(
+                "sha256",
+                "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            )
+            .unwrap(),
+        );
+
+        let index = ManifestIndex {
+            schema_version: 1,
+            test_manifests,
+        };
+
+        index.save(&file_path).unwrap();
+
+        let loaded_index = ManifestIndex::load(&file_path).unwrap();
+        assert_eq!(index, loaded_index);
     }
 
     #[test]
@@ -883,37 +1072,36 @@ screenshots:
     }
 
     #[test]
-    fn test_image_hash_invalid_length_deserialization() {
-        // 63 characters
-        let json_short = "\"a0f2705b0b2e88b8e0e7a2b97cbb1f32a0f2705b0b2e88b8e0e7a2b97cbb1f3\"";
-        let res_short: Result<ImageHash, _> = serde_json::from_str(json_short);
-        assert!(res_short.is_err());
-        assert!(
-            res_short
-                .unwrap_err()
-                .to_string()
-                .contains("Hash must be exactly 64 characters long")
-        );
+    fn test_image_hash_invalid_format_deserialization() {
+        // Missing colon
+        let bad_json_1 =
+            "\"sha2560000000000000000000000000000000000000000000000000000000000000000\"";
+        assert!(serde_json::from_str::<ImageHash>(bad_json_1).is_err());
 
-        // 65 characters
-        let json_long = "\"a0f2705b0b2e88b8e0e7a2b97cbb1f32a0f2705b0b2e88b8e0e7a2b97cbb1f321\"";
-        let res_long: Result<ImageHash, _> = serde_json::from_str(json_long);
-        assert!(res_long.is_err());
-        assert!(
-            res_long
-                .unwrap_err()
-                .to_string()
-                .contains("Hash must be exactly 64 characters long")
-        );
+        // Empty scheme
+        let bad_json_2 = "\":00000000\"";
+        assert!(serde_json::from_str::<ImageHash>(bad_json_2).is_err());
+
+        // Empty value
+        let bad_json_3 = "\"sha256:\"";
+        assert!(serde_json::from_str::<ImageHash>(bad_json_3).is_err());
+
+        // Invalid characters
+        let bad_json_4 = "\"sha256:invalid?hash\"";
+        assert!(serde_json::from_str::<ImageHash>(bad_json_4).is_err());
     }
 
     #[test]
     fn test_image_hash_display() {
-        let hash = ImageHash([0u8; 32]);
+        let hash = ImageHash::new(
+            "sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap();
         let formatted = format!("{}", hash);
         assert_eq!(
             formatted,
-            "0000000000000000000000000000000000000000000000000000000000000000"
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000"
         );
     }
 
@@ -926,15 +1114,25 @@ screenshots:
         let _ = screenshots.insert(
             "src/login.png".to_string(),
             ManifestEntry {
-                hash: ImageHash([0; 32]),
-                timestamp_utc: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
-                meta: Some(serde_json::json!({ "device": "iPhone 15" })),
+                hash: ImageHash::new(
+                    "sha256",
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                )
+                .unwrap(),
+                width: 800,
+                height: 600,
+                created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
+                created_by: "Test User <test@example.com>".to_string(),
+                source_commit: "abcdef123".to_string(),
             },
         );
 
         let manifest = Manifest {
-            version: 1,
-            screenshots,
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: screenshots,
         };
 
         manifest.save(&file_path).unwrap();
@@ -943,13 +1141,146 @@ screenshots:
     }
 
     #[test]
+    fn test_manifest_validation_failures() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("invalid_manifest.json");
+
+        // 1. Hash algorithm mismatch
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            "test.png".to_string(),
+            ManifestEntry {
+                hash: ImageHash::new(
+                    "pixel",
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                )
+                .unwrap(),
+                width: 10,
+                height: 10,
+                created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
+                created_by: "user".to_string(),
+                source_commit: "abc".to_string(),
+            },
+        );
+        let manifest_mismatch = Manifest {
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: entries.clone(),
+        };
+        let save_err = manifest_mismatch.save(&file_path).unwrap_err();
+        assert!(
+            matches!(save_err, ConfigError::Validation(ref msg) if msg.contains("hash scheme"))
+        );
+
+        // 2. Truncated sha256 value (e.g. 63 characters instead of 64)
+        let mut entries_truncated = BTreeMap::new();
+        entries_truncated.insert(
+            "test.png".to_string(),
+            ManifestEntry {
+                hash: ImageHash::new("sha256", "0".repeat(63)).unwrap(),
+                width: 10,
+                height: 10,
+                created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
+                created_by: "user".to_string(),
+                source_commit: "abc".to_string(),
+            },
+        );
+        let manifest_truncated = Manifest {
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: entries_truncated,
+        };
+        let save_err2 = manifest_truncated.save(&file_path).unwrap_err();
+        assert!(
+            matches!(save_err2, ConfigError::Validation(ref msg) if msg.contains("invalid sha256 hash length"))
+        );
+
+        // 3. Non-hex characters in sha256
+        let mut entries_non_hex = BTreeMap::new();
+        entries_non_hex.insert(
+            "test.png".to_string(),
+            ManifestEntry {
+                hash: ImageHash::new("sha256", "z".repeat(64)).unwrap(),
+                width: 10,
+                height: 10,
+                created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
+                created_by: "user".to_string(),
+                source_commit: "abc".to_string(),
+            },
+        );
+        let manifest_non_hex = Manifest {
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: entries_non_hex,
+        };
+        let save_err3 = manifest_non_hex.save(&file_path).unwrap_err();
+        assert!(
+            matches!(save_err3, ConfigError::Validation(ref msg) if msg.contains("invalid sha256 hash value"))
+        );
+
+        // 4. Case-insensitive hash algorithm validation (should succeed)
+        let mut entries_mixed_case = BTreeMap::new();
+        entries_mixed_case.insert(
+            "test.png".to_string(),
+            ManifestEntry {
+                hash: ImageHash::new("sHa256", "0".repeat(64)).unwrap(),
+                width: 10,
+                height: 10,
+                created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
+                created_by: "user".to_string(),
+                source_commit: "abc".to_string(),
+            },
+        );
+        let manifest_mixed_case = Manifest {
+            schema_version: 1,
+            hash_algo: "ShA256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: entries_mixed_case,
+        };
+        // This should pass because algorithms are compared case-insensitively.
+        assert!(manifest_mixed_case.save(&file_path).is_ok());
+
+        // 5. Non-sha256 algorithm validation (should succeed and skip sha256 specific length checks)
+        let mut entries_phash = BTreeMap::new();
+        entries_phash.insert(
+            "test.png".to_string(),
+            ManifestEntry {
+                hash: ImageHash::new("phash", "abc").unwrap(),
+                width: 10,
+                height: 10,
+                created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
+                created_by: "user".to_string(),
+                source_commit: "abc".to_string(),
+            },
+        );
+        let manifest_phash = Manifest {
+            schema_version: 1,
+            hash_algo: "phash".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: entries_phash,
+        };
+        assert!(manifest_phash.save(&file_path).is_ok());
+    }
+
+    #[test]
     fn test_manifest_atomic_save_success() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("manifest.json");
 
         let manifest = Manifest {
-            version: 1,
-            screenshots: BTreeMap::new(),
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: BTreeMap::new(),
         };
 
         // Save first time
@@ -961,19 +1292,29 @@ screenshots:
         let _ = screenshots.insert(
             "test.png".to_string(),
             ManifestEntry {
-                hash: ImageHash([0; 32]),
-                timestamp_utc: chrono::DateTime::from_timestamp(456, 0).unwrap(),
-                meta: None,
+                hash: ImageHash::new(
+                    "sha256",
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                )
+                .unwrap(),
+                width: 800,
+                height: 600,
+                created_at: chrono::DateTime::from_timestamp(456, 0).unwrap(),
+                created_by: "Test User <test@example.com>".to_string(),
+                source_commit: "abcdef123".to_string(),
             },
         );
         let updated = Manifest {
-            version: 2,
-            screenshots,
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.1".to_string(),
+            entries: screenshots,
         };
         updated.save(&file_path).unwrap();
 
         let loaded = Manifest::load(&file_path).unwrap();
-        assert_eq!(loaded.version, 2);
+        assert_eq!(loaded.generator_version, "1.0.1");
     }
 
     #[test]
@@ -983,8 +1324,11 @@ screenshots:
         let file_path = dir.path().join("manifest.json");
 
         let original = Manifest {
-            version: 1,
-            screenshots: BTreeMap::new(),
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: BTreeMap::new(),
         };
         original.save(&file_path).unwrap();
 
@@ -996,15 +1340,18 @@ screenshots:
         // Verify if the write permission check works (so we are not root)
         let test_file = dir.path().join("test_write.txt");
         let probe_succeeded = std::fs::write(&test_file, b"test").is_err();
-
-        let mut save_result = None;
-        if probe_succeeded {
-            let updated = Manifest {
-                version: 2,
-                screenshots: BTreeMap::new(),
-            };
-            save_result = Some(updated.save(&file_path));
+        if !probe_succeeded {
+            return;
         }
+
+        let updated = Manifest {
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.1".to_string(),
+            entries: BTreeMap::new(),
+        };
+        let save_result = updated.save(&file_path);
 
         // Restore permissions so tempdir can clean up
         let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
@@ -1012,17 +1359,14 @@ screenshots:
         perms.set_readonly(false);
         let _ = std::fs::set_permissions(dir.path(), perms);
 
-        if probe_succeeded {
-            let result = save_result.unwrap();
-            assert!(
-                result.is_err(),
-                "Expected save to fail due to read-only directory"
-            );
+        assert!(
+            save_result.is_err(),
+            "Expected save to fail due to read-only directory"
+        );
 
-            // Verify original file remains untouched
-            let loaded = Manifest::load(&file_path).unwrap();
-            assert_eq!(loaded.version, 1);
-        }
+        // Verify original file remains untouched
+        let loaded = Manifest::load(&file_path).unwrap();
+        assert_eq!(loaded.generator_version, "1.0.0");
     }
 
     #[test]
@@ -1032,8 +1376,11 @@ screenshots:
         std::fs::write(&non_directory, b"blocker").unwrap();
         let invalid_path = non_directory.join("manifest.json");
         let manifest = Manifest {
-            version: 1,
-            screenshots: BTreeMap::new(),
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: BTreeMap::new(),
         };
         let result = manifest.save(&invalid_path);
         assert!(result.is_err());
@@ -1254,14 +1601,13 @@ screenshots:
 
         std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-        let result = GleonConfig::load_from_file(&file_path);
-
-        // If we are running as root, the load might succeed despite 0o000 permissions.
-        if result.is_ok() {
+        // If we are root, writing to 0o000 file will succeed.
+        let is_root = std::fs::write(&file_path, "probe").is_ok();
+        if is_root {
             return;
         }
 
-        let err = result.unwrap_err();
+        let err = GleonConfig::load_from_file(&file_path).unwrap_err();
         assert!(matches!(
             err,
             ConfigError::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied
@@ -1271,8 +1617,11 @@ screenshots:
     #[test]
     fn test_manifest_save_invalid_filename() {
         let manifest = Manifest {
-            version: 1,
-            screenshots: BTreeMap::new(),
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: BTreeMap::new(),
         };
         let err = manifest.save(Path::new("/")).unwrap_err();
         assert!(matches!(
@@ -1288,8 +1637,11 @@ screenshots:
         std::fs::create_dir(&file_path).unwrap(); // make it a directory
 
         let manifest = Manifest {
-            version: 1,
-            screenshots: BTreeMap::new(),
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: BTreeMap::new(),
         };
 
         // Try to save to a path which is a directory (persist fails)
@@ -1313,14 +1665,17 @@ screenshots:
         let nested_path = dir.path().join("subdir/nested/manifest.json");
 
         let manifest = Manifest {
-            version: 1,
-            screenshots: BTreeMap::new(),
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: BTreeMap::new(),
         };
         manifest.save(&nested_path).unwrap();
 
         assert!(nested_path.exists());
         let loaded = Manifest::load(&nested_path).unwrap();
-        assert_eq!(loaded.version, 1);
+        assert_eq!(loaded.schema_version, 1);
     }
 
     #[test]
@@ -1341,10 +1696,62 @@ screenshots:
 
         let nested_path = blocker_file.join("subdir/manifest.json");
         let manifest = Manifest {
-            version: 1,
-            screenshots: BTreeMap::new(),
+            schema_version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: BTreeMap::new(),
         };
         let err = manifest.save(&nested_path).unwrap_err();
         assert!(matches!(err, ConfigError::Io(_)));
+    }
+
+    #[test]
+    fn test_manifest_validation_unsupported_version() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("unsupported_manifest.json");
+        let manifest = Manifest {
+            schema_version: 2, // Unsupported version
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            entries: BTreeMap::new(),
+        };
+        assert!(manifest.save(&file_path).is_err());
+    }
+
+    #[test]
+    fn test_manifest_index_validation_failures() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("invalid_index.json");
+
+        // 1. Unsupported schema version
+        let index_bad_version = ManifestIndex {
+            schema_version: 2,
+            test_manifests: BTreeMap::new(),
+        };
+        assert!(index_bad_version.save(&file_path).is_err());
+
+        // 2. Malformed json with invalid checksum format (e.g. no prefix)
+        let bad_json = r#"{
+            "schemaVersion": 1,
+            "testManifests": {
+                "tests/ui/login": "not-prefixed-hash-value"
+            }
+        }"#;
+        std::fs::write(&file_path, bad_json).unwrap();
+        assert!(ManifestIndex::load(&file_path).is_err());
+    }
+
+    #[test]
+    fn test_image_hash_constructor_validation() {
+        // Empty scheme
+        assert!(ImageHash::new("", "1234").is_err());
+        // Empty value
+        assert!(ImageHash::new("sha256", "").is_err());
+        // Invalid characters
+        assert!(ImageHash::new("sha256", "abc?123").is_err());
+        // Valid characters
+        assert!(ImageHash::new("sha256", "abc_123-xyz").is_ok());
     }
 }

@@ -41,6 +41,8 @@ words = [
     "cov",
     "dcacd",
     "ddae",
+    "dhash",
+    "phash",
     "ddba",
     "ddf",
     "defe",
@@ -78,6 +80,7 @@ words = [
     "thiserror",
     "tsinis",
     "udeps",
+    "xyz",
     "xzf",
     "yamllint",
 ]

@@ -1,13 +1,16 @@
 {
-  "version": 1,
-  "screenshots": {
+  "schemaVersion": 1,
+  "hashAlgo": "sha256",
+  "pixelFormat": "rgba",
+  "generatorVersion": "1.0.0",
+  "entries": {
     "src/login.png": {
-      "hash": "0000000000000000000000000000000000000000000000000000000000000000",
-      "meta": {
-        "a_key": "value_a",
-        "b_key": "value_b"
-      },
-      "timestamp_utc": "2024-03-09T16:00:00Z"
+      "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "width": 800,
+      "height": 600,
+      "createdAt": "2024-03-09T16:00:00Z",
+      "createdBy": "Test User <test@example.com>",
+      "sourceCommit": "abcdef1234567890"
     }
   }
 }

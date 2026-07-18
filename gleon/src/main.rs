@@ -1,10 +1,10 @@
-//! Gleon CLI wrapper binary.
+//! gleon CLI wrapper binary.
 
 use clap::Parser;
 use gleon_core::cli::{Cli, Commands};
 use tracing::info;
 
-fn main() {
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Determine the log level based on CLI flags
@@ -22,49 +22,37 @@ fn main() {
         .with_max_level(log_level)
         .init();
 
-    info!("Gleon CLI starting up...");
-    match cli.command {
-        Commands::Status => {
-            let current_dir =
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let branch = match gleon_core::git::GitResolver::resolve_branch_impl(
-                cli.branch.as_deref(),
-                &current_dir,
-                &gleon_core::git::OsEnv,
-            ) {
-                Ok(b) => b,
-                Err(e) => {
-                    eprintln!("Error resolving branch: {}", e);
-                    std::process::exit(1);
-                }
-            };
+    info!("gleon CLI starting up...");
 
-            match gleon_core::context::ResolvedContext::from_cli(&cli, &current_dir) {
-                Ok(ctx) => {
-                    let info = ctx.platform;
-                    info!("Platform resolved successfully");
-                    let key = info
-                        .to_key()
-                        .expect("PlatformInfo is guaranteed to produce a key");
-                    println!("Branch: {}", branch);
-                    println!("Key: {}", key);
-                    println!("OS: {}", info.os);
-                    if let Some(ref arch) = info.arch {
-                        println!("Architecture: {}", arch);
-                    }
-                    if let Some(ref r) = info.renderer {
-                        println!("Renderer: {}", r);
-                    }
-                    if !info.labels.is_empty() {
-                        println!("Labels:");
-                        for (k, v) in info.labels {
-                            println!("  {} = {}", k, v);
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error resolving platform: {}", e);
-                    std::process::exit(1);
+    let current_dir = std::env::current_dir()
+        .map_err(|e| anyhow::anyhow!("Failed to determine current directory: {}", e))?;
+
+    run(&cli, &current_dir)
+}
+
+fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<()> {
+    match &cli.command {
+        Commands::Status => {
+            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)?;
+            let info = ctx.platform;
+            let branch = ctx.branch;
+            info!("Platform resolved successfully");
+            let key = info
+                .to_key()
+                .expect("PlatformInfo is guaranteed to produce a key");
+            println!("Branch: {}", branch);
+            println!("Key: {}", key);
+            println!("OS: {}", info.os);
+            if let Some(ref arch) = info.arch {
+                println!("Architecture: {}", arch);
+            }
+            if let Some(ref r) = info.renderer {
+                println!("Renderer: {}", r);
+            }
+            if !info.labels.is_empty() {
+                println!("Labels:");
+                for (k, v) in info.labels {
+                    println!("  {} = {}", k, v);
                 }
             }
         }
@@ -93,4 +81,5 @@ fn main() {
             println!("Subcommand gc is not fully implemented yet");
         }
     }
+    Ok(())
 }

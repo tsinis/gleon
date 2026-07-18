@@ -48,7 +48,7 @@ $RECYCLE.BIN/
 Icon\r
 .webimages/
 
-# --- Gleon App & Cache ---
+# --- gleon App & Cache ---
 .gleon/
 report.html
 report.md
