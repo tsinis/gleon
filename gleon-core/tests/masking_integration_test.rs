@@ -35,29 +35,26 @@ fn test_masking_integration() {
         height: Dimension::Percent(100.0),
     }];
 
-    // 7. Apply masks — clamping is expected due to x:90 + width:20 > 100
+    // 4. Apply masks — clamping is expected due to x:90 + width:20 > 100
     masking::apply_masks(&mut img, &zones);
 
-    // 8. Assert that exactly the bounding pixels [90..99] are mutated to black,
+    // 5. Assert that exactly the bounding pixels [90..99] are mutated to black,
     // and pixels [0..89] remain unchanged.
-    for y in 0..100 {
-        for x in 0..100 {
-            let pixel = img.get_pixel(x, y);
-            if x >= 90 {
-                // Should be mutated to black
-                assert_eq!(
-                    *pixel,
-                    image::Rgba([0, 0, 0, 255]),
-                    "Pixel at ({x}, {y}) should be black"
-                );
-            } else {
-                // Should remain original
-                let original_pixel = original_img.get_pixel(x, y);
-                assert_eq!(
-                    *pixel, *original_pixel,
-                    "Pixel at ({x}, {y}) should remain unchanged"
-                );
-            }
+    for (x, y, pixel) in img.enumerate_pixels() {
+        if x >= 90 {
+            // Should be mutated to black
+            assert_eq!(
+                *pixel,
+                image::Rgba([0, 0, 0, 255]),
+                "Pixel at ({x}, {y}) should be black"
+            );
+        } else {
+            // Should remain original
+            let original_pixel = original_img.get_pixel(x, y);
+            assert_eq!(
+                *pixel, *original_pixel,
+                "Pixel at ({x}, {y}) should remain unchanged"
+            );
         }
     }
 }

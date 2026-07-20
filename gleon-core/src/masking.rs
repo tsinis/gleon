@@ -62,6 +62,7 @@ pub fn apply_masks(img: &mut RgbaImage, zones: &[Zone]) {
             let start_idx = (y_min as usize) * img_w_usize * 4;
             let end_idx = (y_max as usize) * img_w_usize * 4;
 
+            #[allow(clippy::expect_used)]
             let block_slice = raw_pixels
                 .get_mut(start_idx..end_idx)
                 .expect("block indices are clamped to image bounds above");
@@ -77,6 +78,7 @@ pub fn apply_masks(img: &mut RgbaImage, zones: &[Zone]) {
             let start_idx = row_start + (x_min as usize) * 4;
             let end_idx = row_start + (x_max as usize) * 4;
 
+            #[allow(clippy::expect_used)]
             let row_slice = raw_pixels
                 .get_mut(start_idx..end_idx)
                 .expect("pixel indices are clamped to image bounds above");
