@@ -51,7 +51,7 @@ pub enum Mode {
 }
 
 /// Dimension value that can be specified either in pixels or as a percentage of the image size.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Dimension {
     /// Absolute size in pixels.
