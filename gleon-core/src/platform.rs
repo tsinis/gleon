@@ -187,34 +187,34 @@ pub fn validate_segment(s: &str) -> Result<String, PlatformError> {
 impl PlatformInfo {
     /// Generates a deterministic flat key from PlatformInfo fields.
     pub fn to_key(&self) -> Result<String, PlatformError> {
-        let os = validate_segment(&self.os).map_err(|_| {
-            PlatformError::InvalidSegment(format!("OS '{}' is empty or invalid", self.os))
+        let os = validate_segment(&self.os).map_err(|e| {
+            PlatformError::InvalidSegment(format!("OS '{}' is empty or invalid: {}", self.os, e))
         })?;
 
         let mut parts = vec![format!("{}:{}", os.len(), os)];
 
         if let Some(ref arch) = self.arch {
-            let clean_arch = validate_segment(arch).map_err(|_| {
-                PlatformError::InvalidSegment(format!("Architecture '{}' is invalid", arch))
+            let clean_arch = validate_segment(arch).map_err(|e| {
+                PlatformError::InvalidSegment(format!("Architecture '{}' is invalid: {}", arch, e))
             })?;
             parts.push(format!("{}:{}", clean_arch.len(), clean_arch));
         }
 
         if let Some(ref renderer) = self.renderer {
-            let clean_renderer = validate_segment(renderer).map_err(|_| {
-                PlatformError::InvalidSegment(format!("Renderer '{}' is invalid", renderer))
+            let clean_renderer = validate_segment(renderer).map_err(|e| {
+                PlatformError::InvalidSegment(format!("Renderer '{}' is invalid: {}", renderer, e))
             })?;
             parts.push(format!("{}:{}", clean_renderer.len(), clean_renderer));
         }
 
         for (k, v) in &self.labels {
-            let key = validate_segment(k).map_err(|_| {
-                PlatformError::InvalidSegment(format!("Label key '{}' is invalid", k))
+            let key = validate_segment(k).map_err(|e| {
+                PlatformError::InvalidSegment(format!("Label key '{}' is invalid: {}", k, e))
             })?;
-            let val = validate_segment(v).map_err(|_| {
+            let val = validate_segment(v).map_err(|e| {
                 PlatformError::InvalidSegment(format!(
-                    "Label value '{}' is invalid for key '{}'",
-                    v, k
+                    "Label value '{}' is invalid for key '{}': {}",
+                    v, k, e
                 ))
             })?;
             parts.push(format!("{}:{}={}:{}", key.len(), key, val.len(), val));

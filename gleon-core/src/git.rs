@@ -148,15 +148,10 @@ impl GitResolver {
             }
         };
 
-        let repo_root = match repo.workdir() {
-            Some(wd) => wd,
-            None => {
-                return Err(GitError::Discover(
-                    "Bare repository has no working directory".to_string(),
-                ));
-            }
-        };
-        let repo_root = normalize_path(repo_root);
+        let repo_root = repo.workdir().ok_or_else(|| {
+            GitError::Discover("Bare repository has no working directory".to_string())
+        })?;
+        let repo_root = normalize_path(repo_root)?;
 
         // Pre-process paths into absolute and relative counterparts, resolving path traversal
         let mut processed_paths = Vec::with_capacity(paths.len());
@@ -167,7 +162,7 @@ impl GitResolver {
             } else {
                 base_dir.join(path_ref)
             };
-            let abs_path = normalize_path(&abs_path);
+            let abs_path = normalize_path(&abs_path)?;
 
             // Check if the path is actually inside the repository
             if !abs_path.starts_with(&repo_root) {
@@ -180,32 +175,29 @@ impl GitResolver {
 
         let mut builder = ignore::gitignore::GitignoreBuilder::new(&repo_root);
 
-        // Add .git/info/exclude if it exists
+        // Add .git/info/exclude
         let exclude_path = repo.git_dir().join("info/exclude");
-        if exclude_path.exists() {
-            builder.add(&exclude_path);
-        }
+        builder.add(&exclude_path);
 
         let mut gitignores_to_add = std::collections::HashSet::new();
         let mut visited_dirs = std::collections::HashSet::new();
 
         for (abs_path, _) in &processed_paths {
             // Traverse up to repo_root to discover all .gitignore files in the hierarchy
-            let mut current = abs_path.parent();
-            while let Some(dir) = current {
-                if !visited_dirs.insert(dir.to_path_buf()) {
+            let mut current = abs_path.clone();
+            while current.pop() {
+                let dir = &current;
+                if visited_dirs.contains(dir) {
                     // Already visited this directory and its parents!
                     break;
                 }
+                visited_dirs.insert(dir.to_path_buf());
 
                 let gitignore = dir.join(".gitignore");
-                if gitignore.is_file() {
-                    gitignores_to_add.insert(gitignore);
-                }
-                if dir == repo_root {
+                gitignores_to_add.insert(gitignore);
+                if dir == &repo_root {
                     break;
                 }
-                current = dir.parent();
             }
         }
 
@@ -214,7 +206,12 @@ impl GitResolver {
         // Therefore, we sort the discovered files by depth (number of components)
         // so that the root .gitignore is added first, and deeper files are added later.
         let mut sorted_gitignores: Vec<_> = gitignores_to_add.into_iter().collect();
-        sorted_gitignores.sort_by_key(|p| p.components().count());
+        sorted_gitignores.sort_by(|a, b| {
+            a.components()
+                .count()
+                .cmp(&b.components().count())
+                .then_with(|| a.cmp(b))
+        });
 
         for gitignore in sorted_gitignores {
             if let Some(err) = builder.add(&gitignore) {
@@ -319,13 +316,15 @@ impl GitResolver {
     }
 }
 
-fn normalize_path(path: &Path) -> std::path::PathBuf {
+fn normalize_path(path: &Path) -> Result<std::path::PathBuf, GitError> {
     use std::path::Component;
     let mut normalized = std::path::PathBuf::new();
     for component in path.components() {
         match component {
             Component::ParentDir => {
-                normalized.pop();
+                if !normalized.pop() {
+                    return Err(GitError::OutsideRepository(path.to_path_buf()));
+                }
             }
             Component::Normal(c) => {
                 normalized.push(c);
@@ -336,7 +335,7 @@ fn normalize_path(path: &Path) -> std::path::PathBuf {
             }
         }
     }
-    normalized
+    Ok(normalized)
 }
 
 fn clean_branch_name(name: &str) -> String {
@@ -861,7 +860,7 @@ mod tests {
     #[test]
     fn test_normalize_path_cur_dir() {
         let path = Path::new("./file.png");
-        let norm = normalize_path(path);
+        let norm = normalize_path(path).unwrap();
         assert_eq!(norm, Path::new("file.png"));
     }
 

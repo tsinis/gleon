@@ -1,8 +1,9 @@
 #![cfg(not(miri))]
 
-use gleon_core::config::GlobPattern;
+use gleon_core::config::{DiffConfig, GlobPattern, Mode, ScreenshotRule};
 use gleon_core::scanner::{FileScanner, TestCase};
 use std::path::Path;
+use std::sync::Arc;
 
 #[test]
 fn test_scanner_with_real_fixture() {
@@ -18,8 +19,14 @@ fn test_scanner_with_real_fixture() {
 
     let include = vec![GlobPattern::new("**/*.png").unwrap()];
     let exclude = vec![];
+    let rule = Arc::new(ScreenshotRule {
+        include: include.clone(),
+        mode: Mode::Pixel,
+        diff: DiffConfig::default(),
+        masks: vec![],
+    });
 
-    let cases: Vec<TestCase> = FileScanner::scan_files(&include, &exclude, &base_dir)
+    let cases: Vec<TestCase> = FileScanner::scan_files(&include, &exclude, &base_dir, rule)
         .expect("Scanning files should succeed");
 
     // Both files are in the base_dir, so they both fall under the test case name "."
@@ -28,8 +35,8 @@ fn test_scanner_with_real_fixture() {
         .find(|c| c.name == ".")
         .expect("Should find test case for '.'");
 
-    // Check we found exactly 3 files (200x100.png, corrupt.png, baseline_100x100.png)
-    assert_eq!(test_case.images.len(), 3);
+    // Check we found all the expected PNG files (7 files total in the fixtures dir)
+    assert_eq!(test_case.images.len(), 7);
 
     // Verify 200x100.png
     let image_200x100 = test_case
@@ -38,10 +45,8 @@ fn test_scanner_with_real_fixture() {
         .find(|i| i.relative_path.to_str() == Some("200x100.png"))
         .expect("Should find 200x100.png in the scanned images");
     assert_eq!(image_200x100.absolute_path, fixture_path);
-    let img = image_200x100
-        .image
-        .as_ref()
-        .expect("Failed to decode the real PNG fixture");
+    let img =
+        image::open(&image_200x100.absolute_path).expect("Failed to decode the real PNG fixture");
     assert_eq!(img.width(), 200);
     assert_eq!(img.height(), 100);
 
@@ -55,9 +60,7 @@ fn test_scanner_with_real_fixture() {
         image_100x100.absolute_path,
         base_dir.join("baseline_100x100.png")
     );
-    let img_100 = image_100x100
-        .image
-        .as_ref()
+    let img_100 = image::open(&image_100x100.absolute_path)
         .expect("Failed to decode the baseline 100x100 PNG fixture");
     assert_eq!(img_100.width(), 100);
     assert_eq!(img_100.height(), 100);
@@ -70,13 +73,7 @@ fn test_scanner_with_real_fixture() {
         .expect("Should find corrupt.png in the scanned images");
     assert_eq!(corrupt_image.absolute_path, corrupt_path);
     assert!(
-        corrupt_image.image.is_err(),
+        image::open(&corrupt_image.absolute_path).is_err(),
         "corrupt.png should fail to decode"
     );
-
-    // Verify aggregate counts
-    let ok_count = test_case.images.iter().filter(|i| i.image.is_ok()).count();
-    let err_count = test_case.images.iter().filter(|i| i.image.is_err()).count();
-    assert_eq!(ok_count, 2);
-    assert_eq!(err_count, 1);
 }
