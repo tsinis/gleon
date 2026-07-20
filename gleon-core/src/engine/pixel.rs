@@ -44,10 +44,10 @@ pub fn count_mismatched_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> u32 
     let baseline_raw = baseline.as_raw();
     let actual_raw = actual.as_raw();
 
-    // Fast path: cast [u8] to [u32] for SIMD/memcmp-friendly equality checks
-    // This is safe because RgbaImage guarantees len is a multiple of 4,
-    // and bytemuck handles alignment checks. If slices are somehow unaligned,
-    // cast_slice will panic, but Vec<u8> (used by ImageBuffer) is well-aligned.
+    // Fast path: reinterpret the byte slices as u32 for cheaper, word-sized
+    // equality checks. RgbaImage guarantees the raw length is a multiple of 4.
+    // `try_cast_slice` never panics on misaligned input; it simply returns
+    // Err, in which case we fall back to the byte-chunk comparison below.
     if let (Ok(b_u32), Ok(a_u32)) = (
         bytemuck::try_cast_slice::<u8, u32>(baseline_raw),
         bytemuck::try_cast_slice::<u8, u32>(actual_raw),

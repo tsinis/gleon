@@ -187,6 +187,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn test_compare_images_ssim_match() {
         let img1 = ImageBuffer::from_pixel(100, 100, Rgba([255, 0, 0, 255]));
         let mut img2 = ImageBuffer::from_pixel(100, 100, Rgba([255, 0, 0, 255]));

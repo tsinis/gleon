@@ -187,6 +187,9 @@ impl GitResolver {
             let mut current = abs_path.clone();
             while current.pop() {
                 let dir = &current;
+                if !dir.starts_with(&repo_root) {
+                    break;
+                }
                 if visited_dirs.contains(dir) {
                     // Already visited this directory and its parents!
                     break;
@@ -1047,5 +1050,19 @@ mod tests {
 
         let author = GitResolver::get_commit_author(dir.path(), &sha).unwrap();
         assert_eq!(author, "unknown");
+    }
+
+    #[test]
+    fn test_verify_ignored_out_of_bounds_prevention() {
+        let dir = tempdir().unwrap();
+        create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
+
+        // We pass the root directory itself to simulate the pathological case where pop()
+        // would escape the repository.
+        let paths = vec![dir.path().to_path_buf()];
+
+        let result = GitResolver::verify_ignored_impl(&paths, dir.path()).unwrap();
+        // Since no ignore rules are defined that match the root itself, it should return false
+        assert!(!result);
     }
 }

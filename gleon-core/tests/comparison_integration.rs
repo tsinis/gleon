@@ -70,11 +70,11 @@ fn test_integration_16_pixels_corners() {
         panic!("Expected Mismatch, but got Match");
     };
 
-    // Проверяем угловые пиксели в diff-изображении
+    // Check corner pixels in the diff image
     assert_eq!(*diff_image.get_pixel(0, 0), Rgba([255, 0, 255, 255]));
     assert_eq!(*diff_image.get_pixel(99, 99), Rgba([255, 0, 255, 255]));
 
-    // Неизмененный пиксель должен быть затемненным (деленным на 2)
+    // Unchanged pixel should be darkened (divided by 2)
     let b_orig = baseline.get_pixel(50, 50);
     let d_match = diff_image.get_pixel(50, 50);
     assert_eq!(
@@ -130,12 +130,13 @@ fn test_integration_dimension_mismatch_real_files() {
 }
 
 #[test]
+#[cfg(not(miri))]
 fn test_integration_ssim_large_diff() {
     let baseline = load_fixture("baseline_gradient_100x100.png");
     let actual = load_fixture("diff_16px_corners_100x100.png");
 
     let config = DiffConfig {
-        min_similarity: 0.999, // Слишком строгое соответствие
+        min_similarity: 0.999, // Too strict similarity
         threshold: 0.05,
         ..Default::default()
     };

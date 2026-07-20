@@ -28,7 +28,7 @@ pub fn compare_ssim(
     Ok((ssim_score, diff_image))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use image::{ImageBuffer, Rgba};

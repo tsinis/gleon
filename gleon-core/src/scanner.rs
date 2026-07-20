@@ -145,7 +145,9 @@ impl FileScanner {
 
         // TODO: For very large mono-repositories (10K+ images), consider replacing `build()`
         // with `build_parallel()` and collecting cases via crossbeam_channel::mpsc to speed up traversal.
-        let walker = ignore::WalkBuilder::new(base_dir).build();
+        let walker = ignore::WalkBuilder::new(base_dir)
+            .standard_filters(false)
+            .build();
 
         let mut collected_paths = Vec::new();
 
@@ -207,7 +209,9 @@ impl FileScanner {
             rule_sets.push((std::sync::Arc::new(rule.clone()), include_builder.build()?));
         }
 
-        let walker = ignore::WalkBuilder::new(base_dir).build();
+        let walker = ignore::WalkBuilder::new(base_dir)
+            .standard_filters(false)
+            .build();
 
         let mut temp_cases = std::collections::BTreeMap::<String, TestCase>::new();
 
@@ -232,9 +236,13 @@ impl FileScanner {
                 continue;
             }
 
-            let rel_path = path
-                .strip_prefix(base_dir)
-                .expect("walk dir paths always have base_dir prefix");
+            let rel_path = match path.strip_prefix(base_dir) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("Failed to strip base_dir prefix from path: {}", e);
+                    continue;
+                }
+            };
             let rel_path_str = Self::normalize_separators(rel_path);
 
             if exclude_set.is_match(rel_path_str.as_ref()) {
@@ -323,9 +331,13 @@ impl FileScanner {
             return Ok(None);
         }
 
-        let rel_path = path
-            .strip_prefix(base_dir)
-            .expect("walk dir paths always have base_dir prefix");
+        let rel_path = match path.strip_prefix(base_dir) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("Failed to strip base_dir prefix from path: {}", e);
+                return Ok(None);
+            }
+        };
         let rel_path_str = Self::normalize_separators(rel_path);
 
         if !include_set.is_match(rel_path_str.as_ref())
@@ -744,7 +756,6 @@ screenshots:
     }
 
     #[test]
-    #[should_panic(expected = "walk dir paths always have base_dir prefix")]
     fn test_parse_entry_strip_prefix_failure() {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_path = temp_dir.path();

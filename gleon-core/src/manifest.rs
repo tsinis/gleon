@@ -19,6 +19,12 @@ fn validate_hash_parts(scheme: &str, value: &str) -> Result<(), String> {
     if scheme.is_empty() {
         return Err("Hash scheme cannot be empty".to_string());
     }
+    if !scheme
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err("Hash scheme contains invalid characters".to_string());
+    }
     if value.is_empty() {
         return Err("Hash value cannot be empty".to_string());
     }
@@ -228,5 +234,56 @@ impl ManifestIndex {
             .map(|_| {
                 tracing::debug!("Manifest index saved successfully to {:?}", path);
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_image_hash_invalid_format_deserialization() {
+        // Missing colon
+        let bad_json_1 =
+            "\"sha2560000000000000000000000000000000000000000000000000000000000000000\"";
+        assert!(serde_json::from_str::<ImageHash>(bad_json_1).is_err());
+
+        // Empty scheme
+        let bad_json_2 = "\":00000000\"";
+        assert!(serde_json::from_str::<ImageHash>(bad_json_2).is_err());
+
+        // Empty value
+        let bad_json_3 = "\"sha256:\"";
+        assert!(serde_json::from_str::<ImageHash>(bad_json_3).is_err());
+
+        // Invalid characters in value
+        let bad_json_4 = "\"sha256:invalid?hash\"";
+        assert!(serde_json::from_str::<ImageHash>(bad_json_4).is_err());
+
+        // Invalid characters in scheme
+        let bad_json_5 = "\"sha:256:00000000\"";
+        assert!(serde_json::from_str::<ImageHash>(bad_json_5).is_err());
+    }
+
+    #[test]
+    fn test_image_hash_display() {
+        let hash = ImageHash::new(
+            "sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap();
+        let formatted = format!("{}", hash);
+        assert_eq!(
+            formatted,
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        );
+    }
+
+    #[test]
+    fn test_image_hash_constructor_validation() {
+        assert!(ImageHash::new("sha256", "abc").is_ok());
+        assert!(ImageHash::new("sha:256", "abc").is_err());
+        assert!(ImageHash::new("", "abc").is_err());
+        assert!(ImageHash::new("sha256", "").is_err());
     }
 }
