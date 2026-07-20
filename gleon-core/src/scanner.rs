@@ -3,6 +3,7 @@
 use crate::config::{GleonConfig, GlobPattern};
 use globset::GlobSetBuilder;
 use image::RgbaImage;
+#[cfg(not(miri))]
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
@@ -185,11 +186,23 @@ impl FileScanner {
             }
         }
 
-        // Decode images in parallel using rayon
-        let decoded_images: Vec<(String, TestImage)> = collected_paths
-            .into_par_iter()
-            .map(Self::decode_image)
-            .collect();
+        // Decode images in parallel using rayon (sequential when running under Miri)
+        let decoded_images: Vec<(String, TestImage)> = {
+            #[cfg(not(miri))]
+            {
+                collected_paths
+                    .into_par_iter()
+                    .map(Self::decode_image)
+                    .collect()
+            }
+            #[cfg(miri)]
+            {
+                collected_paths
+                    .into_iter()
+                    .map(Self::decode_image)
+                    .collect()
+            }
+        };
 
         // Group into TestCases
         let mut temp_cases = std::collections::BTreeMap::<String, Vec<TestImage>>::new();

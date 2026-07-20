@@ -28,8 +28,8 @@ fn test_scanner_with_real_fixture() {
         .find(|c| c.name == ".")
         .expect("Should find test case for '.'");
 
-    // Check we found exactly 2 files
-    assert_eq!(test_case.images.len(), 2);
+    // Check we found exactly 3 files (200x100.png, corrupt.png, baseline_100x100.png)
+    assert_eq!(test_case.images.len(), 3);
 
     // Verify 200x100.png
     let image_200x100 = test_case
@@ -44,6 +44,23 @@ fn test_scanner_with_real_fixture() {
         .expect("Failed to decode the real PNG fixture");
     assert_eq!(img.width(), 200);
     assert_eq!(img.height(), 100);
+
+    // Verify baseline_100x100.png
+    let image_100x100 = test_case
+        .images
+        .iter()
+        .find(|i| i.relative_path.to_str() == Some("baseline_100x100.png"))
+        .expect("Should find baseline_100x100.png in the scanned images");
+    assert_eq!(
+        image_100x100.absolute_path,
+        base_dir.join("baseline_100x100.png")
+    );
+    let img_100 = image_100x100
+        .image
+        .as_ref()
+        .expect("Failed to decode the baseline 100x100 PNG fixture");
+    assert_eq!(img_100.width(), 100);
+    assert_eq!(img_100.height(), 100);
 
     // Verify corrupt.png
     let corrupt_image = test_case
@@ -60,6 +77,6 @@ fn test_scanner_with_real_fixture() {
     // Verify aggregate counts
     let ok_count = test_case.images.iter().filter(|i| i.image.is_ok()).count();
     let err_count = test_case.images.iter().filter(|i| i.image.is_err()).count();
-    assert_eq!(ok_count, 1);
+    assert_eq!(ok_count, 2);
     assert_eq!(err_count, 1);
 }
