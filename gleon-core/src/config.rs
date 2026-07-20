@@ -121,6 +121,7 @@ impl GlobPattern {
     pub fn new(raw: &str) -> Result<Self, globset::Error> {
         globset::GlobBuilder::new(raw)
             .literal_separator(true)
+            .case_insensitive(true)
             .build()
             .map(Self)
     }
@@ -151,6 +152,7 @@ impl<'de> Deserialize<'de> for GlobPattern {
         let raw = String::deserialize(deserializer)?;
         let compiled = globset::GlobBuilder::new(&raw)
             .literal_separator(true)
+            .case_insensitive(true)
             .build()
             .map_err(serde::de::Error::custom)?;
         Ok(GlobPattern(compiled))

@@ -209,6 +209,14 @@ impl FileScanner {
         Self::scan_files(&include_globs, &config.exclude, base_dir)
     }
 
+    /// Normalizes path separators to forward slashes on Windows.
+    fn normalize_separators(path: &Path) -> Cow<'_, str> {
+        #[cfg(windows)]
+        return Cow::Owned(path.to_string_lossy().replace('\\', "/"));
+        #[cfg(not(windows))]
+        return path.to_string_lossy();
+    }
+
     /// Parses a directory entry and returns the parsed paths if it's a valid matching PNG.
     fn parse_entry(
         entry: &ignore::DirEntry,
@@ -221,16 +229,16 @@ impl FileScanner {
             return Ok(None);
         }
 
-        if path.extension().and_then(|ext| ext.to_str()) != Some("png") {
+        if !path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+        {
             return Ok(None);
         }
 
         let rel_path = path.strip_prefix(base_dir).unwrap_or(path).to_path_buf();
-
-        #[cfg(windows)]
-        let rel_path_str: Cow<str> = Cow::Owned(rel_path.to_string_lossy().replace('\\', "/"));
-        #[cfg(not(windows))]
-        let rel_path_str: Cow<str> = rel_path.to_string_lossy();
+        let rel_path_str = Self::normalize_separators(&rel_path);
 
         if !include_set.is_match(rel_path_str.as_ref())
             || exclude_set.is_match(rel_path_str.as_ref())
@@ -239,11 +247,7 @@ impl FileScanner {
         }
 
         let parent = rel_path.parent().unwrap_or(Path::new(""));
-
-        #[cfg(windows)]
-        let parent_str: Cow<str> = Cow::Owned(parent.to_string_lossy().replace('\\', "/"));
-        #[cfg(not(windows))]
-        let parent_str: Cow<str> = parent.to_string_lossy();
+        let parent_str = Self::normalize_separators(parent);
 
         let test_name = if parent_str.is_empty() {
             ".".to_string()
@@ -567,5 +571,27 @@ screenshots:
             results: vec![],
         };
         assert!(!format!("{:?}", tc_res).is_empty());
+    }
+
+    #[test]
+    fn test_scan_files_case_insensitive_extension() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_path = temp_dir.path();
+
+        let billing_dir = base_path.join("billing");
+        std::fs::create_dir_all(&billing_dir).unwrap();
+        std::fs::write(billing_dir.join("form.PNG"), VALID_PNG_BYTES).unwrap();
+        std::fs::write(billing_dir.join("profile.PnG"), VALID_PNG_BYTES).unwrap();
+
+        let include = vec![GlobPattern::new("**/*.png").unwrap()];
+        let exclude = vec![];
+
+        let cases = FileScanner::scan_files(&include, &exclude, base_path).unwrap();
+        assert_eq!(cases.len(), 1, "Expected to find the billing directory");
+        assert_eq!(
+            cases[0].images.len(),
+            2,
+            "Expected to find both uppercase and mixed-case PNG files"
+        );
     }
 }
