@@ -23,6 +23,7 @@ image = { version = "0.25.5", default-features = false, features = ["png"] }
 image-compare = "0.5.0"
 image_hasher = "3.1.1"
 ignore = "0.4.30"
+bytemuck = "1.25.2"
 predicates = "3.1.4"
 rayon = "1.12.0"
 semver = { version = "1.0.28", features = ["serde"] }

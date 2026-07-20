@@ -1225,6 +1225,7 @@ dependencies = [
 name = "gleon-core"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "chrono",
  "clap",
  "gix",

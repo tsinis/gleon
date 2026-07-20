@@ -23,6 +23,7 @@ image = { workspace = true }
 image-compare = { workspace = true }
 image_hasher = { workspace = true }
 ignore = { workspace = true }
+bytemuck = { workspace = true }
 sha2 = { workspace = true }
 
 
