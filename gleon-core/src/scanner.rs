@@ -29,19 +29,31 @@ pub enum ScannerError {
 
 use std::borrow::Cow;
 
+/// Error type representing a failure to decode or open an image, keeping the error details
+/// without leaking third-party types in public signatures.
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+#[error("Image decode error: {0}")]
+pub struct ImageDecodeError(pub String);
+
+impl From<image::ImageError> for ImageDecodeError {
+    fn from(err: image::ImageError) -> Self {
+        Self(err.to_string())
+    }
+}
+
 /// A single test screenshot file within a TestCase.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TestImage {
     /// Relative path from the base directory (e.g. "billing/stripe/form.png")
     pub relative_path: PathBuf,
     /// Absolute path to the file on disk
     pub absolute_path: PathBuf,
     /// Decoded image buffer, or error if decoding failed.
-    pub image: Result<RgbaImage, image::ImageError>,
+    pub image: Result<RgbaImage, ImageDecodeError>,
 }
 
 /// A grouping of screenshots under a single test case directory.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TestCase {
     /// The test name (relative parent directory path, e.g. "billing/stripe")
     pub name: String,
@@ -212,9 +224,13 @@ impl FileScanner {
     /// Normalizes path separators to forward slashes on Windows.
     fn normalize_separators(path: &Path) -> Cow<'_, str> {
         #[cfg(windows)]
-        return Cow::Owned(path.to_string_lossy().replace('\\', "/"));
+        {
+            Cow::Owned(path.to_string_lossy().replace('\\', "/"))
+        }
         #[cfg(not(windows))]
-        return path.to_string_lossy();
+        {
+            path.to_string_lossy()
+        }
     }
 
     /// Parses a directory entry and returns the parsed paths if it's a valid matching PNG.
@@ -237,8 +253,18 @@ impl FileScanner {
             return Ok(None);
         }
 
-        let rel_path = path.strip_prefix(base_dir).unwrap_or(path).to_path_buf();
-        let rel_path_str = Self::normalize_separators(&rel_path);
+        let rel_path = match path.strip_prefix(base_dir) {
+            Ok(p) => p,
+            Err(_) => {
+                tracing::warn!(
+                    "Failed to strip base directory prefix '{}' from path '{}'",
+                    base_dir.display(),
+                    path.display()
+                );
+                return Ok(None);
+            }
+        };
+        let rel_path_str = Self::normalize_separators(rel_path);
 
         if !include_set.is_match(rel_path_str.as_ref())
             || exclude_set.is_match(rel_path_str.as_ref())
@@ -262,14 +288,20 @@ impl FileScanner {
             });
         }
 
-        Ok(Some((test_name, rel_path, path.to_path_buf())))
+        Ok(Some((
+            test_name,
+            rel_path.to_path_buf(),
+            path.to_path_buf(),
+        )))
     }
 
     /// Decodes a single image.
     fn decode_image(
         (test_name, rel_path, abs_path): (String, PathBuf, PathBuf),
     ) -> (String, TestImage) {
-        let image_result = image::open(&abs_path).map(|img| img.to_rgba8());
+        let image_result = image::open(&abs_path)
+            .map(|img| img.to_rgba8())
+            .map_err(ImageDecodeError::from);
         let test_image = TestImage {
             relative_path: rel_path,
             absolute_path: abs_path,
@@ -593,5 +625,68 @@ screenshots:
             2,
             "Expected to find both uppercase and mixed-case PNG files"
         );
+    }
+
+    #[test]
+    fn test_parse_entry_strip_prefix_failure() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_path = temp_dir.path();
+
+        let billing_dir = base_path.join("billing");
+        std::fs::create_dir_all(&billing_dir).unwrap();
+        let img_path = billing_dir.join("form.png");
+        std::fs::write(&img_path, VALID_PNG_BYTES).unwrap();
+
+        // Perform a walk to get a real DirEntry
+        let walker = ignore::WalkBuilder::new(base_path).build();
+        let mut entry_opt = None;
+        for entry_res in walker {
+            let entry = entry_res.unwrap();
+            if entry.path().is_file() {
+                entry_opt = Some(entry);
+                break;
+            }
+        }
+        let entry = entry_opt.expect("Should have found a file entry");
+
+        // Now compile globs that match the absolute path
+        let include_set = globset::GlobSetBuilder::new()
+            .add(globset::Glob::new("**/billing/*.png").unwrap())
+            .build()
+            .unwrap();
+        let exclude_set = globset::GlobSetBuilder::new().build().unwrap();
+
+        // Pass a completely different base_dir
+        let different_base = Path::new("/some/different/dir");
+
+        // This should fail to strip prefix.
+        let res =
+            FileScanner::parse_entry(&entry, different_base, &include_set, &exclude_set).unwrap();
+        assert!(
+            res.is_none(),
+            "Expected parse_entry to skip when prefix stripping fails, but got {:?}",
+            res
+        );
+    }
+
+    #[test]
+    fn test_image_decode_error_type_and_clone() {
+        let err = ImageDecodeError("test error".to_string());
+        let test_image = TestImage {
+            relative_path: PathBuf::from("rel.png"),
+            absolute_path: PathBuf::from("abs.png"),
+            image: Err(err),
+        };
+
+        // Ensure they are cloneable
+        let cloned_img = test_image.clone();
+        assert_eq!(cloned_img.relative_path, test_image.relative_path);
+
+        let test_case = TestCase {
+            name: "test_case".to_string(),
+            images: vec![test_image],
+        };
+        let cloned_case = test_case.clone();
+        assert_eq!(cloned_case.name, test_case.name);
     }
 }
