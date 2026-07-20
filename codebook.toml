@@ -69,6 +69,7 @@ words = [
     "markdownlint",
     "miri",
     "nextest",
+    "oob",
     "powerset",
     "rustfmt",
     "rustlib",
