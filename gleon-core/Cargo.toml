@@ -20,6 +20,8 @@ globset = { workspace = true }
 gix = { workspace = true }
 rayon = { workspace = true }
 image = { workspace = true }
+image-compare = { workspace = true }
+image_hasher = { workspace = true }
 ignore = { workspace = true }
 sha2 = { workspace = true }
 
