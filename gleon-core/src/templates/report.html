@@ -228,11 +228,11 @@
                         <!-- Handle visual -->
                         <div class="slider-handle" id="slider-handle-{{ loop.index }}"></div>
                         <!-- Invisible slider -->
-                        <input type="range" min="0" max="100" value="50" class="slider-input" oninput="updateSlider({{ loop.index }}, this.value)">
+                        <input type="range" min="0" max="100" value="50" class="slider-input" aria-label="Actual vs baseline comparison slider for {{ failure.name }}" oninput="updateSlider({{ loop.index }}, this.value)">
                     </div>
                 </div>
                 <div class="image-container">
-                    <div class="image-title">Diff Image ({{ failure.diff_count }} diffs)</div>
+                    <div class="image-title">Diff Image{% if failure.diff_count is not none %} ({{ failure.diff_count }} diffs){% endif %}</div>
                     <img class="img-static" src="{{ failure.diff_path | safe }}" alt="Diff">
                 </div>
             </div>

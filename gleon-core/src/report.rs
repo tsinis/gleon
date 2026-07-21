@@ -31,10 +31,16 @@ pub enum ReportError {
 }
 
 /// Computes a relative path from `base` to `target`.
+/// Precondition: `target` and `base` must share the same coordinate frame (both absolute or both relative).
+/// If one path is absolute and the other is relative, returns `target` unchanged.
 /// For example, if `target` is `.gleon/diffs/image.png` and `base` is `.gleon/reports`,
 /// the result is `../diffs/image.png`.
 pub fn make_relative_path(target: &std::path::Path, base: &std::path::Path) -> std::path::PathBuf {
     use std::path::PathBuf;
+
+    if target.is_absolute() != base.is_absolute() {
+        return target.to_path_buf();
+    }
 
     let mut target_comps = target.components();
     let mut base_comps = base.components();
@@ -231,10 +237,9 @@ impl<'a> Serialize for HtmlFailureView<'a> {
                         format!("Visual mismatch ({} pixels)", diff_count),
                         Some(*diff_count),
                     ),
-                    MismatchDetail::Ssim { ssim_score } => (
-                        format!("Visual mismatch (SSIM: {:.4})", ssim_score),
-                        Some(0),
-                    ),
+                    MismatchDetail::Ssim { ssim_score } => {
+                        (format!("Visual mismatch (SSIM: {:.4})", ssim_score), None)
+                    }
                     MismatchDetail::SsimFallback { diff_count } => (
                         format!("Visual mismatch (SSIM Fallback: {} pixels)", diff_count),
                         Some(*diff_count),

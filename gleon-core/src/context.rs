@@ -8,6 +8,8 @@ pub enum ContextError {
     Config(#[from] ConfigError),
     #[error("Platform error: {0}")]
     Platform(#[from] PlatformError),
+    #[error("Git error: {0}")]
+    Git(#[from] crate::git::GitError),
 }
 
 /// Traverses parent directories starting from `start_dir` to find `gleon.yaml`.
@@ -90,6 +92,7 @@ impl ResolvedContext {
             env_provider,
         ) {
             Ok(b) => b,
+            Err(e @ crate::git::GitError::InvalidBranchName(_)) => return Err(e.into()),
             Err(e) => {
                 tracing::debug!(
                     "Git branch resolution failed: {}. Falling back to 'main' for offline mode.",
@@ -297,8 +300,12 @@ mod tests {
             &EmptyEnv,
             &PlatformEnv::default(),
         );
-        let ctx = result.unwrap();
-        assert_eq!(ctx.branch, "main");
+        assert!(matches!(
+            result,
+            Err(ContextError::Git(crate::git::GitError::InvalidBranchName(
+                _
+            )))
+        ));
     }
 
     #[test]

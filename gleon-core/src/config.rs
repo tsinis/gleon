@@ -18,10 +18,6 @@ pub enum ConfigError {
     #[error("Failed to read/write file: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Low-level I/O error wrapper.
-    #[error("I/O operation failed: {0}")]
-    IoError(#[from] crate::io::IoError),
-
     /// Deserialization error for YAML configuration files.
     #[error("Failed to parse YAML configuration: {0}")]
     YamlParse(#[from] serde_yaml::Error),

@@ -22,7 +22,7 @@ fn test_report_generation_with_real_images_and_durability() {
         .expect("Failed to open dashboard_actual.png")
         .to_rgba8();
 
-    // 1. Выполняем сравнение для Pixel mode
+    // 1. Perform image comparison for Pixel mode
     let diff_config = DiffConfig {
         threshold: 0.0,
         ..Default::default()
@@ -33,7 +33,7 @@ fn test_report_generation_with_real_images_and_durability() {
         other => panic!("Expected ComparisonResult::Mismatch, got {:?}", other),
     };
 
-    // 2. Выполняем сравнение для SSIM mode
+    // 2. Perform image comparison for SSIM mode
     let ssim_config = DiffConfig {
         threshold: 1.0,
         ..Default::default()
@@ -44,51 +44,54 @@ fn test_report_generation_with_real_images_and_durability() {
         other => panic!("Expected ComparisonResult::Mismatch, got {:?}", other),
     };
 
-    // 3. Создаем директорию фикстур для отчетов
+    // 3. Create fixtures directory for report outputs
     let report_dir = fixtures_dir.join("report_output");
     fs::create_dir_all(&report_dir).expect("Failed to create report output dir");
 
     let diff_pixel_name = "diff_dashboard_pixel.png";
     let diff_ssim_name = "diff_dashboard_ssim.png";
 
+    let diff_pixel_path = report_dir.join(diff_pixel_name);
+    let diff_ssim_path = report_dir.join(diff_ssim_name);
+
     pixel_diff_img
-        .save(report_dir.join(diff_pixel_name))
+        .save(&diff_pixel_path)
         .expect("Failed to save pixel diff image");
     ssim_diff_img
-        .save(report_dir.join(diff_ssim_name))
+        .save(&diff_ssim_path)
         .expect("Failed to save ssim diff image");
 
-    // 4. Формируем комплексный TestCaseResult с всеми 4 типами ошибок
+    // 4. Construct comprehensive TestCaseResult covering all 4 failure types
     let tc_res = TestCaseResult {
         name: "billing_dashboard".to_string(),
         results: vec![
             TestImageResult::Mismatch {
                 relative_path: PathBuf::from("overview_metrics.png"),
                 detail: pixel_detail,
-                diff_path: PathBuf::from(diff_pixel_name),
-                baseline_path: PathBuf::from("../dashboard_baseline.png"),
-                actual_path: PathBuf::from("../dashboard_actual.png"),
+                diff_path: diff_pixel_path.clone(),
+                baseline_path: baseline_path.clone(),
+                actual_path: actual_path.clone(),
             },
             TestImageResult::Mismatch {
                 relative_path: PathBuf::from("revenue_performance.png"),
                 detail: ssim_detail,
-                diff_path: PathBuf::from(diff_ssim_name),
-                baseline_path: PathBuf::from("../dashboard_baseline.png"),
-                actual_path: PathBuf::from("../dashboard_actual.png"),
+                diff_path: diff_ssim_path,
+                baseline_path: baseline_path.clone(),
+                actual_path: actual_path.clone(),
             },
             TestImageResult::Mismatch {
                 relative_path: PathBuf::from("security_alert_banner.png"),
                 detail: MismatchDetail::SsimFallback { diff_count: 14205 },
-                diff_path: PathBuf::from(diff_pixel_name),
-                baseline_path: PathBuf::from("../dashboard_baseline.png"),
-                actual_path: PathBuf::from("../dashboard_actual.png"),
+                diff_path: diff_pixel_path,
+                baseline_path: baseline_path.clone(),
+                actual_path: actual_path.clone(),
             },
             TestImageResult::DimensionMismatch {
                 relative_path: PathBuf::from("sidebar_navigation.png"),
                 baseline_size: (1920, 1080),
                 actual_size: (1920, 1200),
-                baseline_path: PathBuf::from("../dashboard_baseline.png"),
-                actual_path: PathBuf::from("../dashboard_actual.png"),
+                baseline_path: baseline_path.clone(),
+                actual_path: actual_path.clone(),
             },
             TestImageResult::DecodeError {
                 relative_path: PathBuf::from("user_avatar.png"),
@@ -97,7 +100,7 @@ fn test_report_generation_with_real_images_and_durability() {
         ],
     };
 
-    // 5. Генерируем HTML отчет
+    // 5. Generate HTML report
     let html_report =
         ReportGenerator::generate_html(std::slice::from_ref(&tc_res), Some(&report_dir));
 
@@ -115,12 +118,15 @@ fn test_report_generation_with_real_images_and_durability() {
     fs::write(&html_path, &html).expect("Failed to write HTML report");
     assert!(html_path.exists());
 
-    // 6. Генерируем и записываем JUnit XML
+    // 6. Generate and write JUnit XML
     let xml = ReportGenerator::generate_junit_xml(std::slice::from_ref(&tc_res))
         .expect("XML render should succeed");
     assert!(xml.contains("<testsuites name=\"Gleon Tests\""));
     assert!(xml.contains("<failure message=\"Visual mismatch detected ("));
     assert!(xml.contains("<failure message=\"Visual mismatch detected (SSIM score:"));
+    assert!(html.contains("../dashboard_baseline.png"));
+    assert!(html.contains("../dashboard_actual.png"));
+    assert!(html.contains("diff_dashboard_pixel.png"));
     assert!(xml.contains(
         "<failure message=\"Dimension mismatch (Baseline: 1920x1080, Actual: 1920x1200)\""
     ));
@@ -130,7 +136,7 @@ fn test_report_generation_with_real_images_and_durability() {
     fs::write(&xml_path, &xml).expect("Failed to write XML report");
     assert!(xml_path.exists());
 
-    // 7. Генерируем и записываем Markdown
+    // 7. Generate and write Markdown
     let md = ReportGenerator::generate_markdown(std::slice::from_ref(&tc_res));
     assert!(md.contains("## Gleon Visual Regression Summary"));
     assert!(md.contains("❌ Mismatch"));

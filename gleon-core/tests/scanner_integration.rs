@@ -18,7 +18,7 @@ fn test_scanner_with_real_fixture() {
     assert!(corrupt_path.exists(), "The corrupt.png fixture is missing!");
 
     let include = vec![GlobPattern::new("**/*.png").unwrap()];
-    let exclude = vec![];
+    let exclude = vec![GlobPattern::new("**/report_output/**").unwrap()];
     let rule = Arc::new(ScreenshotRule {
         include: include.clone(),
         mode: Mode::Pixel,
