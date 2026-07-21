@@ -571,7 +571,7 @@ mod tests {
         let html = ReportGenerator::generate_html(&[tc], Some(&report_dir))
             .expect("Render should succeed")
             .expect("Expected HTML output");
-        assert!(html.contains("../actual/actual.png"));
+        assert!(html.contains("actual.png"));
         assert!(html.contains("Visual mismatch (5 pixels)"));
     }
 

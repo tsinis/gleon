@@ -32,6 +32,7 @@ pub fn find_config_and_root(
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ResolvedContext {
     pub config: Option<GleonConfig>,
     pub platform: PlatformInfo,
@@ -92,7 +93,9 @@ impl ResolvedContext {
             env_provider,
         ) {
             Ok(b) => b,
-            Err(e @ crate::git::GitError::InvalidBranchName(_)) => return Err(e.into()),
+            Err(e @ crate::git::GitError::InvalidBranchName(_)) => {
+                return Err(ContextError::Git(e));
+            }
             Err(e) => {
                 tracing::debug!(
                     "Git branch resolution failed: {}. Falling back to 'main' for offline mode.",
@@ -280,7 +283,7 @@ mod tests {
         );
         assert!(result.is_err());
 
-        // 2. Git resolver error fallback
+        // 2. Git resolver error propagation (invalid branch name is returned as Err)
         let cli_git_err = Cli {
             branch: Some("invalid branch name space".to_string()),
             target_branch: "develop".to_string(),

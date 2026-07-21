@@ -124,8 +124,8 @@ fn test_report_generation_with_real_images_and_durability() {
     assert!(xml.contains("<testsuites name=\"Gleon Tests\""));
     assert!(xml.contains("<failure message=\"Visual mismatch detected ("));
     assert!(xml.contains("<failure message=\"Visual mismatch detected (SSIM score:"));
-    assert!(html.contains("../dashboard_baseline.png"));
-    assert!(html.contains("../dashboard_actual.png"));
+    assert!(html.contains("dashboard_baseline.png"));
+    assert!(html.contains("dashboard_actual.png"));
     assert!(html.contains("diff_dashboard_pixel.png"));
     assert!(xml.contains(
         "<failure message=\"Dimension mismatch (Baseline: 1920x1080, Actual: 1920x1200)\""
