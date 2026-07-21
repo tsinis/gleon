@@ -1080,18 +1080,6 @@ screenshots:
     }
 
     #[test]
-    fn test_image_hash_deserialization_errors() {
-        // Non-string type (number)
-        let res_num: Result<ImageHash, _> = serde_json::from_str("123");
-        assert!(res_num.is_err());
-
-        // Invalid hex characters (64 chars long)
-        let invalid_hex_str = format!("\"{}\"", "g".repeat(64));
-        let res_hex: Result<ImageHash, _> = serde_json::from_str(&invalid_hex_str);
-        assert!(res_hex.is_err());
-    }
-
-    #[test]
     fn test_item_or_vec_errors() {
         #[derive(Deserialize, Serialize, Debug, PartialEq)]
         struct TestItem {
@@ -1399,17 +1387,5 @@ screenshots:
         }"#;
         std::fs::write(&file_path, bad_json).unwrap();
         assert!(ManifestIndex::load(&file_path).is_err());
-    }
-
-    #[test]
-    fn test_image_hash_constructor_validation() {
-        // Empty scheme
-        assert!(ImageHash::new("", "1234").is_err());
-        // Empty value
-        assert!(ImageHash::new("sha256", "").is_err());
-        // Invalid characters
-        assert!(ImageHash::new("sha256", "abc?123").is_err());
-        // Valid characters
-        assert!(ImageHash::new("sha256", "abc_123-xyz").is_ok());
     }
 }

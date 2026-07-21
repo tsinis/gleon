@@ -177,7 +177,9 @@ impl GitResolver {
 
         // Add .git/info/exclude
         let exclude_path = repo.git_dir().join("info/exclude");
-        builder.add(&exclude_path);
+        if let Some(err) = builder.add(&exclude_path) {
+            tracing::debug!("Failed to add .git/info/exclude: {}", err);
+        }
 
         let mut gitignores_to_add = std::collections::HashSet::new();
         let mut visited_dirs = std::collections::HashSet::new();
@@ -960,6 +962,30 @@ mod tests {
         }
 
         let paths = vec![dir.path().join("file.png")];
+        let result = GitResolver::verify_ignored_impl(&paths, dir.path()).unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    #[cfg(all(unix, not(miri)))]
+    fn test_verify_ignored_unreadable_info_exclude() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
+        let exclude_path = dir.path().join(".git/info/exclude");
+        std::fs::create_dir_all(exclude_path.parent().unwrap()).unwrap();
+        std::fs::write(&exclude_path, "*.png").unwrap();
+        std::fs::set_permissions(&exclude_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // If we are root, writing to 0o000 file will succeed.
+        let is_root = std::fs::write(&exclude_path, "probe").is_ok();
+        if is_root {
+            return;
+        }
+
+        let paths = vec![dir.path().join("file.png")];
+        // The unreadable exclude file will log a warning and return None for the add error,
+        // but it will NOT cause a panic. The test should succeed and return false.
         let result = GitResolver::verify_ignored_impl(&paths, dir.path()).unwrap();
         assert!(!result);
     }

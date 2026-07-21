@@ -96,8 +96,7 @@ pub struct TestCaseResult {
 }
 
 /// Validates that all segments of a test name contain only allowed characters `[a-z0-9_.-]`.
-/// Expects the name to use Unix-style forward slashes as separators (normalize with
-/// [`FileScanner::normalize_separators`] before calling on Windows paths).
+/// The name can use either Unix-style forward slashes (`/`) or Windows-style backslashes (`\`) as separators.
 pub fn validate_test_name(name: &str) -> Result<(), String> {
     if name == "." {
         return Ok(());
