@@ -138,7 +138,7 @@ fn test_report_generation_with_real_images_and_durability() {
 
     // 7. Generate and write Markdown
     let md = ReportGenerator::generate_markdown(std::slice::from_ref(&tc_res));
-    assert!(md.contains("## Gleon Visual Regression Summary"));
+    assert!(md.contains("# Gleon Visual Regression Summary"));
     assert!(md.contains("❌ Mismatch"));
     assert!(md.contains("❌ Dimension Mismatch"));
     assert!(md.contains("❌ Decode Error"));

@@ -30,6 +30,26 @@ pub fn load_json<T: serde::de::DeserializeOwned, P: AsRef<Path>>(path: P) -> Res
         })
 }
 
+/// Loads the JSON (or uses Default if missing), applies the closure, and saves it atomically.
+pub fn update_json_atomically<T, P, F, D, E>(path: P, default_fn: D, f: F) -> Result<(), E>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned,
+    P: AsRef<Path>,
+    D: FnOnce() -> T,
+    F: FnOnce(&mut T) -> Result<(), E>,
+    E: From<IoError>,
+{
+    let path = path.as_ref();
+    let mut value = match load_json(path) {
+        Ok(val) => val,
+        Err(IoError::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => default_fn(),
+        Err(e) => return Err(E::from(e)),
+    };
+
+    f(&mut value)?;
+    save_json_atomically(path, &value).map_err(E::from)
+}
+
 pub fn save_json_atomically<T: serde::Serialize, P: AsRef<Path>>(
     path: P,
     value: &T,
@@ -127,5 +147,54 @@ mod tests {
         } else {
             panic!("Expected IoError::Io with InvalidInput");
         }
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug, Default)]
+    struct TestData {
+        count: u32,
+    }
+
+    #[test]
+    fn test_update_json_atomically_missing_file_uses_default() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("data.json");
+
+        update_json_atomically::<TestData, _, _, _, IoError>(
+            &file_path,
+            TestData::default,
+            |data: &mut TestData| {
+                data.count += 5;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let loaded: TestData = load_json(&file_path).unwrap();
+        assert_eq!(loaded, TestData { count: 5 });
+    }
+
+    #[test]
+    fn test_update_json_atomically_corrupted_file_fails() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("corrupt.json");
+
+        // Write invalid JSON content to simulate file corruption
+        std::fs::write(&file_path, "{ invalid json ").unwrap();
+
+        let result = update_json_atomically::<TestData, _, _, _, IoError>(
+            &file_path,
+            TestData::default,
+            |data: &mut TestData| {
+                data.count += 5;
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), IoError::JsonParse(_)));
+
+        // Verify the corrupted file content was NOT overwritten
+        let raw_content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(raw_content, "{ invalid json ");
     }
 }

@@ -36,14 +36,25 @@ pub enum ReportError {
 /// For example, if `target` is `.gleon/diffs/image.png` and `base` is `.gleon/reports`,
 /// the result is `../diffs/image.png`.
 pub fn make_relative_path(target: &std::path::Path, base: &std::path::Path) -> std::path::PathBuf {
-    use std::path::PathBuf;
+    use std::path::{Component, PathBuf};
 
     if target.is_absolute() != base.is_absolute() {
         return target.to_path_buf();
     }
 
-    let mut target_comps = target.components();
-    let mut base_comps = base.components();
+    let mut target_comps = target
+        .components()
+        .filter(|c| !matches!(c, Component::CurDir));
+    let mut base_comps = base
+        .components()
+        .filter(|c| !matches!(c, Component::CurDir));
+
+    if let (Some(Component::Prefix(p1)), Some(Component::Prefix(p2))) =
+        (target_comps.clone().next(), base_comps.clone().next())
+        && p1 != p2
+    {
+        return target.to_path_buf();
+    }
 
     let mut target_comp = target_comps.next();
     let mut base_comp = base_comps.next();
@@ -526,7 +537,7 @@ impl ReportGenerator {
         }
 
         format!(
-            "## Gleon Visual Regression Summary\n\n**Total Tests:** {}\n**Failed:** {}\n\n{}",
+            "# Gleon Visual Regression Summary\n\n**Total Tests:** {}\n**Failed:** {}\n\n{}",
             total, failed, table
         )
     }
@@ -540,6 +551,14 @@ mod tests {
     #[test]
     fn test_make_relative_path() {
         let target = PathBuf::from(".gleon/diffs/billing/form.png");
+        let base = PathBuf::from(".gleon/reports");
+        let rel = make_relative_path(&target, &base);
+        assert_eq!(rel, PathBuf::from("../diffs/billing/form.png"));
+    }
+
+    #[test]
+    fn test_make_relative_path_with_dots_and_curdir() {
+        let target = PathBuf::from("./.gleon/diffs/billing/form.png");
         let base = PathBuf::from(".gleon/reports");
         let rel = make_relative_path(&target, &base);
         assert_eq!(rel, PathBuf::from("../diffs/billing/form.png"));
@@ -618,7 +637,7 @@ mod tests {
             }],
         };
         let md = ReportGenerator::generate_markdown(&[tc]);
-        assert!(md.contains("## Gleon Visual Regression Summary"));
+        assert!(md.contains("# Gleon Visual Regression Summary"));
         assert!(md.contains("❌ Decode Error"));
         assert!(md.contains("billing"));
     }

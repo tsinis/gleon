@@ -234,9 +234,9 @@
                     <div class="image-title">Actual vs Baseline Slider</div>
                     <div class="slider-wrapper">
                         <!-- Baseline goes below -->
-                        <img class="img-baseline" src="{{ failure.baseline_path | escape }}" alt="Baseline">
+                        <img class="img-baseline" src="{{ failure.baseline_path | escape }}" alt="Baseline" loading="lazy">
                         <!-- Actual goes on top, clipped -->
-                        <img class="img-actual" id="actual-img-{{ loop.index }}" src="{{ failure.actual_path | escape }}" alt="Actual">
+                        <img class="img-actual" id="actual-img-{{ loop.index }}" src="{{ failure.actual_path | escape }}" alt="Actual" loading="lazy">
                         <!-- Handle visual -->
                         <div class="slider-handle" id="slider-handle-{{ loop.index }}"></div>
                         <!-- Invisible slider -->
@@ -245,18 +245,18 @@
                 </div>
                 <div class="image-container">
                     <div class="image-title">Diff Image{% if failure.diff_count is not none %} ({{ failure.diff_count }} diffs){% endif %}</div>
-                    <img class="img-static" src="{{ failure.diff_path | escape }}" alt="Diff">
+                    <img class="img-static" src="{{ failure.diff_path | escape }}" alt="Diff" loading="lazy">
                 </div>
             </div>
             {% elif failure.type == "DimensionMismatch" %}
             <div class="comparison-grid">
                 <div class="image-container">
                     <div class="image-title">Actual ({{ failure.actual_size }})</div>
-                    <img class="img-static" src="{{ failure.actual_path | escape }}" alt="Actual">
+                    <img class="img-static" src="{{ failure.actual_path | escape }}" alt="Actual" loading="lazy">
                 </div>
                 <div class="image-container">
                     <div class="image-title">Baseline ({{ failure.baseline_size }})</div>
-                    <img class="img-static" src="{{ failure.baseline_path | escape }}" alt="Baseline">
+                    <img class="img-static" src="{{ failure.baseline_path | escape }}" alt="Baseline" loading="lazy">
                 </div>
             </div>
             {% elif failure.type == "DecodeError" %}

@@ -1,4 +1,4 @@
-## Gleon Visual Regression Summary
+# Gleon Visual Regression Summary
 
 **Total Tests:** 5
 **Failed:** 5

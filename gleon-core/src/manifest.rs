@@ -1,6 +1,6 @@
 //! Manifest definitions for gleon.
 
-use crate::io::{IoError, load_json, save_json_atomically};
+use crate::io::{IoError, load_json, save_json_atomically, update_json_atomically};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -216,6 +216,31 @@ impl Manifest {
         tracing::debug!("Manifest saved successfully to {:?}", path);
         Ok(())
     }
+
+    /// Load, modify, and save a manifest atomically under an exclusive file lock.
+    pub fn update<P: AsRef<Path>, F: FnOnce(&mut Self)>(
+        path: P,
+        f: F,
+    ) -> Result<(), ManifestError> {
+        let path = path.as_ref();
+        tracing::info!("Updating manifest atomically at {:?}", path);
+        update_json_atomically(
+            path,
+            || Self {
+                schema_version: SUPPORTED_MANIFEST_SCHEMA_VERSION,
+                hash_algo: "sha256".to_string(),
+                pixel_format: "rgba".to_string(),
+                generator_version: "unknown".to_string(),
+                entries: BTreeMap::new(),
+            },
+            |manifest: &mut Self| {
+                f(manifest);
+                manifest.validate()
+            },
+        )?;
+        tracing::debug!("Manifest updated successfully to {:?}", path);
+        Ok(())
+    }
 }
 
 impl ManifestIndex {
@@ -246,6 +271,28 @@ impl ManifestIndex {
         self.validate()?;
         save_json_atomically(path, self)?;
         tracing::debug!("Manifest index saved successfully to {:?}", path);
+        Ok(())
+    }
+
+    /// Load, modify, and save a manifest index atomically under an exclusive file lock.
+    pub fn update<P: AsRef<Path>, F: FnOnce(&mut Self)>(
+        path: P,
+        f: F,
+    ) -> Result<(), ManifestError> {
+        let path = path.as_ref();
+        tracing::info!("Updating manifest index atomically at {:?}", path);
+        update_json_atomically(
+            path,
+            || Self {
+                schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
+                test_manifests: BTreeMap::new(),
+            },
+            |index: &mut Self| {
+                f(index);
+                index.validate()
+            },
+        )?;
+        tracing::debug!("Manifest index updated successfully at {:?}", path);
         Ok(())
     }
 }
@@ -664,6 +711,21 @@ mod tests {
             entries: BTreeMap::new(),
         };
         assert!(manifest.save(&file_path).is_err());
+    }
+
+    #[test]
+    fn test_manifest_update_validates_mutated_content() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("manifest.json");
+
+        let result = Manifest::update(&file_path, |manifest| {
+            manifest.schema_version = 99;
+        });
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ManifestError::Validation(_)));
     }
 
     #[test]

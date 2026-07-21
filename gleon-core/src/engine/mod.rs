@@ -60,13 +60,29 @@ fn execute_pixel_comparison(
     threshold: f64,
     is_fallback: bool,
 ) -> ComparisonResult {
-    // First, count mismatched pixels without allocating a diff image to save memory.
-    let diff_count = pixel::count_mismatched_pixels(baseline, actual);
-
     let total_pixels = baseline.width().saturating_mul(baseline.height());
     if total_pixels == 0 {
-        ComparisonResult::Match
+        return ComparisonResult::Match;
+    }
+
+    if threshold == 0.0 {
+        // Single pass fast-path: count mismatches and build diff_image in a single iteration.
+        let (diff_count, diff_image) = compare_pixels(baseline, actual);
+        if diff_count == 0 {
+            ComparisonResult::Match
+        } else {
+            ComparisonResult::Mismatch {
+                detail: if is_fallback {
+                    MismatchDetail::SsimFallback { diff_count }
+                } else {
+                    MismatchDetail::Pixel { diff_count }
+                },
+                diff_image,
+            }
+        }
     } else {
+        // First, count mismatched pixels without allocating a diff image to save memory.
+        let diff_count = pixel::count_mismatched_pixels(baseline, actual);
         let mismatch_ratio = diff_count as f64 / total_pixels as f64;
         if mismatch_ratio <= threshold {
             ComparisonResult::Match
