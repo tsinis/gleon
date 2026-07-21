@@ -270,24 +270,18 @@ impl FileScanner {
                 }
 
                 let key = (test_name_ref.to_string(), rule_index);
-                if let Some(case) = temp_cases.get_mut(&key) {
-                    case.images.push(TestImage {
+                temp_cases
+                    .entry(key)
+                    .or_insert_with(|| TestCase {
+                        name: test_name_ref.to_string(),
+                        images: Vec::new(),
+                        rule: rule_arc.clone(),
+                    })
+                    .images
+                    .push(TestImage {
                         relative_path: rel_path.to_path_buf(),
                         absolute_path: path.to_path_buf(),
                     });
-                } else {
-                    temp_cases.insert(
-                        key,
-                        TestCase {
-                            name: test_name_ref.to_string(),
-                            images: vec![TestImage {
-                                relative_path: rel_path.to_path_buf(),
-                                absolute_path: path.to_path_buf(),
-                            }],
-                            rule: rule_arc.clone(),
-                        },
-                    );
-                }
             }
         }
 
