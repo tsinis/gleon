@@ -514,8 +514,13 @@ impl ReportGenerator {
                     }
                 };
 
+                let sanitize_cell = |s: &str| -> String {
+                    s.replace('|', "\\|").replace('\n', " ").replace('\r', "")
+                };
+                let safe_name = sanitize_cell(&tc.name);
                 let path_str = Self::format_path_string(res.relative_path(), None);
-                writeln!(table, "| {} | {} | {} |", tc.name, path_str, status)
+                let safe_path = sanitize_cell(&path_str);
+                writeln!(table, "| {} | {} | {} |", safe_name, safe_path, status)
                     .expect("fmt::Write on String is infallible");
             }
         }
@@ -571,7 +576,7 @@ mod tests {
         let html = ReportGenerator::generate_html(&[tc], Some(&report_dir))
             .expect("Render should succeed")
             .expect("Expected HTML output");
-        assert!(html.contains("actual.png"));
+        assert!(html.contains("..&#x2f;actual&#x2f;actual.png"));
         assert!(html.contains("Visual mismatch (5 pixels)"));
     }
 
@@ -616,5 +621,19 @@ mod tests {
         assert!(md.contains("## Gleon Visual Regression Summary"));
         assert!(md.contains("❌ Decode Error"));
         assert!(md.contains("billing"));
+    }
+
+    #[test]
+    fn test_generate_markdown_sanitization() {
+        let tc = TestCaseResult {
+            name: "billing | feature\nline".to_string(),
+            results: vec![TestImageResult::DecodeError {
+                relative_path: PathBuf::from("corrupt | file.png"),
+                error: "Bad header".to_string(),
+            }],
+        };
+        let md = ReportGenerator::generate_markdown(&[tc]);
+        assert!(md.contains("billing \\| feature line"));
+        assert!(md.contains("corrupt \\| file.png"));
     }
 }
