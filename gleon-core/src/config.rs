@@ -2,7 +2,7 @@
 
 use crate::platform::PlatformConfig;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::BTreeMap;
+
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -165,90 +165,6 @@ impl Serialize for GlobPattern {
         S: Serializer,
     {
         serializer.serialize_str(self.as_str())
-    }
-}
-
-/// A strongly-typed image comparison hash, serialized as a `scheme:value` string.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ImageHash {
-    /// The hashing scheme/algorithm (e.g. "sha256", "phash", "dhash", "ssim").
-    scheme: String,
-    /// The hex or alphanumeric representation of the hash.
-    value: String,
-}
-
-fn validate_hash_parts(scheme: &str, value: &str) -> Result<(), String> {
-    if scheme.is_empty() {
-        return Err("Hash scheme cannot be empty".to_string());
-    }
-    if value.is_empty() {
-        return Err("Hash value cannot be empty".to_string());
-    }
-    if !value
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err("Hash value contains invalid characters".to_string());
-    }
-    Ok(())
-}
-
-impl ImageHash {
-    /// Constructs a new ImageHash, returning a validation error if invalid.
-    pub fn new(scheme: impl Into<String>, value: impl Into<String>) -> Result<Self, ConfigError> {
-        let scheme_str = scheme.into();
-        let value_str = value.into();
-        validate_hash_parts(&scheme_str, &value_str).map_err(ConfigError::Validation)?;
-        Ok(Self {
-            scheme: scheme_str,
-            value: value_str,
-        })
-    }
-
-    /// Gets the hashing scheme.
-    pub fn scheme(&self) -> &str {
-        &self.scheme
-    }
-
-    /// Gets the hash value.
-    pub fn value(&self) -> &str {
-        &self.value
-    }
-}
-
-impl<'de> Deserialize<'de> for ImageHash {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        String::deserialize(deserializer).and_then(|s| {
-            let (scheme, value) = s
-                .split_once(':')
-                .ok_or_else(|| serde::de::Error::custom("Hash must be in 'scheme:value' format"))?;
-
-            validate_hash_parts(scheme, value).map_err(serde::de::Error::custom)?;
-
-            Ok(ImageHash {
-                scheme: scheme.to_string(),
-                value: value.to_string(),
-            })
-        })
-    }
-}
-
-impl Serialize for ImageHash {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let s = format!("{}:{}", self.scheme, self.value);
-        serializer.serialize_str(&s)
-    }
-}
-
-impl std::fmt::Display for ImageHash {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.scheme, self.value)
     }
 }
 
@@ -491,227 +407,19 @@ impl GleonConfig {
     }
 }
 
-/// The manifest file structure representing previous run results.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Manifest {
-    pub schema_version: u64,
-    pub hash_algo: String,
-    pub pixel_format: String,
-    pub generator_version: String,
-    pub entries: BTreeMap<String, ManifestEntry>,
-}
-
-/// Metadata entry for a single verified screenshot.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ManifestEntry {
-    pub hash: ImageHash,
-    pub width: u32,
-    pub height: u32,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub created_by: String,
-    pub source_commit: String,
-}
-
-pub const SUPPORTED_MANIFEST_SCHEMA_VERSION: u64 = 1;
-pub const SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION: u64 = 1;
-
-/// The index mapping test paths to their respective manifest hashes.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ManifestIndex {
-    pub schema_version: u64,
-    pub test_manifests: BTreeMap<String, ImageHash>,
-}
-
-fn load_json<T: serde::de::DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<T, ConfigError> {
-    let path = path.as_ref();
-    let file = std::fs::File::open(path).map_err(|e| {
-        tracing::debug!("Failed to open JSON file at {:?}: {}", path, e);
-        ConfigError::Io(e)
-    })?;
-    let reader = std::io::BufReader::new(file);
-    let value: T = serde_json::from_reader(reader).map_err(|e| {
-        tracing::error!("Failed to parse JSON file at {:?}: {}", path, e);
-        ConfigError::JsonParse(e)
-    })?;
-    Ok(value)
-}
-
-fn save_json_atomically<T: serde::Serialize, P: AsRef<Path>>(
-    path: P,
-    value: &T,
-) -> Result<(), ConfigError> {
-    let path = path.as_ref();
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-
-    if !parent.exists() {
-        tracing::debug!("Creating parent directories for JSON path: {:?}", parent);
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let file_name = path.file_name().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid file name")
-    })?;
-
-    let temp_file = tempfile::Builder::new()
-        .prefix(file_name)
-        .suffix(".tmp")
-        .tempfile_in(parent)?;
-
-    use std::io::Write;
-    let mut writer = std::io::BufWriter::new(temp_file);
-    serde_json::to_writer_pretty(&mut writer, value)?;
-    writer.flush()?;
-    let temp_file = writer
-        .into_inner()
-        .map_err(|e| ConfigError::Io(e.into_error()))?;
-
-    #[cfg(all(unix, not(miri)))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = temp_file
-            .as_file()
-            .metadata()
-            .map_err(ConfigError::Io)?
-            .permissions();
-        if let Ok(existing) = std::fs::metadata(path) {
-            perms.set_mode(existing.permissions().mode());
-        }
-        temp_file
-            .as_file()
-            .set_permissions(perms)
-            .map_err(ConfigError::Io)?;
-    }
-
-    temp_file.as_file().sync_all().map_err(ConfigError::Io)?;
-
-    temp_file.persist(path).map_err(|e| {
-        tracing::error!("Failed to save JSON atomically to {:?}: {}", path, e);
-        ConfigError::Io(e.error)
-    })?;
-
-    if let Some(dir) = path.parent().and_then(|p| std::fs::File::open(p).ok()) {
-        dir.sync_all().map_err(ConfigError::Io)
-    } else {
-        Ok(())
-    }
-}
-
-impl Manifest {
-    /// Validates that entry schemes match the manifest hash algorithm,
-    /// and that sha256 digests are structurally valid (64 hex characters).
-    pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.schema_version != SUPPORTED_MANIFEST_SCHEMA_VERSION {
-            return Err(ConfigError::Validation(format!(
-                "Unsupported manifest schema version: expected {}, got {}",
-                SUPPORTED_MANIFEST_SCHEMA_VERSION, self.schema_version
-            )));
-        }
-        let algo_lower = self.hash_algo.to_lowercase();
-        for (path, entry) in &self.entries {
-            if entry.hash.scheme().to_lowercase() != algo_lower {
-                return Err(ConfigError::Validation(format!(
-                    "Manifest entry '{}' has hash scheme '{}', but manifest hash_algo is '{}'",
-                    path,
-                    entry.hash.scheme(),
-                    self.hash_algo
-                )));
-            }
-            if algo_lower == "sha256" {
-                if entry.hash.value().len() != 64 {
-                    return Err(ConfigError::Validation(format!(
-                        "Manifest entry '{}' has invalid sha256 hash length: expected 64 hex characters, got {}",
-                        path,
-                        entry.hash.value().len()
-                    )));
-                }
-                if !entry.hash.value().chars().all(|c| c.is_ascii_hexdigit()) {
-                    return Err(ConfigError::Validation(format!(
-                        "Manifest entry '{}' has invalid sha256 hash value: expected hex characters, got '{}'",
-                        path,
-                        entry.hash.value()
-                    )));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Load a manifest from a JSON file.
-    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
-        let path = path.as_ref();
-        tracing::debug!("Loading manifest from {:?}", path);
-        let manifest: Self = load_json(path)?;
-        manifest.validate()?;
-        Ok(manifest)
-    }
-
-    /// Save a manifest to a JSON file atomically.
-    pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), ConfigError> {
-        let path = path.as_ref();
-        tracing::info!("Saving manifest to {:?}", path);
-        self.validate()?;
-        save_json_atomically(path, self)?;
-        tracing::debug!("Manifest saved successfully to {:?}", path);
-        Ok(())
-    }
-}
-
-impl ManifestIndex {
-    /// Validates that the schema version is supported.
-    pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.schema_version != SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION {
-            return Err(ConfigError::Validation(format!(
-                "Unsupported manifest index schema version: expected {}, got {}",
-                SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION, self.schema_version
-            )));
-        }
-        Ok(())
-    }
-
-    /// Load a manifest index from a JSON file.
-    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
-        let path = path.as_ref();
-        tracing::debug!("Loading manifest index from {:?}", path);
-        let index: Self = load_json(path)?;
-        index.validate()?;
-        Ok(index)
-    }
-
-    /// Save a manifest index to a JSON file atomically.
-    pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), ConfigError> {
-        let path = path.as_ref();
-        tracing::info!("Saving manifest index to {:?}", path);
-        self.validate()?;
-        save_json_atomically(path, self)?;
-        tracing::debug!("Manifest index saved successfully to {:?}", path);
-        Ok(())
-    }
-}
-
 /// Pre-parsed default version requirement, avoiding `unwrap()` at runtime.
-///
-/// This is safe because the string `">=0.1.0"` is a valid semver requirement
-/// and is verified by the `test_default_version_req_is_valid` unit test.
 const DEFAULT_VERSION_REQ: &str = ">=0.1.0";
+
+use std::sync::LazyLock;
+
+static DEFAULT_VERSION: LazyLock<semver::VersionReq> = LazyLock::new(|| {
+    semver::VersionReq::parse(DEFAULT_VERSION_REQ)
+        .expect("DEFAULT_VERSION_REQ must be a valid semver requirement")
+});
 
 impl Default for GleonConfig {
     fn default() -> Self {
-        static DEFAULT_VERSION: std::sync::OnceLock<semver::VersionReq> =
-            std::sync::OnceLock::new();
-
-        // SAFETY rationale: DEFAULT_VERSION_REQ is a compile-time constant
-        // validated by unit tests. Using expect() inside OnceLock to satisfy
-        // clippy::unwrap_used while keeping the panic message clear.
-        #[allow(clippy::expect_used)]
-        let required_version = DEFAULT_VERSION
-            .get_or_init(|| {
-                semver::VersionReq::parse(DEFAULT_VERSION_REQ)
-                    .expect("DEFAULT_VERSION_REQ must be a valid semver requirement")
-            })
-            .clone();
+        let required_version = DEFAULT_VERSION.clone();
 
         Self {
             required_version,
@@ -733,7 +441,9 @@ impl Default for GleonConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifest::*;
     use semver::VersionReq;
+    use std::collections::BTreeMap;
     use tempfile::tempdir;
 
     #[test]
@@ -746,34 +456,6 @@ mod tests {
         let expected_yaml = std::fs::read_to_string(fixture_path).unwrap();
 
         assert_eq!(generated_yaml.trim(), expected_yaml.trim());
-    }
-
-    #[test]
-    fn test_image_hash_prefixed_serialization() {
-        let hash = ImageHash::new(
-            "sha256",
-            "0000000000000000000000000000000000000000000000000000000000000000",
-        )
-        .unwrap();
-        let json = serde_json::to_string(&hash).unwrap();
-        assert_eq!(
-            json,
-            "\"sha256:0000000000000000000000000000000000000000000000000000000000000000\""
-        );
-
-        let deserialized: ImageHash = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized, hash);
-
-        // Test different scheme
-        let pixel_hash = ImageHash::new("pixel", "a1b2c3d4").unwrap();
-        let pixel_json = serde_json::to_string(&pixel_hash).unwrap();
-        assert_eq!(pixel_json, "\"pixel:a1b2c3d4\"");
-        let deserialized_pixel: ImageHash = serde_json::from_str(&pixel_json).unwrap();
-        assert_eq!(deserialized_pixel, pixel_hash);
-
-        // Missing prefix should fail
-        let bad_json = "\"0000000000000000000000000000000000000000000000000000000000000000\"";
-        assert!(serde_json::from_str::<ImageHash>(bad_json).is_err());
     }
 
     #[test]
@@ -791,6 +473,7 @@ mod tests {
                     "0000000000000000000000000000000000000000000000000000000000000000",
                 )
                 .unwrap(),
+                phash: ImageHash::new("dhash", "0123456789abcdef").unwrap(),
                 width: 800,
                 height: 600,
                 created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
@@ -1074,40 +757,6 @@ screenshots:
     }
 
     #[test]
-    fn test_image_hash_invalid_format_deserialization() {
-        // Missing colon
-        let bad_json_1 =
-            "\"sha2560000000000000000000000000000000000000000000000000000000000000000\"";
-        assert!(serde_json::from_str::<ImageHash>(bad_json_1).is_err());
-
-        // Empty scheme
-        let bad_json_2 = "\":00000000\"";
-        assert!(serde_json::from_str::<ImageHash>(bad_json_2).is_err());
-
-        // Empty value
-        let bad_json_3 = "\"sha256:\"";
-        assert!(serde_json::from_str::<ImageHash>(bad_json_3).is_err());
-
-        // Invalid characters
-        let bad_json_4 = "\"sha256:invalid?hash\"";
-        assert!(serde_json::from_str::<ImageHash>(bad_json_4).is_err());
-    }
-
-    #[test]
-    fn test_image_hash_display() {
-        let hash = ImageHash::new(
-            "sha256",
-            "0000000000000000000000000000000000000000000000000000000000000000",
-        )
-        .unwrap();
-        let formatted = format!("{}", hash);
-        assert_eq!(
-            formatted,
-            "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-        );
-    }
-
-    #[test]
     fn test_manifest_roundtrip() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("manifest.json");
@@ -1121,6 +770,7 @@ screenshots:
                     "0000000000000000000000000000000000000000000000000000000000000000",
                 )
                 .unwrap(),
+                phash: ImageHash::new("dhash", "0123456789abcdef").unwrap(),
                 width: 800,
                 height: 600,
                 created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
@@ -1157,6 +807,7 @@ screenshots:
                     "0000000000000000000000000000000000000000000000000000000000000000",
                 )
                 .unwrap(),
+                phash: ImageHash::new("dhash", "0000000000000000").unwrap(),
                 width: 10,
                 height: 10,
                 created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
@@ -1182,6 +833,7 @@ screenshots:
             "test.png".to_string(),
             ManifestEntry {
                 hash: ImageHash::new("sha256", "0".repeat(63)).unwrap(),
+                phash: ImageHash::new("dhash", "0000000000000000").unwrap(),
                 width: 10,
                 height: 10,
                 created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
@@ -1207,6 +859,7 @@ screenshots:
             "test.png".to_string(),
             ManifestEntry {
                 hash: ImageHash::new("sha256", "z".repeat(64)).unwrap(),
+                phash: ImageHash::new("dhash", "0000000000000000").unwrap(),
                 width: 10,
                 height: 10,
                 created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
@@ -1232,6 +885,7 @@ screenshots:
             "test.png".to_string(),
             ManifestEntry {
                 hash: ImageHash::new("sHa256", "0".repeat(64)).unwrap(),
+                phash: ImageHash::new("dhash", "0000000000000000").unwrap(),
                 width: 10,
                 height: 10,
                 created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
@@ -1255,6 +909,7 @@ screenshots:
             "test.png".to_string(),
             ManifestEntry {
                 hash: ImageHash::new("phash", "abc").unwrap(),
+                phash: ImageHash::new("dhash", "0000000000000000").unwrap(),
                 width: 10,
                 height: 10,
                 created_at: chrono::DateTime::from_timestamp(1710000000, 0).unwrap(),
@@ -1299,6 +954,7 @@ screenshots:
                     "0000000000000000000000000000000000000000000000000000000000000000",
                 )
                 .unwrap(),
+                phash: ImageHash::new("dhash", "0000000000000000").unwrap(),
                 width: 800,
                 height: 600,
                 created_at: chrono::DateTime::from_timestamp(456, 0).unwrap(),
@@ -1421,18 +1077,6 @@ screenshots:
         // Test invalid float inside percentage
         let d_invalid_pct_float: Result<Dimension, _> = serde_yaml::from_str("\"abc%\"");
         assert!(d_invalid_pct_float.is_err());
-    }
-
-    #[test]
-    fn test_image_hash_deserialization_errors() {
-        // Non-string type (number)
-        let res_num: Result<ImageHash, _> = serde_json::from_str("123");
-        assert!(res_num.is_err());
-
-        // Invalid hex characters (64 chars long)
-        let invalid_hex_str = format!("\"{}\"", "g".repeat(64));
-        let res_hex: Result<ImageHash, _> = serde_json::from_str(&invalid_hex_str);
-        assert!(res_hex.is_err());
     }
 
     #[test]
@@ -1743,17 +1387,5 @@ screenshots:
         }"#;
         std::fs::write(&file_path, bad_json).unwrap();
         assert!(ManifestIndex::load(&file_path).is_err());
-    }
-
-    #[test]
-    fn test_image_hash_constructor_validation() {
-        // Empty scheme
-        assert!(ImageHash::new("", "1234").is_err());
-        // Empty value
-        assert!(ImageHash::new("sha256", "").is_err());
-        // Invalid characters
-        assert!(ImageHash::new("sha256", "abc?123").is_err());
-        // Valid characters
-        assert!(ImageHash::new("sha256", "abc_123-xyz").is_ok());
     }
 }

@@ -148,15 +148,10 @@ impl GitResolver {
             }
         };
 
-        let repo_root = match repo.workdir() {
-            Some(wd) => wd,
-            None => {
-                return Err(GitError::Discover(
-                    "Bare repository has no working directory".to_string(),
-                ));
-            }
-        };
-        let repo_root = normalize_path(repo_root);
+        let repo_root = repo.workdir().ok_or_else(|| {
+            GitError::Discover("Bare repository has no working directory".to_string())
+        })?;
+        let repo_root = normalize_path(repo_root)?;
 
         // Pre-process paths into absolute and relative counterparts, resolving path traversal
         let mut processed_paths = Vec::with_capacity(paths.len());
@@ -167,7 +162,7 @@ impl GitResolver {
             } else {
                 base_dir.join(path_ref)
             };
-            let abs_path = normalize_path(&abs_path);
+            let abs_path = normalize_path(&abs_path)?;
 
             // Check if the path is actually inside the repository
             if !abs_path.starts_with(&repo_root) {
@@ -180,10 +175,10 @@ impl GitResolver {
 
         let mut builder = ignore::gitignore::GitignoreBuilder::new(&repo_root);
 
-        // Add .git/info/exclude if it exists
+        // Add .git/info/exclude
         let exclude_path = repo.git_dir().join("info/exclude");
-        if exclude_path.exists() {
-            builder.add(&exclude_path);
+        if let Some(err) = builder.add(&exclude_path) {
+            tracing::debug!("Failed to add .git/info/exclude: {}", err);
         }
 
         let mut gitignores_to_add = std::collections::HashSet::new();
@@ -191,21 +186,23 @@ impl GitResolver {
 
         for (abs_path, _) in &processed_paths {
             // Traverse up to repo_root to discover all .gitignore files in the hierarchy
-            let mut current = abs_path.parent();
-            while let Some(dir) = current {
-                if !visited_dirs.insert(dir.to_path_buf()) {
+            let mut current = abs_path.clone();
+            while current.pop() {
+                let dir = &current;
+                if !dir.starts_with(&repo_root) {
+                    break;
+                }
+                if visited_dirs.contains(dir) {
                     // Already visited this directory and its parents!
                     break;
                 }
+                visited_dirs.insert(dir.to_path_buf());
 
                 let gitignore = dir.join(".gitignore");
-                if gitignore.is_file() {
-                    gitignores_to_add.insert(gitignore);
-                }
-                if dir == repo_root {
+                gitignores_to_add.insert(gitignore);
+                if dir == &repo_root {
                     break;
                 }
-                current = dir.parent();
             }
         }
 
@@ -214,7 +211,12 @@ impl GitResolver {
         // Therefore, we sort the discovered files by depth (number of components)
         // so that the root .gitignore is added first, and deeper files are added later.
         let mut sorted_gitignores: Vec<_> = gitignores_to_add.into_iter().collect();
-        sorted_gitignores.sort_by_key(|p| p.components().count());
+        sorted_gitignores.sort_by(|a, b| {
+            a.components()
+                .count()
+                .cmp(&b.components().count())
+                .then_with(|| a.cmp(b))
+        });
 
         for gitignore in sorted_gitignores {
             if let Some(err) = builder.add(&gitignore) {
@@ -250,7 +252,10 @@ impl GitResolver {
     /// Resolves the merge-base between HEAD and the given target branch.
     /// Detects shallow clones and returns a specific error for fallback logging.
     pub fn resolve_merge_base(base_dir: &Path, target_branch: &str) -> Result<String, GitError> {
-        let repo = gix::discover(base_dir).map_err(|e| GitError::Discover(e.to_string()))?;
+        let repo = match gix::discover(base_dir) {
+            Ok(repo) => repo,
+            Err(e) => return Err(GitError::Discover(e.to_string())),
+        };
 
         // Check if the repository is a shallow clone by checking for the existence of .git/shallow
         if repo.shallow_file().exists() {
@@ -259,42 +264,66 @@ impl GitResolver {
             ));
         }
 
-        let head_commit = repo
-            .head_commit()
-            .map_err(|e| GitError::HeadRead(e.to_string()))?;
+        let head_commit = match repo.head_commit() {
+            Ok(commit) => commit,
+            Err(e) => return Err(GitError::HeadRead(e.to_string())),
+        };
         let head_id = head_commit.id;
 
-        let target_id = repo.rev_parse_single(target_branch).map_err(|e| {
-            GitError::MergeBaseFailed(format!(
-                "Failed to resolve target branch '{}': {}",
-                target_branch, e
-            ))
-        })?;
+        let target_id = match repo.rev_parse_single(target_branch) {
+            Ok(id) => id,
+            Err(e) => {
+                return Err(GitError::MergeBaseFailed(format!(
+                    "Failed to resolve target branch '{}': {}",
+                    target_branch, e
+                )));
+            }
+        };
 
-        let base_id = repo
-            .merge_base(head_id, target_id)
-            .map_err(|e| GitError::MergeBaseFailed(e.to_string()))?;
-
-        Ok(base_id.to_string())
+        match repo.merge_base(head_id, target_id) {
+            Ok(base_id) => Ok(base_id.to_string()),
+            Err(e) => Err(GitError::MergeBaseFailed(e.to_string())),
+        }
     }
 
     /// Gets the author name and email of the given commit, defaulting to "unknown".
     pub fn get_commit_author(base_dir: &Path, commit_sha: &str) -> Result<String, GitError> {
-        let repo = gix::discover(base_dir).map_err(|e| GitError::Discover(e.to_string()))?;
+        let repo = match gix::discover(base_dir) {
+            Ok(repo) => repo,
+            Err(e) => return Err(GitError::Discover(e.to_string())),
+        };
 
-        let id = gix::ObjectId::from_hex(commit_sha.as_bytes())
+        let id = match gix::ObjectId::from_hex(commit_sha.as_bytes())
             .or_else(|_| repo.rev_parse_single(commit_sha).map(|id| id.detach()))
-            .map_err(|e| {
-                GitError::HeadRead(format!("Invalid commit SHA or ref '{}': {}", commit_sha, e))
-            })?;
+        {
+            Ok(id) => id,
+            Err(e) => {
+                return Err(GitError::HeadRead(format!(
+                    "Invalid commit SHA or ref '{}': {}",
+                    commit_sha, e
+                )));
+            }
+        };
 
-        let commit = repo
-            .find_commit(id)
-            .map_err(|e| GitError::HeadRead(format!("Commit not found '{}': {}", id, e)))?;
+        let commit = match repo.find_commit(id) {
+            Ok(commit) => commit,
+            Err(e) => {
+                return Err(GitError::HeadRead(format!(
+                    "Commit not found '{}': {}",
+                    id, e
+                )));
+            }
+        };
 
-        let decoded = commit
-            .decode()
-            .map_err(|e| GitError::HeadRead(format!("Failed to decode commit '{}': {}", id, e)))?;
+        let decoded = match commit.decode() {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                return Err(GitError::HeadRead(format!(
+                    "Failed to decode commit '{}': {}",
+                    id, e
+                )));
+            }
+        };
 
         if let Ok(sig) = gix::actor::SignatureRef::from_bytes(decoded.author.as_ref()) {
             let actor = sig.actor();
@@ -319,13 +348,15 @@ impl GitResolver {
     }
 }
 
-fn normalize_path(path: &Path) -> std::path::PathBuf {
+fn normalize_path(path: &Path) -> Result<std::path::PathBuf, GitError> {
     use std::path::Component;
     let mut normalized = std::path::PathBuf::new();
     for component in path.components() {
         match component {
             Component::ParentDir => {
-                normalized.pop();
+                if !normalized.pop() {
+                    return Err(GitError::OutsideRepository(path.to_path_buf()));
+                }
             }
             Component::Normal(c) => {
                 normalized.push(c);
@@ -336,7 +367,7 @@ fn normalize_path(path: &Path) -> std::path::PathBuf {
             }
         }
     }
-    normalized
+    Ok(normalized)
 }
 
 fn clean_branch_name(name: &str) -> String {
@@ -861,7 +892,7 @@ mod tests {
     #[test]
     fn test_normalize_path_cur_dir() {
         let path = Path::new("./file.png");
-        let norm = normalize_path(path);
+        let norm = normalize_path(path).unwrap();
         assert_eq!(norm, Path::new("file.png"));
     }
 
@@ -963,6 +994,31 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(unix, not(miri)))]
+    fn test_verify_ignored_unreadable_info_exclude() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
+        let exclude_path = dir.path().join(".git/info/exclude");
+        std::fs::create_dir_all(exclude_path.parent().unwrap()).unwrap();
+        std::fs::write(&exclude_path, "*.png").unwrap();
+        std::fs::set_permissions(&exclude_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // If we are root, writing to 0o000 file will succeed.
+        let is_root = std::fs::write(&exclude_path, "probe").is_ok();
+        if is_root {
+            return;
+        }
+
+        let paths = vec![dir.path().join("file.png")];
+        // The unreadable exclude file causes builder.add() to return Some(ignore::Error),
+        // which the implementation catches and logs via tracing::debug!.
+        // This failure does NOT cause a panic. The test should succeed and return false.
+        let result = GitResolver::verify_ignored_impl(&paths, dir.path()).unwrap();
+        assert!(!result);
+    }
+
+    #[test]
     #[cfg(not(miri))]
     fn test_resolve_merge_base_invalid_target_branch() {
         let dir = tempdir().unwrap();
@@ -1048,5 +1104,19 @@ mod tests {
 
         let author = GitResolver::get_commit_author(dir.path(), &sha).unwrap();
         assert_eq!(author, "unknown");
+    }
+
+    #[test]
+    fn test_verify_ignored_out_of_bounds_prevention() {
+        let dir = tempdir().unwrap();
+        create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
+
+        // We pass the root directory itself to simulate the pathological case where pop()
+        // would escape the repository.
+        let paths = vec![dir.path().to_path_buf()];
+
+        let result = GitResolver::verify_ignored_impl(&paths, dir.path()).unwrap();
+        // Since no ignore rules are defined that match the root itself, it should return false
+        assert!(!result);
     }
 }

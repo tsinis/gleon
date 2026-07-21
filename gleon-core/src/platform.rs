@@ -187,36 +187,63 @@ pub fn validate_segment(s: &str) -> Result<String, PlatformError> {
 impl PlatformInfo {
     /// Generates a deterministic flat key from PlatformInfo fields.
     pub fn to_key(&self) -> Result<String, PlatformError> {
-        let os = validate_segment(&self.os).map_err(|_| {
-            PlatformError::InvalidSegment(format!("OS '{}' is empty or invalid", self.os))
-        })?;
+        let mut parts = Vec::new();
 
-        let mut parts = vec![format!("{}:{}", os.len(), os)];
+        match validate_segment(&self.os) {
+            Ok(os) => parts.push(format!("{}:{}", os.len(), os)),
+            Err(e) => {
+                return Err(PlatformError::InvalidSegment(format!(
+                    "OS '{}' is empty or invalid: {}",
+                    self.os, e
+                )));
+            }
+        }
 
         if let Some(ref arch) = self.arch {
-            let clean_arch = validate_segment(arch).map_err(|_| {
-                PlatformError::InvalidSegment(format!("Architecture '{}' is invalid", arch))
-            })?;
-            parts.push(format!("{}:{}", clean_arch.len(), clean_arch));
+            match validate_segment(arch) {
+                Ok(clean_arch) => parts.push(format!("{}:{}", clean_arch.len(), clean_arch)),
+                Err(e) => {
+                    return Err(PlatformError::InvalidSegment(format!(
+                        "Architecture '{}' is invalid: {}",
+                        arch, e
+                    )));
+                }
+            }
         }
 
         if let Some(ref renderer) = self.renderer {
-            let clean_renderer = validate_segment(renderer).map_err(|_| {
-                PlatformError::InvalidSegment(format!("Renderer '{}' is invalid", renderer))
-            })?;
-            parts.push(format!("{}:{}", clean_renderer.len(), clean_renderer));
+            match validate_segment(renderer) {
+                Ok(clean_renderer) => {
+                    parts.push(format!("{}:{}", clean_renderer.len(), clean_renderer))
+                }
+                Err(e) => {
+                    return Err(PlatformError::InvalidSegment(format!(
+                        "Renderer '{}' is invalid: {}",
+                        renderer, e
+                    )));
+                }
+            }
         }
 
         for (k, v) in &self.labels {
-            let key = validate_segment(k).map_err(|_| {
-                PlatformError::InvalidSegment(format!("Label key '{}' is invalid", k))
-            })?;
-            let val = validate_segment(v).map_err(|_| {
-                PlatformError::InvalidSegment(format!(
-                    "Label value '{}' is invalid for key '{}'",
-                    v, k
-                ))
-            })?;
+            let key = match validate_segment(k) {
+                Ok(key) => key,
+                Err(e) => {
+                    return Err(PlatformError::InvalidSegment(format!(
+                        "Label key '{}' is invalid: {}",
+                        k, e
+                    )));
+                }
+            };
+            let val = match validate_segment(v) {
+                Ok(val) => val,
+                Err(e) => {
+                    return Err(PlatformError::InvalidSegment(format!(
+                        "Label value '{}' is invalid for key '{}': {}",
+                        v, k, e
+                    )));
+                }
+            };
             parts.push(format!("{}:{}={}:{}", key.len(), key, val.len(), val));
         }
 
@@ -290,12 +317,15 @@ impl PlatformResolver {
         config: Option<&PlatformConfig>,
     ) -> Result<PlatformInfo, PlatformError> {
         // Parse GLEON_PLATFORM if set
-        let env_fields = env
+        let env_fields = match env
             .platform
             .as_deref()
             .map(PlatformFields::parse_key_value)
             .transpose()
-            .map_err(PlatformError::ParseError)?;
+        {
+            Ok(fields) => fields,
+            Err(e) => return Err(PlatformError::ParseError(e)),
+        };
 
         // 1. Check if cli_platform is specified. It acts as a CLI opaque override.
         if let Some(opaque_val) = cli_platform {

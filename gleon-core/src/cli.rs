@@ -61,18 +61,19 @@ pub struct Cli {
 }
 
 pub(crate) fn parse_label(s: &str) -> Result<(String, String), String> {
-    let (key, val) = s
-        .split_once('=')
-        .ok_or_else(|| format!("invalid label: no '=' found in '{}'", s))?;
-    let key = key.trim().to_string();
-    let val = val.trim().to_string();
-    if key.is_empty() {
-        return Err("invalid label: key cannot be empty".to_string());
-    }
-    if val.is_empty() {
-        return Err("invalid label: value cannot be empty".to_string());
-    }
-    Ok((key, val))
+    s.split_once('=')
+        .ok_or_else(|| format!("invalid label: no '=' found in '{}'", s))
+        .and_then(|(key, val)| {
+            let key = key.trim().to_string();
+            let val = val.trim().to_string();
+            if key.is_empty() {
+                return Err("invalid label: key cannot be empty".to_string());
+            }
+            if val.is_empty() {
+                return Err("invalid label: value cannot be empty".to_string());
+            }
+            Ok((key, val))
+        })
 }
 
 /// The available subcommands in gleon.

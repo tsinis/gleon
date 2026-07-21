@@ -32,14 +32,18 @@ impl ResolvedContext {
         env_provider: &dyn crate::git::EnvProvider,
         platform_env: &PlatformEnv,
     ) -> Result<Self, ContextError> {
-        let (config, _config_specified) = if let Some(ref path) = cli.config {
-            (Some(GleonConfig::load_from_file(path)?), true)
+        let config = if let Some(ref path) = cli.config {
+            tracing::debug!(
+                "Loading configuration from explicitly provided path: {:?}",
+                path
+            );
+            Some(GleonConfig::load_from_file(path)?)
         } else {
             let default_path = base_dir.join("gleon.yaml");
-            if default_path.exists() {
-                (Some(GleonConfig::load_from_file(&default_path)?), false)
-            } else {
-                (None, false)
+            match GleonConfig::load_from_file(&default_path) {
+                Ok(cfg) => Some(cfg),
+                Err(ConfigError::NotFound(_)) => None,
+                Err(e) => return Err(e.into()),
             }
         };
 
