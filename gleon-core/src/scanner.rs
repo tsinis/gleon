@@ -2,7 +2,6 @@
 
 use crate::config::{GleonConfig, GlobPattern};
 use globset::GlobSetBuilder;
-use image::RgbaImage;
 
 use std::path::{Path, PathBuf};
 
@@ -53,6 +52,7 @@ use crate::engine::MismatchDetail;
 
 /// Represents the result of running a test on a single screenshot.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum TestImageResult {
     /// The actual image matches the baseline.
     Success {
@@ -66,24 +66,43 @@ pub enum TestImageResult {
         /// The decoding error message.
         error: String,
     },
-    /// The actual image dimensions do not match the baseline image.
     DimensionMismatch {
         /// Relative path of the screenshot file.
         relative_path: PathBuf,
-        /// Size of the baseline image.
+        /// Dimensions of the baseline image.
         baseline_size: (u32, u32),
-        /// Size of the actual image.
+        /// Dimensions of the actual image.
         actual_size: (u32, u32),
+        /// Path to the baseline image on disk.
+        baseline_path: PathBuf,
+        /// Path to the actual image on disk.
+        actual_path: PathBuf,
     },
-    /// The actual image content differs from the baseline image.
+    /// The screenshot failed the visual comparison threshold.
     Mismatch {
         /// Relative path of the screenshot file.
         relative_path: PathBuf,
         /// Specific detail about the comparison mismatch.
         detail: MismatchDetail,
-        /// Generated diff image with highlighted differences.
-        diff_image: RgbaImage,
+        /// Path to the diff visualization image on disk.
+        diff_path: PathBuf,
+        /// Path to the baseline image on disk.
+        baseline_path: PathBuf,
+        /// Path to the actual image on disk.
+        actual_path: PathBuf,
     },
+}
+
+impl TestImageResult {
+    /// Returns the relative path of the screenshot file.
+    pub fn relative_path(&self) -> &Path {
+        match self {
+            Self::Success { relative_path } => relative_path,
+            Self::DecodeError { relative_path, .. } => relative_path,
+            Self::DimensionMismatch { relative_path, .. } => relative_path,
+            Self::Mismatch { relative_path, .. } => relative_path,
+        }
+    }
 }
 
 /// Represents the final evaluation result of a complete test case.
@@ -142,10 +161,28 @@ impl FileScanner {
         }
         let exclude_set = exclude_builder.build()?;
 
+        let exclude_for_filter = exclude_set.clone();
+        let base_dir_for_filter = base_dir.to_path_buf();
+
         // TODO: For very large mono-repositories (10K+ images), consider replacing `build()`
         // with `build_parallel()` and collecting cases via crossbeam_channel::mpsc to speed up traversal.
         let walker = ignore::WalkBuilder::new(base_dir)
             .standard_filters(false)
+            .filter_entry(move |entry| {
+                if entry.file_type().is_some_and(|ft| ft.is_dir()) && entry.file_name() == ".git" {
+                    return false;
+                }
+                if let Ok(rel_path) = entry.path().strip_prefix(&base_dir_for_filter) {
+                    if rel_path.as_os_str().is_empty() {
+                        return true;
+                    }
+                    let rel_path_str = Self::normalize_separators(rel_path);
+                    if exclude_for_filter.is_match(rel_path_str.as_ref()) {
+                        return false;
+                    }
+                }
+                true
+            })
             .build();
 
         let mut collected_paths = Vec::new();
@@ -208,11 +245,31 @@ impl FileScanner {
             rule_sets.push((std::sync::Arc::new(rule.clone()), include_builder.build()?));
         }
 
+        let exclude_for_filter = exclude_set.clone();
+        let base_dir_for_filter = base_dir.to_path_buf();
+
         let walker = ignore::WalkBuilder::new(base_dir)
             .standard_filters(false)
+            .filter_entry(move |entry| {
+                if entry.file_type().is_some_and(|ft| ft.is_dir()) && entry.file_name() == ".git" {
+                    return false;
+                }
+                if let Ok(rel_path) = entry.path().strip_prefix(&base_dir_for_filter) {
+                    if rel_path.as_os_str().is_empty() {
+                        return true;
+                    }
+                    let rel_path_str = Self::normalize_separators(rel_path);
+                    if exclude_for_filter.is_match(rel_path_str.as_ref()) {
+                        return false;
+                    }
+                }
+                true
+            })
             .build();
 
-        let mut temp_cases = std::collections::BTreeMap::<(String, usize), TestCase>::new();
+        let mut temp_cases =
+            std::collections::BTreeMap::<String, std::collections::BTreeMap<usize, TestCase>>::new(
+            );
 
         for entry_res in walker {
             let entry = match entry_res {
@@ -262,16 +319,20 @@ impl FileScanner {
                     parent_str.as_ref()
                 };
 
-                if let Err(reason) = validate_test_name(test_name_ref) {
-                    return Err(ScannerError::InvalidTestName {
-                        name: test_name_ref.to_string(),
-                        reason,
-                    });
+                if !temp_cases.contains_key(test_name_ref) {
+                    if let Err(reason) = validate_test_name(test_name_ref) {
+                        return Err(ScannerError::InvalidTestName {
+                            name: test_name_ref.to_string(),
+                            reason,
+                        });
+                    }
+                    temp_cases.insert(test_name_ref.to_string(), std::collections::BTreeMap::new());
                 }
 
-                let key = (test_name_ref.to_string(), rule_index);
                 temp_cases
-                    .entry(key)
+                    .get_mut(test_name_ref)
+                    .unwrap()
+                    .entry(rule_index)
                     .or_insert_with(|| TestCase {
                         name: test_name_ref.to_string(),
                         images: Vec::new(),
@@ -285,12 +346,15 @@ impl FileScanner {
             }
         }
 
-        let mut cases: Vec<_> = temp_cases.into_values().collect();
-        for case in &mut cases {
-            case.images
-                .sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-        }
-
+        let cases = temp_cases
+            .into_values()
+            .flat_map(|rule_map| rule_map.into_values())
+            .map(|mut tc| {
+                tc.images
+                    .sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+                tc
+            })
+            .collect();
         Ok(cases)
     }
 

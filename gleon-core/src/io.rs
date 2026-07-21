@@ -1,22 +1,31 @@
 //! I/O utilities for gleon.
 
-use crate::config::ConfigError;
 use std::path::Path;
 
-pub fn load_json<T: serde::de::DeserializeOwned, P: AsRef<Path>>(
-    path: P,
-) -> Result<T, ConfigError> {
+/// Errors that can occur during I/O operations.
+#[derive(Debug, thiserror::Error)]
+pub enum IoError {
+    /// IO error during file or directory access.
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// Error deserializing JSON content.
+    #[error("JSON parse error: {0}")]
+    JsonParse(#[from] serde_json::Error),
+}
+
+pub fn load_json<T: serde::de::DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<T, IoError> {
     let path = path.as_ref();
     std::fs::File::open(path)
         .map_err(|e| {
             tracing::debug!("Failed to open JSON file at {:?}: {}", path, e);
-            ConfigError::Io(e)
+            IoError::Io(e)
         })
         .and_then(|file| {
             let reader = std::io::BufReader::new(file);
             serde_json::from_reader(reader).map_err(|e| {
                 tracing::error!("Failed to parse JSON file at {:?}: {}", path, e);
-                ConfigError::JsonParse(e)
+                IoError::JsonParse(e)
             })
         })
 }
@@ -24,13 +33,13 @@ pub fn load_json<T: serde::de::DeserializeOwned, P: AsRef<Path>>(
 pub fn save_json_atomically<T: serde::Serialize, P: AsRef<Path>>(
     path: P,
     value: &T,
-) -> Result<(), ConfigError> {
+) -> Result<(), IoError> {
     let path = path.as_ref();
     let parent = match path.parent() {
         Some(p) if p.as_os_str().is_empty() => Path::new("."),
         Some(p) => p,
         None => {
-            return Err(ConfigError::Io(std::io::Error::new(
+            return Err(IoError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Cannot resolve parent directory for root path",
             )));
@@ -53,7 +62,7 @@ pub fn save_json_atomically<T: serde::Serialize, P: AsRef<Path>>(
     writer.flush()?;
     let temp_file = writer
         .into_inner()
-        .map_err(|e| ConfigError::Io(e.into_error()))?;
+        .map_err(|e| IoError::Io(e.into_error()))?;
 
     #[cfg(all(unix, not(miri)))]
     let perms_result = {
@@ -61,7 +70,7 @@ pub fn save_json_atomically<T: serde::Serialize, P: AsRef<Path>>(
         temp_file
             .as_file()
             .metadata()
-            .map_err(ConfigError::Io)
+            .map_err(IoError::Io)
             .and_then(|metadata| {
                 let mut perms = metadata.permissions();
                 if let Ok(existing) = std::fs::metadata(path) {
@@ -70,18 +79,18 @@ pub fn save_json_atomically<T: serde::Serialize, P: AsRef<Path>>(
                 temp_file
                     .as_file()
                     .set_permissions(perms)
-                    .map_err(ConfigError::Io)
+                    .map_err(IoError::Io)
             })
     };
     #[cfg(not(all(unix, not(miri))))]
-    let perms_result: Result<(), ConfigError> = Ok(());
+    let perms_result: Result<(), IoError> = Ok(());
 
     perms_result
-        .and_then(|_| temp_file.as_file().sync_all().map_err(ConfigError::Io))
+        .and_then(|_| temp_file.as_file().sync_all().map_err(IoError::Io))
         .and_then(|_| {
             temp_file.persist(path).map_err(|e| {
                 tracing::error!("Failed to save JSON atomically to {:?}: {}", path, e);
-                ConfigError::Io(e.error)
+                IoError::Io(e.error)
             })
         })
         .map(|_| {
@@ -109,14 +118,14 @@ mod tests {
         // Saving to "/" should fail because it has no parent directory
         let result = save_json_atomically(Path::new("/"), &dummy);
         assert!(result.is_err());
-        if let Err(ConfigError::Io(err)) = result {
+        if let Err(IoError::Io(err)) = result {
             assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
             assert_eq!(
                 err.to_string(),
                 "Cannot resolve parent directory for root path"
             );
         } else {
-            panic!("Expected ConfigError::Io with InvalidInput");
+            panic!("Expected IoError::Io with InvalidInput");
         }
     }
 }

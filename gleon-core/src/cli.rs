@@ -111,6 +111,13 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_label_with_equals_in_value() {
+        let (k, v) = parse_label("url=http://host:8080").unwrap();
+        assert_eq!(k, "url");
+        assert_eq!(v, "http://host:8080");
+    }
+
+    #[test]
     fn test_parse_branch_flag() -> Result<(), clap::Error> {
         let args = ["gleon", "-b", "feature-test", "status"];
         let cli = Cli::try_parse_from(args)?;

@@ -80,14 +80,18 @@ impl<'de> Deserialize<'de> for PlatformConfig {
             where
                 E: serde::de::Error,
             {
-                Ok(PlatformConfig::Opaque(v.to_string()))
+                crate::platform::validate_segment(v)
+                    .map(PlatformConfig::Opaque)
+                    .map_err(E::custom)
             }
 
             fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
             where
                 E: serde::de::Error,
             {
-                Ok(PlatformConfig::Opaque(v))
+                crate::platform::validate_segment(&v)
+                    .map(PlatformConfig::Opaque)
+                    .map_err(E::custom)
             }
 
             fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
@@ -715,14 +719,6 @@ labels:
             res_syn.unwrap_err(),
             PlatformError::ReservedLabelKey("architecture".to_string(), "arch".to_string())
         );
-    }
-
-    #[test]
-    fn test_parse_label_with_equals_in_value() {
-        use crate::cli::parse_label;
-        let (k, v) = parse_label("url=http://host:8080").unwrap();
-        assert_eq!(k, "url");
-        assert_eq!(v, "http://host:8080");
     }
 
     #[test]
