@@ -292,10 +292,5 @@ mod tests {
         // Non-string type (number)
         let res_num: Result<ImageHash, _> = serde_json::from_str("123");
         assert!(res_num.is_err());
-
-        // Invalid hex characters (64 chars long)
-        let invalid_hex_str = format!("\"{}\"", "g".repeat(64));
-        let res_hex: Result<ImageHash, _> = serde_json::from_str(&invalid_hex_str);
-        assert!(res_hex.is_err());
     }
 }

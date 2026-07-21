@@ -212,7 +212,7 @@ impl FileScanner {
             .standard_filters(false)
             .build();
 
-        let mut temp_cases = std::collections::BTreeMap::<String, TestCase>::new();
+        let mut temp_cases = std::collections::BTreeMap::<(String, usize), TestCase>::new();
 
         for entry_res in walker {
             let entry = match entry_res {
@@ -223,10 +223,10 @@ impl FileScanner {
                 }
             };
 
-            let path = entry.path();
-            if !path.is_file() {
+            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
                 continue;
             }
+            let path = entry.path();
             if !path
                 .extension()
                 .and_then(|ext| ext.to_str())
@@ -250,9 +250,10 @@ impl FileScanner {
 
             let matched_rule = rule_sets
                 .iter()
-                .find(|(_, inc_set)| inc_set.is_match(rel_path_str.as_ref()));
+                .enumerate()
+                .find(|(_, (_, inc_set))| inc_set.is_match(rel_path_str.as_ref()));
 
-            if let Some((rule_arc, _)) = matched_rule {
+            if let Some((rule_index, (rule_arc, _))) = matched_rule {
                 let parent = rel_path.parent().unwrap_or(Path::new(""));
                 let parent_str = Self::normalize_separators(parent);
                 let test_name_ref = if parent_str.is_empty() {
@@ -268,14 +269,15 @@ impl FileScanner {
                     });
                 }
 
-                if let Some(case) = temp_cases.get_mut(test_name_ref) {
+                let key = (test_name_ref.to_string(), rule_index);
+                if let Some(case) = temp_cases.get_mut(&key) {
                     case.images.push(TestImage {
                         relative_path: rel_path.to_path_buf(),
                         absolute_path: path.to_path_buf(),
                     });
                 } else {
                     temp_cases.insert(
-                        test_name_ref.to_string(),
+                        key,
                         TestCase {
                             name: test_name_ref.to_string(),
                             images: vec![TestImage {
@@ -317,10 +319,10 @@ impl FileScanner {
         include_set: &globset::GlobSet,
         exclude_set: &globset::GlobSet,
     ) -> Result<Option<(String, PathBuf, PathBuf)>, ScannerError> {
-        let path = entry.path();
-        if !path.is_file() {
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             return Ok(None);
         }
+        let path = entry.path();
 
         if !path
             .extension()
@@ -596,6 +598,56 @@ screenshots:
             result.err().unwrap(),
             ScannerError::InvalidTestName { .. }
         ));
+    }
+
+    #[test]
+    fn test_scan_workspace_multiple_rules_same_directory() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_path = temp_dir.path();
+
+        let billing_dir = base_path.join("billing");
+        std::fs::create_dir_all(&billing_dir).unwrap();
+        std::fs::write(billing_dir.join("form.png"), VALID_PNG_BYTES).unwrap();
+        std::fs::write(billing_dir.join("receipt.png"), VALID_PNG_BYTES).unwrap();
+
+        // Construct mock GleonConfig with two rules targeting different files in the same directory
+        let raw_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/form.png"
+    mode: pixel
+  - include: "billing/receipt.png"
+    mode: ssim
+"#;
+        let config: GleonConfig = serde_yaml::from_str(raw_yaml).unwrap();
+
+        let cases = FileScanner::scan_workspace(&config, base_path).unwrap();
+        // We should get 2 separate TestCases for the "billing" directory
+        // because they matched different rules.
+        assert_eq!(cases.len(), 2);
+
+        let pixel_case = cases
+            .iter()
+            .find(|c| c.rule.mode == crate::config::Mode::Pixel)
+            .unwrap();
+        let ssim_case = cases
+            .iter()
+            .find(|c| c.rule.mode == crate::config::Mode::Ssim)
+            .unwrap();
+
+        assert_eq!(pixel_case.name, "billing");
+        assert_eq!(pixel_case.images.len(), 1);
+        assert_eq!(
+            pixel_case.images[0].relative_path,
+            std::path::Path::new("billing/form.png")
+        );
+
+        assert_eq!(ssim_case.name, "billing");
+        assert_eq!(ssim_case.images.len(), 1);
+        assert_eq!(
+            ssim_case.images[0].relative_path,
+            std::path::Path::new("billing/receipt.png")
+        );
     }
 
     #[test]

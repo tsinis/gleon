@@ -18,14 +18,13 @@ pub fn compare_ssim(
     baseline: &RgbaImage,
     actual: &RgbaImage,
 ) -> Result<(f64, RgbaImage), SsimError> {
-    let result = image_compare::rgba_hybrid_compare(baseline, actual)
-        .map_err(|e| SsimError::Compare(format!("{e}")))?;
-
-    // The score represents the similarity (1.0 = identical, 0.0 = completely different).
-    let ssim_score = result.score;
-    let diff_image = result.image.to_color_map().into_rgba8();
-
-    Ok((ssim_score, diff_image))
+    image_compare::rgba_hybrid_compare(baseline, actual)
+        .map_err(|e| SsimError::Compare(format!("{e}")))
+        .map(|result| {
+            let ssim_score = result.score;
+            let diff_image = result.image.to_color_map().into_rgba8();
+            (ssim_score, diff_image)
+        })
 }
 
 #[cfg(all(test, not(miri)))]

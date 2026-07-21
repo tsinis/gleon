@@ -252,7 +252,10 @@ impl GitResolver {
     /// Resolves the merge-base between HEAD and the given target branch.
     /// Detects shallow clones and returns a specific error for fallback logging.
     pub fn resolve_merge_base(base_dir: &Path, target_branch: &str) -> Result<String, GitError> {
-        let repo = gix::discover(base_dir).map_err(|e| GitError::Discover(e.to_string()))?;
+        let repo = match gix::discover(base_dir) {
+            Ok(repo) => repo,
+            Err(e) => return Err(GitError::Discover(e.to_string())),
+        };
 
         // Check if the repository is a shallow clone by checking for the existence of .git/shallow
         if repo.shallow_file().exists() {
@@ -261,42 +264,66 @@ impl GitResolver {
             ));
         }
 
-        let head_commit = repo
-            .head_commit()
-            .map_err(|e| GitError::HeadRead(e.to_string()))?;
+        let head_commit = match repo.head_commit() {
+            Ok(commit) => commit,
+            Err(e) => return Err(GitError::HeadRead(e.to_string())),
+        };
         let head_id = head_commit.id;
 
-        let target_id = repo.rev_parse_single(target_branch).map_err(|e| {
-            GitError::MergeBaseFailed(format!(
-                "Failed to resolve target branch '{}': {}",
-                target_branch, e
-            ))
-        })?;
+        let target_id = match repo.rev_parse_single(target_branch) {
+            Ok(id) => id,
+            Err(e) => {
+                return Err(GitError::MergeBaseFailed(format!(
+                    "Failed to resolve target branch '{}': {}",
+                    target_branch, e
+                )));
+            }
+        };
 
-        let base_id = repo
-            .merge_base(head_id, target_id)
-            .map_err(|e| GitError::MergeBaseFailed(e.to_string()))?;
-
-        Ok(base_id.to_string())
+        match repo.merge_base(head_id, target_id) {
+            Ok(base_id) => Ok(base_id.to_string()),
+            Err(e) => Err(GitError::MergeBaseFailed(e.to_string())),
+        }
     }
 
     /// Gets the author name and email of the given commit, defaulting to "unknown".
     pub fn get_commit_author(base_dir: &Path, commit_sha: &str) -> Result<String, GitError> {
-        let repo = gix::discover(base_dir).map_err(|e| GitError::Discover(e.to_string()))?;
+        let repo = match gix::discover(base_dir) {
+            Ok(repo) => repo,
+            Err(e) => return Err(GitError::Discover(e.to_string())),
+        };
 
-        let id = gix::ObjectId::from_hex(commit_sha.as_bytes())
+        let id = match gix::ObjectId::from_hex(commit_sha.as_bytes())
             .or_else(|_| repo.rev_parse_single(commit_sha).map(|id| id.detach()))
-            .map_err(|e| {
-                GitError::HeadRead(format!("Invalid commit SHA or ref '{}': {}", commit_sha, e))
-            })?;
+        {
+            Ok(id) => id,
+            Err(e) => {
+                return Err(GitError::HeadRead(format!(
+                    "Invalid commit SHA or ref '{}': {}",
+                    commit_sha, e
+                )));
+            }
+        };
 
-        let commit = repo
-            .find_commit(id)
-            .map_err(|e| GitError::HeadRead(format!("Commit not found '{}': {}", id, e)))?;
+        let commit = match repo.find_commit(id) {
+            Ok(commit) => commit,
+            Err(e) => {
+                return Err(GitError::HeadRead(format!(
+                    "Commit not found '{}': {}",
+                    id, e
+                )));
+            }
+        };
 
-        let decoded = commit
-            .decode()
-            .map_err(|e| GitError::HeadRead(format!("Failed to decode commit '{}': {}", id, e)))?;
+        let decoded = match commit.decode() {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                return Err(GitError::HeadRead(format!(
+                    "Failed to decode commit '{}': {}",
+                    id, e
+                )));
+            }
+        };
 
         if let Ok(sig) = gix::actor::SignatureRef::from_bytes(decoded.author.as_ref()) {
             let actor = sig.actor();
@@ -984,8 +1011,9 @@ mod tests {
         }
 
         let paths = vec![dir.path().join("file.png")];
-        // The unreadable exclude file will log a warning and return None for the add error,
-        // but it will NOT cause a panic. The test should succeed and return false.
+        // The unreadable exclude file causes builder.add() to return Some(ignore::Error),
+        // which the implementation catches and logs via tracing::debug!.
+        // This failure does NOT cause a panic. The test should succeed and return false.
         let result = GitResolver::verify_ignored_impl(&paths, dir.path()).unwrap();
         assert!(!result);
     }
