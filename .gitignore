@@ -50,9 +50,9 @@ Icon\r
 
 # --- gleon App & Cache ---
 .gleon/
-report.html
-report.md
-junit.xml
+/report.html
+/report.md
+/junit.xml
 lcov.info
 coverage/
 
