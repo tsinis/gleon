@@ -344,4 +344,32 @@ mod tests {
         assert!(ctx.config.is_some());
         assert_eq!(ctx.base_dir, root_dir);
     }
+
+    #[test]
+    fn test_from_cli_corrupted_discovered_config() {
+        let dir = tempdir().unwrap();
+        let root_dir = dir.path();
+        let config_path = root_dir.join("gleon.yaml");
+        std::fs::write(&config_path, "invalid_yaml: : : [bad syntax]").unwrap();
+
+        let cli = Cli {
+            branch: None,
+            target_branch: "main".to_string(),
+            os: None,
+            arch: None,
+            renderer: None,
+            labels: vec![],
+            platform: None,
+            verbose: false,
+            quiet: false,
+            config: None,
+            command: Commands::Status,
+        };
+
+        let result =
+            ResolvedContext::from_cli_impl(&cli, root_dir, &EmptyEnv, &PlatformEnv::default());
+
+        assert!(result.is_err());
+        assert!(matches!(result, Err(ContextError::Config(_))));
+    }
 }

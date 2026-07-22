@@ -217,7 +217,7 @@ impl<'a> Serialize for HtmlFailureView<'a> {
                     },
                 )?;
                 state.serialize_field("diff_path", &None::<String>)?;
-                state.serialize_field("diff_count", &None::<u32>)?;
+                state.serialize_field("diff_count", &None::<u64>)?;
                 state.serialize_field(
                     "actual_size",
                     &format!("{}x{}", actual_size.0, actual_size.1),

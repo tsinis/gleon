@@ -18,7 +18,7 @@ pub enum MismatchDetail {
     /// Pixel difference count.
     Pixel {
         /// Number of mismatched pixels.
-        diff_count: u32,
+        diff_count: u64,
     },
     /// Structural Similarity (SSIM) score.
     Ssim {
@@ -28,7 +28,7 @@ pub enum MismatchDetail {
     /// SSIM calculation failed and fell back to pixel difference.
     SsimFallback {
         /// Number of mismatched pixels.
-        diff_count: u32,
+        diff_count: u64,
     },
 }
 
@@ -60,7 +60,7 @@ fn execute_pixel_comparison(
     threshold: f64,
     is_fallback: bool,
 ) -> ComparisonResult {
-    let total_pixels = baseline.width().saturating_mul(baseline.height());
+    let total_pixels = (baseline.width() as u64) * (baseline.height() as u64);
     if total_pixels == 0 {
         return ComparisonResult::Match;
     }
@@ -201,6 +201,27 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn test_execute_pixel_comparison_u64_diff_count() {
+        let img1 = ImageBuffer::from_pixel(2, 2, Rgba([255, 0, 0, 255]));
+        let mut img2 = ImageBuffer::from_pixel(2, 2, Rgba([255, 0, 0, 255]));
+        img2.put_pixel(0, 0, Rgba([0, 255, 0, 255]));
+
+        let config = DiffConfig {
+            threshold: 0.0,
+            ..Default::default()
+        };
+
+        let result = compare_images(&img1, &img2, Mode::Pixel, &config);
+        assert_eq!(
+            result,
+            ComparisonResult::Mismatch {
+                detail: MismatchDetail::Pixel { diff_count: 1 },
+                diff_image: compare_pixels(&img1, &img2).1,
+            }
+        );
     }
 
     #[test]

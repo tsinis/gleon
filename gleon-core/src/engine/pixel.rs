@@ -5,7 +5,7 @@ use image::RgbaImage;
 /// Compares two images of the same dimensions pixel-by-pixel.
 /// Returns the number of mismatched pixels and a composite diff image
 /// where matching areas are darkened and mismatched areas are painted magenta.
-pub fn compare_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> (u32, RgbaImage) {
+pub fn compare_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> (u64, RgbaImage) {
     let width = baseline.width();
     let height = baseline.height();
 
@@ -13,7 +13,7 @@ pub fn compare_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> (u32, RgbaIma
     let actual_raw = actual.as_raw();
 
     let mut diff_raw = vec![0u8; baseline_raw.len()];
-    let mut diff_count = 0;
+    let mut diff_count: u64 = 0;
 
     let b_chunks = baseline_raw.chunks_exact(4);
     let a_chunks = actual_raw.chunks_exact(4);
@@ -40,7 +40,7 @@ pub fn compare_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> (u32, RgbaIma
 }
 
 /// Counts the number of mismatched pixels without allocating a diff image.
-pub fn count_mismatched_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> u32 {
+pub fn count_mismatched_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> u64 {
     let baseline_raw = baseline.as_raw();
     let actual_raw = actual.as_raw();
 
@@ -56,12 +56,12 @@ pub fn count_mismatched_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> u32 
             .iter()
             .zip(a_u32.iter())
             .filter(|(b, a)| b != a)
-            .count() as u32
+            .count() as u64
     } else {
         // Fallback for weirdly aligned data (e.g. from FFI)
         let b_chunks = baseline_raw.chunks_exact(4);
         let a_chunks = actual_raw.chunks_exact(4);
-        b_chunks.zip(a_chunks).filter(|(b, a)| b != a).count() as u32
+        b_chunks.zip(a_chunks).filter(|(b, a)| b != a).count() as u64
     }
 }
 

@@ -124,6 +124,12 @@ pub fn validate_test_name(name: &str) -> Result<(), String> {
         if segment.is_empty() {
             return Err("Test name segment cannot be empty".to_string());
         }
+        if segment == "." || segment == ".." {
+            return Err(format!(
+                "Test name segment cannot be relative path navigation '{}'",
+                segment
+            ));
+        }
         for c in segment.chars() {
             if !c.is_ascii_lowercase() && !c.is_ascii_digit() && c != '_' && c != '-' && c != '.' {
                 return Err(format!(
@@ -319,19 +325,20 @@ impl FileScanner {
                     parent_str.as_ref()
                 };
 
-                if !temp_cases.contains_key(test_name_ref) {
-                    if let Err(reason) = validate_test_name(test_name_ref) {
-                        return Err(ScannerError::InvalidTestName {
-                            name: test_name_ref.to_string(),
-                            reason,
-                        });
+                let rule_map = match temp_cases.entry(test_name_ref.to_string()) {
+                    std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+                    std::collections::btree_map::Entry::Vacant(e) => {
+                        if let Err(reason) = validate_test_name(test_name_ref) {
+                            return Err(ScannerError::InvalidTestName {
+                                name: test_name_ref.to_string(),
+                                reason,
+                            });
+                        }
+                        e.insert(std::collections::BTreeMap::new())
                     }
-                    temp_cases.insert(test_name_ref.to_string(), std::collections::BTreeMap::new());
-                }
+                };
 
-                temp_cases
-                    .get_mut(test_name_ref)
-                    .unwrap()
+                rule_map
                     .entry(rule_index)
                     .or_insert_with(|| TestCase {
                         name: test_name_ref.to_string(),
@@ -360,13 +367,18 @@ impl FileScanner {
 
     /// Normalizes path separators to forward slashes on Windows.
     fn normalize_separators(path: &Path) -> Cow<'_, str> {
+        let s = path.to_string_lossy();
         #[cfg(windows)]
         {
-            Cow::Owned(path.to_string_lossy().replace('\\', "/"))
+            if s.contains('\\') {
+                Cow::Owned(s.replace('\\', "/"))
+            } else {
+                s
+            }
         }
         #[cfg(not(windows))]
         {
-            path.to_string_lossy()
+            s
         }
     }
 
@@ -456,6 +468,9 @@ mod tests {
         assert!(validate_test_name("/billing").is_err());
         assert!(validate_test_name("billing//stripe").is_err());
         assert!(validate_test_name("billing/stripe$").is_err());
+        assert!(validate_test_name("billing/..").is_err());
+        assert!(validate_test_name("billing/.").is_err());
+        assert!(validate_test_name("billing/../stripe").is_err());
     }
 
     #[test]
@@ -931,8 +946,43 @@ screenshots:
                 masks: vec![],
             }),
         };
+
         let cloned_case = test_case.clone();
         assert_eq!(cloned_case.name, test_case.name);
-        assert_eq!(cloned_case.rule.mode, test_case.rule.mode);
+        assert_eq!(cloned_case.images.len(), test_case.images.len());
+    }
+
+    #[test]
+    fn test_normalize_separators() {
+        let p1 = Path::new("billing/stripe/form.png");
+        let res1 = FileScanner::normalize_separators(p1);
+        assert_eq!(res1, "billing/stripe/form.png");
+
+        let p2 = Path::new("clean_path.png");
+        let res2 = FileScanner::normalize_separators(p2);
+        assert_eq!(res2, "clean_path.png");
+    }
+
+    #[test]
+    fn test_scan_workspace_nested_entries_vacant_and_occupied() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_path = temp_dir.path();
+
+        let billing_dir = base_path.join("billing").join("stripe");
+        std::fs::create_dir_all(&billing_dir).unwrap();
+        std::fs::write(billing_dir.join("form1.png"), VALID_PNG_BYTES).unwrap();
+        std::fs::write(billing_dir.join("form2.png"), VALID_PNG_BYTES).unwrap();
+
+        let raw_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/stripe/*.png"
+"#;
+        let config: GleonConfig = serde_yaml::from_str(raw_yaml).unwrap();
+
+        let cases = FileScanner::scan_workspace(&config, base_path).unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].name, "billing/stripe");
+        assert_eq!(cases[0].images.len(), 2);
     }
 }

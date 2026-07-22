@@ -145,7 +145,7 @@ impl GitResolver {
 
     /// Uses the `ignore` crate to verify if screenshot paths are matched by .gitignore rules.
     /// Returns true if all provided paths are correctly ignored.
-    /// Falls back to true if no Git repository is found.
+    /// Returns `GitError::Discover` if no Git repository is found.
     pub fn verify_ignored<P: AsRef<Path>>(paths: &[P]) -> Result<bool, GitError> {
         let current_dir = std::env::current_dir().map_err(GitError::Io)?;
         Self::verify_ignored_impl(paths, &current_dir)
