@@ -692,12 +692,15 @@ mod tests {
             "foo/bar/baz.png"
         );
 
-        let path2 = std::path::Path::new("C:\\foo\\bar.png");
-        let formatted2 = FormattedPath {
-            path: path2,
-            report_dir: None,
+        #[cfg(windows)]
+        {
+            let path2 = std::path::Path::new("C:\\foo\\bar.png");
+            let formatted2 = FormattedPath {
+                path: path2,
+                report_dir: None,
+            }
+            .to_string();
+            assert_eq!(formatted2, "C:/foo/bar.png");
         }
-        .to_string();
-        assert!(!formatted2.contains("//"));
     }
 }

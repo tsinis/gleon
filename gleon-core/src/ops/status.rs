@@ -167,17 +167,17 @@ pub fn check_status(
                 Some((_w, _h, baseline_sha256)) => {
                     let matched_zones = case.rule.matched_mask_zones(&rel_path);
                     let png_bytes = if !matched_zones.is_empty() {
-                        let dynamic_img =
-                            image::open(&img.absolute_path).map_err(std::io::Error::other)?;
+                        let dynamic_img = image::open(&img.absolute_path)
+                            .map_err(|e| StatusError::Io(std::io::Error::other(e)))?;
                         let mut rgba = dynamic_img.to_rgba8();
                         crate::masking::apply_masks(&mut rgba, &matched_zones);
                         let mut encoded = Vec::new();
                         let mut cursor = std::io::Cursor::new(&mut encoded);
                         rgba.write_to(&mut cursor, image::ImageFormat::Png)
-                            .map_err(std::io::Error::other)?;
+                            .map_err(|e| StatusError::Io(std::io::Error::other(e)))?;
                         encoded
                     } else {
-                        std::fs::read(&img.absolute_path)?
+                        std::fs::read(&img.absolute_path).map_err(StatusError::Io)?
                     };
 
                     use sha2::{Digest, Sha256};

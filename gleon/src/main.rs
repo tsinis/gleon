@@ -64,11 +64,15 @@ fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<i32> {
                 Some(paths.as_slice())
             };
             let res = gleon_core::ops::stage_workspace(&ctx, &ctx.base_dir, filter)?;
-            println!(
-                "Staged {} screenshot(s) across {} test case(s).",
-                res.total_screenshots_staged,
-                res.staged_test_cases.len()
-            );
+            if res.total_screenshots_staged == 0 {
+                println!("Already up to date.");
+            } else {
+                println!(
+                    "Staged {} screenshot(s) across {} test case(s).",
+                    res.total_screenshots_staged,
+                    res.staged_test_cases.len()
+                );
+            }
         }
         Commands::Diff => {
             let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)?;

@@ -170,9 +170,7 @@ fn test_stage_command() -> Result<(), Box<dyn std::error::Error>> {
         .arg("stage")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
-            "Staged 0 screenshot(s) across 0 test case(s).",
-        ));
+        .stdout(predicates::str::contains("Already up to date."));
     Ok(())
 }
 
@@ -419,6 +417,57 @@ screenshots:
         .arg("diff")
         .assert()
         .code(1);
+
+    Ok(())
+}
+
+#[test]
+fn test_stage_already_up_to_date_message() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let core_fixtures = manifest_dir
+        .parent()
+        .ok_or("No parent dir")?
+        .join("gleon-core/tests/fixtures");
+
+    let mut cmd_init = Command::cargo_bin("gleon")?;
+    cmd_init
+        .current_dir(dir.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    let img_200 = std::fs::read(core_fixtures.join("200x100.png"))?;
+    let billing_dir = dir.path().join("billing");
+    std::fs::create_dir_all(&billing_dir)?;
+    std::fs::write(billing_dir.join("form.png"), &img_200)?;
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+    std::fs::write(dir.path().join("gleon.yaml"), config_yaml)?;
+
+    // First stage
+    let mut cmd_stage1 = Command::cargo_bin("gleon")?;
+    cmd_stage1
+        .current_dir(dir.path())
+        .arg("stage")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "Staged 1 screenshot(s) across 1 test case(s).",
+        ));
+
+    // Second stage (no-op) -> asserts "Already up to date."
+    let mut cmd_stage2 = Command::cargo_bin("gleon")?;
+    cmd_stage2
+        .current_dir(dir.path())
+        .arg("stage")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Already up to date."));
 
     Ok(())
 }

@@ -820,13 +820,21 @@ mod tests {
     #[test]
     #[cfg(not(miri))]
     fn test_get_head_commit_sha_real_repo() {
-        let dir = tempdir().unwrap();
-        if let Ok(repo) = gix::init(dir.path())
-            && let Ok(commit) = repo.head_commit()
-        {
-            let sha = GitResolver::get_head_commit_sha(dir.path()).unwrap();
-            assert_eq!(sha, commit.id.to_string());
-        }
+        let dir = tempdir().expect("tempdir creation should succeed");
+        let repo = gix::init(dir.path()).expect("gix init should succeed");
+        let empty_tree_id = repo.empty_tree().id();
+        let commit_id = repo
+            .commit(
+                "HEAD",
+                "Initial commit",
+                empty_tree_id,
+                gix::commit::NO_PARENT_IDS,
+            )
+            .expect("commit should succeed");
+
+        let sha = GitResolver::get_head_commit_sha(dir.path())
+            .expect("get_head_commit_sha should succeed");
+        assert_eq!(sha, commit_id.to_string());
     }
 
     #[test]

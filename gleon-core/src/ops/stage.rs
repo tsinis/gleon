@@ -84,13 +84,13 @@ pub fn stage_workspace(
     let platform_key = context.platform.to_key().map_err(ContextError::Platform)?;
 
     let blobs_dir = gleon_dir.join("blobs").join("sha256");
-    std::fs::create_dir_all(&blobs_dir)?;
+    std::fs::create_dir_all(&blobs_dir).map_err(StageError::Io)?;
 
     let branch_dir = gleon_dir
         .join("branches")
         .join(&context.branch)
         .join(&platform_key);
-    std::fs::create_dir_all(&branch_dir)?;
+    std::fs::create_dir_all(&branch_dir).map_err(StageError::Io)?;
 
     let index_path = branch_dir.join("manifest_index.json");
 
@@ -107,7 +107,7 @@ pub fn stage_workspace(
     let config = context.config.as_ref().cloned().unwrap_or_default();
 
     // Scan workspace screenshots
-    let test_cases = FileScanner::scan_workspace(&config, base_dir)?;
+    let test_cases = FileScanner::scan_workspace(&config, base_dir).map_err(StageError::Scanner)?;
 
     let commit_author =
         GitResolver::get_commit_author(base_dir, "HEAD").unwrap_or_else(|_| "unknown".to_string());
@@ -138,7 +138,7 @@ pub fn stage_workspace(
         {
             Some(hash) => {
                 let manifest_blob_path = blobs_dir.join(hash.value());
-                Some(Manifest::load(manifest_blob_path)?)
+                Some(Manifest::load(manifest_blob_path).map_err(StageError::Manifest)?)
             }
             None => None,
         };
@@ -177,7 +177,7 @@ pub fn stage_workspace(
                     })?;
                 (encoded, w, h, rgba)
             } else {
-                let raw_bytes = std::fs::read(&img.absolute_path)?;
+                let raw_bytes = std::fs::read(&img.absolute_path).map_err(StageError::Io)?;
                 let dynamic_img =
                     image::load_from_memory(&raw_bytes).map_err(|e| StageError::ImageDecode {
                         path: img.relative_path.clone(),
@@ -198,7 +198,8 @@ pub fn stage_workspace(
             // Save image blob to .gleon/blobs/sha256/<sha256_hex>
             let blob_path = blobs_dir.join(&sha256_hex);
             if !blob_path.exists() {
-                crate::io::save_file_atomically(&blob_path, &png_bytes)?;
+                crate::io::save_file_atomically(&blob_path, &png_bytes)
+                    .map_err(StageError::from)?;
             }
 
             let rel_path_str = FileScanner::normalize_path_str(&img.relative_path).into_owned();
@@ -209,8 +210,10 @@ pub fn stage_workspace(
 
             if !is_unchanged {
                 let entry = ManifestEntry {
-                    hash: ImageHash::new("sha256", &sha256_hex)?,
-                    phash: phash_str.parse::<ImageHash>()?,
+                    hash: ImageHash::new("sha256", &sha256_hex).map_err(StageError::Manifest)?,
+                    phash: phash_str
+                        .parse::<ImageHash>()
+                        .map_err(StageError::Manifest)?,
                     width,
                     height,
                     created_at: chrono::Utc::now(),
@@ -241,11 +244,12 @@ pub fn stage_workspace(
 
         // Save test manifest blob to .gleon/blobs/sha256/<test_manifest_sha256>
         let test_manifest_blob_path = blobs_dir.join(&test_manifest_sha256);
-        crate::io::save_file_atomically(&test_manifest_blob_path, &manifest_json)?;
+        crate::io::save_file_atomically(&test_manifest_blob_path, &manifest_json)
+            .map_err(StageError::from)?;
 
         test_manifest_map.insert(
             case.name.clone(),
-            ImageHash::new("sha256", &test_manifest_sha256)?,
+            ImageHash::new("sha256", &test_manifest_sha256).map_err(StageError::Manifest)?,
         );
 
         staged_test_cases.push(case.name);
@@ -256,7 +260,8 @@ pub fn stage_workspace(
         for (test_name, manifest_hash) in test_manifest_map {
             index.test_manifests.insert(test_name, manifest_hash);
         }
-    })?;
+    })
+    .map_err(StageError::Manifest)?;
 
     Ok(StageResult {
         staged_test_cases,

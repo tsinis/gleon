@@ -90,7 +90,8 @@ pub fn init_workspace(
         let default_config = GleonConfig::default();
         let yaml_content = serde_yaml::to_string(&default_config)?;
         use std::io::Write;
-        file.write_all(yaml_content.as_bytes())?;
+        file.write_all(yaml_content.as_bytes())
+            .map_err(InitError::Io)?;
         config_created = Some(root_config);
     }
 
