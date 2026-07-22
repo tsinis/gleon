@@ -360,3 +360,65 @@ fn test_status_cli_platform_conflict_with_env_platform() -> Result<(), Box<dyn s
         .stderr(predicates::str::contains("opaque platform configuration"));
     Ok(())
 }
+
+#[test]
+fn test_cli_diff_exit_code_on_match_and_mismatch() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let core_fixtures = manifest_dir
+        .parent()
+        .ok_or("No parent dir")?
+        .join("gleon-core/tests/fixtures");
+
+    // 1. gleon init
+    let mut cmd_init = Command::cargo_bin("gleon")?;
+    cmd_init
+        .current_dir(dir.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    // 2. Add fixture image and gleon.yaml
+    let img_200 = std::fs::read(core_fixtures.join("200x100.png"))?;
+    let img_100 = std::fs::read(core_fixtures.join("diff_16px_corners_100x100.png"))?;
+
+    let billing_dir = dir.path().join("billing");
+    std::fs::create_dir_all(&billing_dir)?;
+    std::fs::write(billing_dir.join("form.png"), &img_200)?;
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+    std::fs::write(dir.path().join("gleon.yaml"), config_yaml)?;
+
+    // 3. gleon stage
+    let mut cmd_stage = Command::cargo_bin("gleon")?;
+    cmd_stage
+        .current_dir(dir.path())
+        .arg("stage")
+        .assert()
+        .success();
+
+    // 4. gleon diff -> exit code 0 (match)
+    let mut cmd_diff_match = Command::cargo_bin("gleon")?;
+    cmd_diff_match
+        .current_dir(dir.path())
+        .arg("diff")
+        .assert()
+        .code(0);
+
+    // 5. Overwrite screenshot with different image
+    std::fs::write(billing_dir.join("form.png"), &img_100)?;
+
+    // 6. gleon diff -> exit code 1 (mismatch)
+    let mut cmd_diff_mismatch = Command::cargo_bin("gleon")?;
+    cmd_diff_mismatch
+        .current_dir(dir.path())
+        .arg("diff")
+        .assert()
+        .code(1);
+
+    Ok(())
+}

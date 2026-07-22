@@ -136,7 +136,12 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "masked_app/**/*.png"
     masks:
-      - region: [0, 0, 50, 50]
+      - path: "**/*.png"
+        zones:
+          - x: 0
+            y: 0
+            width: 50
+            height: 50
 "#;
     fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
 

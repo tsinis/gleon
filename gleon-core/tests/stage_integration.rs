@@ -142,7 +142,15 @@ screenshots:
     // 1. Initial stage: stages form1.png and form2.png
     stage_workspace(&ctx, base_path, None).expect("initial stage should succeed");
 
-    // 2. Filtered stage: stage ONLY form1.png
+    // 2. Modify form1.png so that restaging it counts as modified
+    let fixtures_dir_100 = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let alt_png_bytes = fs::read(fixtures_dir_100.join("diff_16px_corners_100x100.png"))
+        .expect("diff_16px_corners_100x100.png fixture must exist");
+    fs::write(screenshot_dir.join("form1.png"), &alt_png_bytes).unwrap();
+
+    // 3. Filtered stage: stage ONLY form1.png
     let filter = vec![PathBuf::from("billing/form1.png")];
     let stage_res =
         stage_workspace(&ctx, base_path, Some(&filter)).expect("filtered stage should succeed");
@@ -151,7 +159,7 @@ screenshots:
         "Filtered stage should only process matching screenshot paths"
     );
 
-    // 3. Load manifest from index and verify BOTH form1.png AND form2.png remain in manifest entries
+    // 4. Load manifest from index and verify BOTH form1.png AND form2.png remain in manifest entries
     let platform_key = ctx.platform.to_key().unwrap();
     let index_path = base_path
         .join(".gleon/branches/main")
@@ -180,4 +188,42 @@ screenshots:
         manifest.entries.contains_key("billing/form2.png"),
         "form2.png MUST NOT be deleted when staging form1.png partially"
     );
+}
+
+#[test]
+fn test_stage_noop_when_unchanged() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let real_png_bytes =
+        fs::read(fixtures_dir.join("200x100.png")).expect("200x100.png fixture must exist");
+
+    let screenshot_dir = base_path.join("billing");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    fs::write(screenshot_dir.join("form.png"), &real_png_bytes).unwrap();
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+
+    let cli = Cli::for_test(Commands::Stage { paths: vec![] });
+    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    // First stage: 1 screenshot staged
+    let stage1 = stage_workspace(&ctx, base_path, None).unwrap();
+    assert_eq!(stage1.total_screenshots_staged, 1);
+
+    // Second stage without modifying files: 0 screenshots staged (no-op!)
+    let stage2 = stage_workspace(&ctx, base_path, None).unwrap();
+    assert_eq!(stage2.total_screenshots_staged, 0);
 }

@@ -78,9 +78,11 @@ pub fn calculate_hamming_distance(phash1: &str, phash2: &str) -> Result<u32, Pha
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(miri))]
     use image::{ImageBuffer, Rgba};
 
     #[test]
+    #[cfg(not(miri))]
     fn test_compute_phash_and_distance() {
         let img1 = ImageBuffer::from_pixel(100, 100, Rgba([255, 0, 0, 255]));
         let img2 = ImageBuffer::from_pixel(100, 100, Rgba([255, 0, 0, 255]));

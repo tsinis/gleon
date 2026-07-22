@@ -189,7 +189,7 @@ pub fn stage_workspace(
                 (raw_bytes, w, h, rgba)
             };
 
-            // Compute dHash
+            // Compute perceptual hash (pHash)
             let phash_str = compute_phash(&rgba_img);
 
             // Compute SHA-256 of PNG blob
@@ -201,19 +201,25 @@ pub fn stage_workspace(
                 crate::io::save_file_atomically(&blob_path, &png_bytes)?;
             }
 
-            let entry = ManifestEntry {
-                hash: ImageHash::new("sha256", &sha256_hex)?,
-                phash: phash_str.parse::<ImageHash>()?,
-                width,
-                height,
-                created_at: chrono::Utc::now(),
-                created_by: commit_author.clone(),
-                source_commit: commit_sha.clone(),
-            };
-
             let rel_path_str = FileScanner::normalize_path_str(&img.relative_path).into_owned();
-            manifest_entries.insert(rel_path_str, entry);
-            total_screenshots_staged += 1;
+
+            let is_unchanged = manifest_entries
+                .get(&rel_path_str)
+                .is_some_and(|existing| existing.hash.value() == sha256_hex);
+
+            if !is_unchanged {
+                let entry = ManifestEntry {
+                    hash: ImageHash::new("sha256", &sha256_hex)?,
+                    phash: phash_str.parse::<ImageHash>()?,
+                    width,
+                    height,
+                    created_at: chrono::Utc::now(),
+                    created_by: commit_author.clone(),
+                    source_commit: commit_sha.clone(),
+                };
+                manifest_entries.insert(rel_path_str, entry);
+                total_screenshots_staged += 1;
+            }
         }
 
         if manifest_entries.is_empty() {

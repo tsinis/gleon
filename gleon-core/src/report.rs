@@ -114,7 +114,10 @@ impl<'a> std::fmt::Display for FormattedPath<'a> {
         let mut has_output = false;
 
         for comp in path_to_format.components() {
-            if !first && !last_was_slash {
+            if !first
+                && !last_was_slash
+                && !matches!(comp, Component::RootDir | Component::Prefix(_))
+            {
                 write!(f, "/")?;
             }
             first = false;
@@ -142,6 +145,7 @@ impl<'a> std::fmt::Display for FormattedPath<'a> {
                 Component::Prefix(prefix) => {
                     write!(f, "{}", prefix.as_os_str().to_string_lossy())?;
                     last_was_slash = false;
+                    first = true;
                     has_output = true;
                 }
             }
@@ -674,5 +678,26 @@ mod tests {
         let md = ReportGenerator::generate_markdown(&[tc]);
         assert!(md.contains("billing \\\\\\| feature line"));
         assert!(md.contains("corrupt \\| file.png"));
+    }
+
+    #[test]
+    fn test_formatted_path_display() {
+        let path1 = std::path::Path::new("foo/bar/baz.png");
+        assert_eq!(
+            FormattedPath {
+                path: path1,
+                report_dir: None
+            }
+            .to_string(),
+            "foo/bar/baz.png"
+        );
+
+        let path2 = std::path::Path::new("C:\\foo\\bar.png");
+        let formatted2 = FormattedPath {
+            path: path2,
+            report_dir: None,
+        }
+        .to_string();
+        assert!(!formatted2.contains("//"));
     }
 }
