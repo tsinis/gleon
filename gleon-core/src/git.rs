@@ -821,7 +821,13 @@ mod tests {
     #[cfg(not(miri))]
     fn test_get_head_commit_sha_real_repo() {
         let dir = tempdir().expect("tempdir creation should succeed");
-        let repo = gix::init(dir.path()).expect("gix init should succeed");
+        gix::init(dir.path()).expect("gix init should succeed");
+        std::fs::write(
+            dir.path().join(".git/config"),
+            "[user]\n\tname = Gleon Test\n\temail = test@gleon.dev\n",
+        )
+        .expect("write .git/config should succeed");
+        let repo = gix::open(dir.path()).expect("gix open should succeed");
         let empty_tree_id = repo.empty_tree().id();
         let commit_id = repo
             .commit(
