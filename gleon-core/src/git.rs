@@ -86,7 +86,7 @@ impl GitResolver {
     /// 2. CI environment variables
     /// 3. Discovering git and reading HEAD
     ///
-    /// Falls back to `"main"` if no Git repository is found.
+    /// Returns `GitError::Discover` if no Git repository is found (callers like `ResolvedContext` handle offline fallback).
     pub fn resolve_branch() -> Result<String, GitError> {
         let env = OsEnv;
         let current_dir = std::env::current_dir().map_err(GitError::Io)?;
@@ -364,6 +364,21 @@ impl GitResolver {
             Ok("unknown".to_string())
         }
     }
+
+    /// Gets the full 40-character hex commit SHA of HEAD.
+    pub fn get_head_commit_sha(base_dir: &Path) -> Result<String, GitError> {
+        let repo = match gix::discover(base_dir) {
+            Ok(repo) => repo,
+            Err(e) => return Err(GitError::Discover(e.to_string())),
+        };
+
+        let head_commit = match repo.head_commit() {
+            Ok(commit) => commit,
+            Err(e) => return Err(GitError::HeadRead(e.to_string())),
+        };
+
+        Ok(head_commit.id.to_string())
+    }
 }
 
 fn normalize_path(path: &Path) -> Result<std::path::PathBuf, GitError> {
@@ -408,6 +423,11 @@ fn validate_branch_name(name: &str) -> Result<(), GitError> {
     Ok(())
 }
 
+fn is_env_truthy(val: Option<String>) -> bool {
+    val.as_deref()
+        .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
+}
+
 fn resolve_ci_branch(env: &dyn EnvProvider) -> Option<String> {
     let get_valid = |k: &str| {
         env.get_var(k)
@@ -416,7 +436,7 @@ fn resolve_ci_branch(env: &dyn EnvProvider) -> Option<String> {
     };
 
     // 1. GitHub Actions
-    if env.get_var("GITHUB_ACTIONS").as_deref() == Some("true")
+    if is_env_truthy(env.get_var("GITHUB_ACTIONS"))
         && let Some(b) = get_valid("GITHUB_HEAD_REF").or_else(|| get_valid("GITHUB_REF_NAME"))
     {
         return Some(b);
@@ -432,7 +452,7 @@ fn resolve_ci_branch(env: &dyn EnvProvider) -> Option<String> {
     }
 
     // 3. CircleCI
-    if env.get_var("CIRCLECI").as_deref() == Some("true")
+    if is_env_truthy(env.get_var("CIRCLECI"))
         && let Some(b) = get_valid("CIRCLE_BRANCH")
     {
         return Some(b);
@@ -446,14 +466,14 @@ fn resolve_ci_branch(env: &dyn EnvProvider) -> Option<String> {
     }
 
     // 5. Azure DevOps
-    if env.get_var("TF_BUILD").as_deref() == Some("True")
+    if is_env_truthy(env.get_var("TF_BUILD"))
         && let Some(b) = get_valid("BUILD_SOURCEBRANCHNAME")
     {
         return Some(b);
     }
 
     // 6. Travis CI
-    if env.get_var("TRAVIS").as_deref() == Some("true")
+    if is_env_truthy(env.get_var("TRAVIS"))
         && let Some(b) = get_valid("TRAVIS_BRANCH")
     {
         return Some(b);
@@ -467,7 +487,7 @@ fn resolve_ci_branch(env: &dyn EnvProvider) -> Option<String> {
     }
 
     // 8. Bitrise
-    if env.get_var("BITRISE_IO").as_deref() == Some("true")
+    if is_env_truthy(env.get_var("BITRISE_IO"))
         && let Some(b) = get_valid("BITRISE_GIT_BRANCH")
     {
         return Some(b);
@@ -777,6 +797,24 @@ mod tests {
 
         let ignored = GitResolver::verify_ignored(&["target/debug/test_dummy_file.png"]);
         assert!(ignored.is_ok());
+    }
+
+    #[test]
+    fn test_is_env_truthy() {
+        assert!(is_env_truthy(Some("true".to_string())));
+        assert!(is_env_truthy(Some("True".to_string())));
+        assert!(is_env_truthy(Some("TRUE".to_string())));
+        assert!(is_env_truthy(Some("1".to_string())));
+        assert!(!is_env_truthy(Some("false".to_string())));
+        assert!(!is_env_truthy(Some("0".to_string())));
+        assert!(!is_env_truthy(None));
+    }
+
+    #[test]
+    fn test_get_head_commit_sha_no_git() {
+        let dir = tempdir().unwrap();
+        let result = GitResolver::get_head_commit_sha(dir.path());
+        assert!(matches!(result, Err(GitError::Discover(_))));
     }
 
     #[test]

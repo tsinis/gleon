@@ -72,24 +72,31 @@ impl ImageHash {
     }
 }
 
+impl std::str::FromStr for ImageHash {
+    type Err = ManifestError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (scheme, value) = s.split_once(':').ok_or_else(|| {
+            ManifestError::Validation("Hash must be in 'scheme:value' format".to_string())
+        })?;
+
+        let scheme_lower = scheme.to_lowercase();
+        validate_hash_parts(&scheme_lower, value).map_err(ManifestError::Validation)?;
+
+        Ok(ImageHash {
+            scheme: scheme_lower,
+            value: value.to_string(),
+        })
+    }
+}
+
 impl<'de> Deserialize<'de> for ImageHash {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        String::deserialize(deserializer).and_then(|s| {
-            let (scheme, value) = s
-                .split_once(':')
-                .ok_or_else(|| serde::de::Error::custom("Hash must be in 'scheme:value' format"))?;
-
-            let scheme_lower = scheme.to_lowercase();
-            validate_hash_parts(&scheme_lower, value).map_err(serde::de::Error::custom)?;
-
-            Ok(ImageHash {
-                scheme: scheme_lower,
-                value: value.to_string(),
-            })
-        })
+        let s = std::borrow::Cow::<'de, str>::deserialize(deserializer)?;
+        s.parse::<ImageHash>().map_err(serde::de::Error::custom)
     }
 }
 
@@ -98,8 +105,7 @@ impl Serialize for ImageHash {
     where
         S: Serializer,
     {
-        let s = format!("{}:{}", self.scheme, self.value);
-        serializer.serialize_str(&s)
+        serializer.collect_str(self)
     }
 }
 
@@ -110,7 +116,12 @@ impl std::fmt::Display for ImageHash {
 }
 
 fn deserialize_lowercase_string<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
-    String::deserialize(d).map(|s| s.to_lowercase())
+    let cow = std::borrow::Cow::<'de, str>::deserialize(d)?;
+    if cow.chars().any(|c| c.is_ascii_uppercase()) {
+        Ok(cow.to_lowercase())
+    } else {
+        Ok(cow.into_owned())
+    }
 }
 
 /// The manifest file structure representing previous run results.
@@ -123,7 +134,26 @@ pub struct Manifest {
     pub hash_algo: String,
     pub pixel_format: String,
     pub generator_version: String,
+    #[serde(deserialize_with = "deserialize_normalized_entries")]
     pub entries: BTreeMap<String, ManifestEntry>,
+}
+
+fn deserialize_normalized_entries<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, ManifestEntry>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let map = BTreeMap::<String, ManifestEntry>::deserialize(deserializer)?;
+    if map.keys().any(|k| k.contains('\\')) {
+        let mut normalized = BTreeMap::new();
+        for (k, v) in map {
+            normalized.insert(k.replace('\\', "/"), v);
+        }
+        Ok(normalized)
+    } else {
+        Ok(map)
+    }
 }
 
 /// Metadata entry for a single verified screenshot.
@@ -347,6 +377,12 @@ mod tests {
         assert!(ImageHash::new("sha:256", "abc").is_err());
         assert!(ImageHash::new("", "abc").is_err());
         assert!(ImageHash::new("sha256", "").is_err());
+    }
+
+    #[test]
+    fn test_image_hash_from_str_missing_colon_fails() {
+        let err = "0123456789abcdef".parse::<ImageHash>().unwrap_err();
+        assert!(matches!(err, ManifestError::Validation(ref msg) if msg.contains("scheme:value")));
     }
 
     #[test]

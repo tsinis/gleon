@@ -90,8 +90,13 @@ pub fn apply_masks(img: &mut RgbaImage, zones: &[Zone]) {
 
 #[inline(always)]
 fn fill_black(slice: &mut [u8]) {
-    for chunk in slice.chunks_exact_mut(4) {
-        chunk.copy_from_slice(&[0, 0, 0, 255]);
+    let pixel_val = u32::from_ne_bytes([0, 0, 0, 255]);
+    if let Ok(u32_slice) = bytemuck::try_cast_slice_mut::<u8, u32>(slice) {
+        u32_slice.fill(pixel_val);
+    } else {
+        for chunk in slice.chunks_exact_mut(4) {
+            chunk.copy_from_slice(&[0, 0, 0, 255]);
+        }
     }
 }
 
@@ -371,5 +376,20 @@ mod tests {
         assert_eq!(*img.get_pixel(0, 0), BLACK);
         assert_eq!(*img.get_pixel(99, 9), BLACK);
         assert_eq!(*img.get_pixel(50, 10), RED);
+    }
+
+    #[test]
+    fn test_fill_black_aligned_and_unaligned() {
+        // Aligned buffer (multiple of 4 bytes)
+        let mut buf_aligned = vec![255u8; 16];
+        fill_black(&mut buf_aligned);
+        assert_eq!(&buf_aligned[0..4], &[0, 0, 0, 255]);
+        assert_eq!(&buf_aligned[12..16], &[0, 0, 0, 255]);
+
+        // Unaligned slice (e.g. starting at offset 1)
+        let mut buf_unaligned = [255u8; 17];
+        fill_black(&mut buf_unaligned[1..17]);
+        assert_eq!(&buf_unaligned[1..5], &[0, 0, 0, 255]);
+        assert_eq!(&buf_unaligned[13..17], &[0, 0, 0, 255]);
     }
 }

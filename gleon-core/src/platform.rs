@@ -81,7 +81,7 @@ impl<'de> Deserialize<'de> for PlatformConfig {
                 E: serde::de::Error,
             {
                 crate::platform::validate_segment(v)
-                    .map(PlatformConfig::Opaque)
+                    .map(|c| PlatformConfig::Opaque(c.into_owned()))
                     .map_err(E::custom)
             }
 
@@ -90,7 +90,7 @@ impl<'de> Deserialize<'de> for PlatformConfig {
                 E: serde::de::Error,
             {
                 crate::platform::validate_segment(&v)
-                    .map(PlatformConfig::Opaque)
+                    .map(|c| PlatformConfig::Opaque(c.into_owned()))
                     .map_err(E::custom)
             }
 
@@ -158,15 +158,21 @@ impl PlatformFields {
 
 /// Validates that a user-provided segment contains only allowed characters.
 /// Returns Ok(lowercased) or descriptive error.
-pub fn validate_segment(s: &str) -> Result<String, PlatformError> {
+pub fn validate_segment(s: &str) -> Result<std::borrow::Cow<'_, str>, PlatformError> {
     let trimmed = s.trim();
     if trimmed.is_empty() {
         return Err(PlatformError::InvalidSegment(
             "Segment cannot be empty".into(),
         ));
     }
-    let lowered = trimmed.to_lowercase();
-    if lowered == "." || lowered == ".." {
+
+    let lowered = if trimmed.chars().any(|c| c.is_uppercase()) {
+        std::borrow::Cow::Owned(trimmed.to_lowercase())
+    } else {
+        std::borrow::Cow::Borrowed(trimmed)
+    };
+
+    if lowered.as_ref() == "." || lowered.as_ref() == ".." {
         return Err(PlatformError::InvalidSegment(
             "Segment cannot be '.' or '..' to avoid directory traversal".into(),
         ));
@@ -231,7 +237,7 @@ impl PlatformInfo {
 
         for (k, v) in &self.labels {
             let key = match validate_segment(k) {
-                Ok(key) => key,
+                Ok(key) => key.into_owned(),
                 Err(e) => {
                     return Err(PlatformError::InvalidSegment(format!(
                         "Label key '{}' is invalid: {}",
@@ -240,7 +246,7 @@ impl PlatformInfo {
                 }
             };
             let val = match validate_segment(v) {
-                Ok(val) => val,
+                Ok(val) => val.into_owned(),
                 Err(e) => {
                     return Err(PlatformError::InvalidSegment(format!(
                         "Label value '{}' is invalid for key '{}': {}",
@@ -342,7 +348,7 @@ impl PlatformResolver {
                 env_fields.as_ref(),
             )?;
 
-            let validated_opaque = validate_segment(opaque_val)?;
+            let validated_opaque = validate_segment(opaque_val)?.into_owned();
             return Ok(PlatformInfo {
                 os: validated_opaque,
                 arch: None,
@@ -371,7 +377,7 @@ impl PlatformResolver {
                 env_fields.as_ref(),
             )?;
 
-            let validated_opaque = validate_segment(opaque_val)?;
+            let validated_opaque = validate_segment(opaque_val)?.into_owned();
             return Ok(PlatformInfo {
                 os: validated_opaque,
                 arch: None,
@@ -394,7 +400,7 @@ impl PlatformResolver {
                 }
             })
             .unwrap_or_else(|| std::env::consts::OS.to_string());
-        let resolved_os = validate_segment(&raw_os)?;
+        let resolved_os = validate_segment(&raw_os)?.into_owned();
 
         let raw_arch = env
             .arch
@@ -409,7 +415,7 @@ impl PlatformResolver {
                 }
             })
             .unwrap_or_else(|| std::env::consts::ARCH.to_string());
-        let resolved_arch = Some(validate_segment(&raw_arch)?);
+        let resolved_arch = Some(validate_segment(&raw_arch)?.into_owned());
 
         let resolved_renderer = env
             .renderer
@@ -423,7 +429,7 @@ impl PlatformResolver {
                     None
                 }
             })
-            .map(|r| validate_segment(&r))
+            .map(|r| validate_segment(&r).map(|c| c.into_owned()))
             .transpose()?;
 
         // Merge labels
@@ -432,15 +438,19 @@ impl PlatformResolver {
 
         let mut insert_label = |k: &str, v: &str| -> Result<(), PlatformError> {
             let valid_key = validate_segment(k)?;
-            if RESERVED_KEYS.contains(&valid_key.as_str()) {
-                let suggested = match valid_key.as_str() {
+            let key_str: &str = &valid_key;
+            if RESERVED_KEYS.contains(&key_str) {
+                let suggested = match key_str {
                     "architecture" => "arch".to_string(),
                     other => other.to_string(),
                 };
-                return Err(PlatformError::ReservedLabelKey(valid_key, suggested));
+                return Err(PlatformError::ReservedLabelKey(
+                    valid_key.into_owned(),
+                    suggested,
+                ));
             }
             let valid_val = validate_segment(v)?;
-            resolved_labels.insert(valid_key, valid_val);
+            resolved_labels.insert(valid_key.into_owned(), valid_val.into_owned());
             Ok(())
         };
 

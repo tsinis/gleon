@@ -58,7 +58,7 @@ pub fn count_mismatched_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> u64 
             .filter(|(b, a)| b != a)
             .count() as u64
     } else {
-        // Fallback for weirdly aligned data (e.g. from FFI)
+        // Fallback for unaligned slice buffers
         let b_chunks = baseline_raw.chunks_exact(4);
         let a_chunks = actual_raw.chunks_exact(4);
         b_chunks.zip(a_chunks).filter(|(b, a)| b != a).count() as u64
