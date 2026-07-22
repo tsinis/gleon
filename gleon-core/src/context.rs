@@ -12,12 +12,33 @@ pub enum ContextError {
     Git(#[from] crate::git::GitError),
 }
 
+/// Traverses parent directories starting from `start_dir` to find `gleon.yaml`.
+/// Mutates the path in-place using `pop()` to avoid heap allocations.
+/// Returns `Some((config_path, root_dir))` if found, or `None` if not found.
+pub fn find_config_and_root(
+    start_dir: &std::path::Path,
+) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let mut current = start_dir.to_path_buf();
+    loop {
+        let candidate = current.join("gleon.yaml");
+        if candidate.is_file() {
+            return Some((candidate, current));
+        }
+        if !current.pop() {
+            break;
+        }
+    }
+    None
+}
+
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ResolvedContext {
     pub config: Option<GleonConfig>,
     pub platform: PlatformInfo,
     pub branch: String,
     pub target_branch: String,
+    pub base_dir: std::path::PathBuf,
 }
 
 impl ResolvedContext {
@@ -32,19 +53,28 @@ impl ResolvedContext {
         env_provider: &dyn crate::git::EnvProvider,
         platform_env: &PlatformEnv,
     ) -> Result<Self, ContextError> {
-        let config = if let Some(ref path) = cli.config {
+        let (config, resolved_base_dir) = if let Some(ref path) = cli.config {
             tracing::debug!(
                 "Loading configuration from explicitly provided path: {:?}",
                 path
             );
-            Some(GleonConfig::load_from_file(path)?)
+            let cfg = GleonConfig::load_from_file(path)?;
+            let root = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| base_dir.to_path_buf());
+            (Some(cfg), root)
+        } else if let Some((config_path, root_dir)) = find_config_and_root(base_dir) {
+            tracing::debug!(
+                "Discovered gleon.yaml at {:?} (root: {:?})",
+                config_path,
+                root_dir
+            );
+            let cfg = GleonConfig::load_from_file(&config_path)?;
+            (Some(cfg), root_dir)
         } else {
-            let default_path = base_dir.join("gleon.yaml");
-            match GleonConfig::load_from_file(&default_path) {
-                Ok(cfg) => Some(cfg),
-                Err(ConfigError::NotFound(_)) => None,
-                Err(e) => return Err(e.into()),
-            }
+            (None, base_dir.to_path_buf())
         };
 
         let platform = PlatformResolver::resolve(
@@ -57,17 +87,30 @@ impl ResolvedContext {
             config.as_ref().and_then(|c| c.platform.as_ref()),
         )?;
 
-        let branch = crate::git::GitResolver::resolve_branch_impl(
+        let branch = match crate::git::GitResolver::resolve_branch_impl(
             cli.branch.as_deref(),
-            base_dir,
+            &resolved_base_dir,
             env_provider,
-        )?;
+        ) {
+            Ok(b) => b,
+            Err(e @ crate::git::GitError::InvalidBranchName(_)) => {
+                return Err(ContextError::Git(e));
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "Git branch resolution failed: {}. Falling back to 'main' for offline mode.",
+                    e
+                );
+                "main".to_string()
+            }
+        };
 
         Ok(Self {
             config,
             platform,
             branch,
             target_branch: cli.target_branch.clone(),
+            base_dir: resolved_base_dir,
         })
     }
 }
@@ -240,7 +283,7 @@ mod tests {
         );
         assert!(result.is_err());
 
-        // 2. Git resolver error
+        // 2. Git resolver error propagation (invalid branch name is returned as Err)
         let cli_git_err = Cli {
             branch: Some("invalid branch name space".to_string()),
             target_branch: "develop".to_string(),
@@ -260,6 +303,45 @@ mod tests {
             &EmptyEnv,
             &PlatformEnv::default(),
         );
-        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(ContextError::Git(crate::git::GitError::InvalidBranchName(
+                _
+            )))
+        ));
+    }
+
+    #[test]
+    fn test_from_cli_root_discovery() {
+        let dir = tempdir().unwrap();
+        let root_dir = dir.path();
+        let nested_dir = root_dir.join("src/features/billing");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+
+        let config_path = root_dir.join("gleon.yaml");
+        let yaml_content = "required_version: \">=0.1.0\"\nscreenshots:\n  - include: \"*.png\"";
+        std::fs::write(&config_path, yaml_content).unwrap();
+
+        let cli = Cli {
+            branch: None,
+            target_branch: "main".to_string(),
+            os: None,
+            arch: None,
+            renderer: None,
+            labels: vec![],
+            platform: None,
+            verbose: false,
+            quiet: false,
+            config: None,
+            command: Commands::Status,
+        };
+
+        // Call from nested_dir
+        let ctx =
+            ResolvedContext::from_cli_impl(&cli, &nested_dir, &EmptyEnv, &PlatformEnv::default())
+                .unwrap();
+
+        assert!(ctx.config.is_some());
+        assert_eq!(ctx.base_dir, root_dir);
     }
 }

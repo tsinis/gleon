@@ -18,7 +18,7 @@ fn test_scanner_with_real_fixture() {
     assert!(corrupt_path.exists(), "The corrupt.png fixture is missing!");
 
     let include = vec![GlobPattern::new("**/*.png").unwrap()];
-    let exclude = vec![];
+    let exclude = vec![GlobPattern::new("**/report_output/**").unwrap()];
     let rule = Arc::new(ScreenshotRule {
         include: include.clone(),
         mode: Mode::Pixel,
@@ -35,8 +35,8 @@ fn test_scanner_with_real_fixture() {
         .find(|c| c.name == ".")
         .expect("Should find test case for '.'");
 
-    // Check we found all the expected PNG files (7 files total in the fixtures dir)
-    assert_eq!(test_case.images.len(), 7);
+    // Check we found all the expected PNG files (9 files total in the fixtures dir)
+    assert_eq!(test_case.images.len(), 9);
 
     // Verify 200x100.png
     let image_200x100 = test_case

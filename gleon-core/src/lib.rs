@@ -9,4 +9,5 @@ pub mod io;
 pub mod manifest;
 pub mod masking;
 pub mod platform;
+pub mod report;
 pub mod scanner;

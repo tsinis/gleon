@@ -37,6 +37,24 @@ pub enum GitError {
     #[error("Path is outside the Git repository: {0}")]
     OutsideRepository(std::path::PathBuf),
 
+    /// Commit not found or could not be resolved
+    #[error("Commit lookup failed for '{ref_or_sha}': {reason}")]
+    CommitLookup {
+        /// The ref or SHA that was looked up.
+        ref_or_sha: String,
+        /// The underlying error reason.
+        reason: String,
+    },
+
+    /// Commit object could not be decoded
+    #[error("Failed to decode commit '{commit_sha}': {reason}")]
+    CommitDecode {
+        /// The commit SHA that failed to decode.
+        commit_sha: String,
+        /// The underlying error reason.
+        reason: String,
+    },
+
     /// IO error
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -298,30 +316,30 @@ impl GitResolver {
         {
             Ok(id) => id,
             Err(e) => {
-                return Err(GitError::HeadRead(format!(
-                    "Invalid commit SHA or ref '{}': {}",
-                    commit_sha, e
-                )));
+                return Err(GitError::CommitLookup {
+                    ref_or_sha: commit_sha.to_string(),
+                    reason: e.to_string(),
+                });
             }
         };
 
         let commit = match repo.find_commit(id) {
             Ok(commit) => commit,
             Err(e) => {
-                return Err(GitError::HeadRead(format!(
-                    "Commit not found '{}': {}",
-                    id, e
-                )));
+                return Err(GitError::CommitLookup {
+                    ref_or_sha: id.to_string(),
+                    reason: e.to_string(),
+                });
             }
         };
 
         let decoded = match commit.decode() {
             Ok(decoded) => decoded,
             Err(e) => {
-                return Err(GitError::HeadRead(format!(
-                    "Failed to decode commit '{}': {}",
-                    id, e
-                )));
+                return Err(GitError::CommitDecode {
+                    commit_sha: id.to_string(),
+                    reason: e.to_string(),
+                });
             }
         };
 
@@ -1069,7 +1087,7 @@ mod tests {
         let result = GitResolver::get_commit_author(dir.path(), "invalid-ref");
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, GitError::HeadRead(_)));
+        assert!(matches!(err, GitError::CommitLookup { .. }));
     }
 
     #[test]
