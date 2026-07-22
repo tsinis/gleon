@@ -2,7 +2,7 @@
 
 use gleon_core::cli::{Cli, Commands};
 use gleon_core::context::ResolvedContext;
-use gleon_core::ops::{StatusError, check_status, init_workspace};
+use gleon_core::ops::{StatusError, check_status, init_workspace, stage_workspace};
 use std::fs;
 use std::path::Path;
 
@@ -110,4 +110,47 @@ fn test_status_from_nested_subdirectory() {
     let report = check_status(&ctx, &ctx.base_dir)
         .expect("check_status should succeed when using ctx.base_dir");
     assert!(report.is_clean());
+}
+
+#[test]
+fn test_status_with_mask_rules_is_clean_after_staging() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let real_png_bytes =
+        fs::read(fixtures_dir.join("200x100.png")).expect("200x100.png fixture must exist");
+
+    let screenshot_dir = base_path.join("masked_app");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    fs::write(screenshot_dir.join("screen.png"), real_png_bytes).unwrap();
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "masked_app/**/*.png"
+    masks:
+      - region: [0, 0, 50, 50]
+"#;
+    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+
+    let cli = Cli::for_test(Commands::Status { json: false });
+    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    // Stage screenshot
+    stage_workspace(&ctx, base_path, None).expect("stage_workspace should succeed");
+
+    // Check status post-staging
+    let report = check_status(&ctx, base_path).expect("check_status should succeed");
+    assert!(
+        report.is_clean(),
+        "Expected status to be clean for masked screenshots post-staging, got modified: {:?}",
+        report.modified
+    );
 }

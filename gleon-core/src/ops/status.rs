@@ -165,9 +165,22 @@ pub fn check_status(
                     added.push(rel_path);
                 }
                 Some((_w, _h, baseline_sha256)) => {
-                    let file_bytes = std::fs::read(&img.absolute_path)?;
+                    let matched_zones = case.rule.matched_mask_zones(&rel_path);
+                    let png_bytes = if !matched_zones.is_empty() {
+                        let dynamic_img = image::open(&img.absolute_path)?;
+                        let mut rgba = dynamic_img.to_rgba8();
+                        crate::masking::apply_masks(&mut rgba, &matched_zones);
+                        let mut encoded = Vec::new();
+                        let mut cursor = std::io::Cursor::new(&mut encoded);
+                        rgba.write_to(&mut cursor, image::ImageFormat::Png)
+                            .map_err(std::io::Error::other)?;
+                        encoded
+                    } else {
+                        std::fs::read(&img.absolute_path)?
+                    };
+
                     use sha2::{Digest, Sha256};
-                    let computed_sha256 = hex::encode(Sha256::digest(&file_bytes));
+                    let computed_sha256 = hex::encode(Sha256::digest(&png_bytes));
 
                     if computed_sha256 != baseline_sha256 {
                         modified.push(rel_path);

@@ -228,7 +228,7 @@ pub fn stage_workspace(
             entries: manifest_entries,
         };
 
-        // Serialize test manifest to JSON bytes to compute its CAS blob hash
+        // Serialize test manifest to JSON bytes to compute its content-addressed blob hash
         let manifest_json = serde_json::to_vec_pretty(&test_manifest)
             .map_err(|e| ManifestError::Validation(e.to_string()))?;
         let test_manifest_sha256 = hex::encode(Sha256::digest(&manifest_json));

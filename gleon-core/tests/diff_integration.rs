@@ -33,7 +33,7 @@ fn test_diff_uninitialized_fails() {
 }
 
 #[test]
-fn test_diff_full_lifecycle_with_real_fixtures() {
+fn test_diff_full_flow_with_real_fixtures() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 

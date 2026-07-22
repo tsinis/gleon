@@ -365,7 +365,7 @@ impl GitResolver {
         }
     }
 
-    /// Gets the full 40-character hex commit SHA of HEAD.
+    /// Gets the repository's full hexadecimal object ID of HEAD (supporting both SHA-1 and SHA-256 widths).
     pub fn get_head_commit_sha(base_dir: &Path) -> Result<String, GitError> {
         let repo = match gix::discover(base_dir) {
             Ok(repo) => repo,
@@ -815,6 +815,18 @@ mod tests {
         let dir = tempdir().unwrap();
         let result = GitResolver::get_head_commit_sha(dir.path());
         assert!(matches!(result, Err(GitError::Discover(_))));
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn test_get_head_commit_sha_real_repo() {
+        let dir = tempdir().unwrap();
+        if let Ok(repo) = gix::init(dir.path()) {
+            if let Ok(commit) = repo.head_commit() {
+                let sha = GitResolver::get_head_commit_sha(dir.path()).unwrap();
+                assert_eq!(sha, commit.id.to_string());
+            }
+        }
     }
 
     #[test]

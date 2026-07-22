@@ -90,6 +90,6 @@ fn test_init_workspace_honors_cli_overrides() {
 
     assert!(
         index_path.is_file(),
-        "manifest_index.json must be scaffolded under correct branch/platform"
+        "manifest_index.json must be created under correct branch/platform"
     );
 }
