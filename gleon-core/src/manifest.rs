@@ -237,9 +237,10 @@ impl Manifest {
                 f(manifest);
                 manifest.validate()
             },
-        )?;
-        tracing::debug!("Manifest updated successfully to {:?}", path);
-        Ok(())
+        )
+        .map(|_| {
+            tracing::debug!("Manifest updated successfully to {:?}", path);
+        })
     }
 }
 
@@ -291,9 +292,10 @@ impl ManifestIndex {
                 f(index);
                 index.validate()
             },
-        )?;
-        tracing::debug!("Manifest index updated successfully at {:?}", path);
-        Ok(())
+        )
+        .map(|_| {
+            tracing::debug!("Manifest index updated successfully at {:?}", path);
+        })
     }
 }
 

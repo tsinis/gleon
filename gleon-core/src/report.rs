@@ -526,7 +526,10 @@ impl ReportGenerator {
                 };
 
                 let sanitize_cell = |s: &str| -> String {
-                    s.replace('|', "\\|").replace('\n', " ").replace('\r', "")
+                    s.replace('\\', "\\\\")
+                        .replace('|', "\\|")
+                        .replace('\n', " ")
+                        .replace('\r', "")
                 };
                 let safe_name = sanitize_cell(&tc.name);
                 let path_str = Self::format_path_string(res.relative_path(), None);
@@ -645,14 +648,14 @@ mod tests {
     #[test]
     fn test_generate_markdown_sanitization() {
         let tc = TestCaseResult {
-            name: "billing | feature\nline".to_string(),
+            name: "billing \\| feature\nline".to_string(),
             results: vec![TestImageResult::DecodeError {
                 relative_path: PathBuf::from("corrupt | file.png"),
                 error: "Bad header".to_string(),
             }],
         };
         let md = ReportGenerator::generate_markdown(&[tc]);
-        assert!(md.contains("billing \\| feature line"));
+        assert!(md.contains("billing \\\\\\| feature line"));
         assert!(md.contains("corrupt \\| file.png"));
     }
 }

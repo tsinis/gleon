@@ -66,11 +66,12 @@ fn execute_pixel_comparison(
     }
 
     if threshold == 0.0 {
-        // Single pass fast-path: count mismatches and build diff_image in a single iteration.
-        let (diff_count, diff_image) = compare_pixels(baseline, actual);
+        // Fast-path: count mismatches without allocating a diff image buffer first.
+        let diff_count = pixel::count_mismatched_pixels(baseline, actual);
         if diff_count == 0 {
             ComparisonResult::Match
         } else {
+            let (_, diff_image) = compare_pixels(baseline, actual);
             ComparisonResult::Mismatch {
                 detail: if is_fallback {
                     MismatchDetail::SsimFallback { diff_count }

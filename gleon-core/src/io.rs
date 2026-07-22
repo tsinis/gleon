@@ -46,8 +46,10 @@ where
         Err(e) => return Err(E::from(e)),
     };
 
-    f(&mut value)?;
-    save_json_atomically(path, &value).map_err(E::from)
+    match f(&mut value) {
+        Ok(()) => save_json_atomically(path, &value).map_err(E::from),
+        Err(err) => Err(err),
+    }
 }
 
 pub fn save_json_atomically<T: serde::Serialize, P: AsRef<Path>>(
