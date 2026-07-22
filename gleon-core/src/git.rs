@@ -821,11 +821,11 @@ mod tests {
     #[cfg(not(miri))]
     fn test_get_head_commit_sha_real_repo() {
         let dir = tempdir().unwrap();
-        if let Ok(repo) = gix::init(dir.path()) {
-            if let Ok(commit) = repo.head_commit() {
-                let sha = GitResolver::get_head_commit_sha(dir.path()).unwrap();
-                assert_eq!(sha, commit.id.to_string());
-            }
+        if let Ok(repo) = gix::init(dir.path())
+            && let Ok(commit) = repo.head_commit()
+        {
+            let sha = GitResolver::get_head_commit_sha(dir.path()).unwrap();
+            assert_eq!(sha, commit.id.to_string());
         }
     }
 

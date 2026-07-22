@@ -167,7 +167,8 @@ pub fn check_status(
                 Some((_w, _h, baseline_sha256)) => {
                     let matched_zones = case.rule.matched_mask_zones(&rel_path);
                     let png_bytes = if !matched_zones.is_empty() {
-                        let dynamic_img = image::open(&img.absolute_path)?;
+                        let dynamic_img =
+                            image::open(&img.absolute_path).map_err(std::io::Error::other)?;
                         let mut rgba = dynamic_img.to_rgba8();
                         crate::masking::apply_masks(&mut rgba, &matched_zones);
                         let mut encoded = Vec::new();
