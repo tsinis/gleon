@@ -168,4 +168,19 @@ mod tests {
             "custom: config"
         );
     }
+
+    #[test]
+    fn test_init_error_display() {
+        let err1 = InitError::Io(std::io::Error::other("io test"));
+        assert!(err1.to_string().contains("IO error"));
+
+        let serde_err = serde_yaml::from_str::<GleonConfig>("invalid: yaml:").unwrap_err();
+        let err2 = InitError::Yaml(serde_err);
+        assert!(err2.to_string().contains("YAML serialization error"));
+
+        let err3 = InitError::Manifest(crate::manifest::ManifestError::Validation(
+            "bad manifest".to_string(),
+        ));
+        assert!(err3.to_string().contains("Manifest error"));
+    }
 }

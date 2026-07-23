@@ -225,4 +225,15 @@ mod tests {
         let raw_content = std::fs::read_to_string(&file_path).unwrap();
         assert_eq!(raw_content, "{ invalid json ");
     }
+
+    #[test]
+    fn test_io_error_display() {
+        let err1 = IoError::Io(std::io::Error::other("io test"));
+        assert!(err1.to_string().contains("IO error"));
+
+        let serde_err: serde_json::Error =
+            serde_json::from_str::<serde_json::Value>("{ invalid").unwrap_err();
+        let err2 = IoError::JsonParse(serde_err);
+        assert!(err2.to_string().contains("JSON parse error"));
+    }
 }

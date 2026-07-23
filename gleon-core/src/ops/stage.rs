@@ -268,3 +268,59 @@ pub fn stage_workspace(
         total_screenshots_staged,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stage_error_display() {
+        let err1 = StageError::NotInitialized;
+        assert!(err1.to_string().contains("not initialized"));
+
+        let err2 = StageError::Context(ContextError::Platform(
+            crate::platform::PlatformError::InvalidSegment("test".to_string()),
+        ));
+        assert!(err2.to_string().contains("Context resolution error"));
+
+        let err3 = StageError::Scanner(ScannerError::InvalidTestName {
+            name: "bad/name".to_string(),
+            reason: "reason".to_string(),
+        });
+        assert!(err3.to_string().contains("Scanner error"));
+
+        let err4 = StageError::Config(ConfigError::Validation("bad config".to_string()));
+        assert!(err4.to_string().contains("Config error"));
+
+        let err5 = StageError::Manifest(ManifestError::Validation("bad manifest".to_string()));
+        assert!(err5.to_string().contains("Manifest error"));
+
+        let err6 = StageError::ImageDecode {
+            path: PathBuf::from("a.png"),
+            reason: "corrupt".to_string(),
+        };
+        assert!(err6.to_string().contains("Image decode error"));
+
+        let err7 = StageError::ImageEncode {
+            path: PathBuf::from("b.png"),
+            reason: "write error".to_string(),
+        };
+        assert!(err7.to_string().contains("Image encode error"));
+
+        let err8 = StageError::Io(std::io::Error::other("io test"));
+        assert!(err8.to_string().contains("IO error"));
+    }
+
+    #[test]
+    fn test_stage_result_derived() {
+        let res = StageResult {
+            staged_test_cases: vec!["test1".to_string()],
+            total_screenshots_staged: 1,
+        };
+        let cloned = res.clone();
+        assert_eq!(res, cloned);
+        assert!(!format!("{:?}", res).is_empty());
+        let default_res = StageResult::default();
+        assert_eq!(default_res.total_screenshots_staged, 0);
+    }
+}

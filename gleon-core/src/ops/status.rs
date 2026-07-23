@@ -234,4 +234,30 @@ mod tests {
         assert!(formatted.contains("Modified:\n  b.png"));
         assert!(formatted.contains("Deleted:\n  c.png"));
     }
+
+    #[test]
+    fn test_status_error_display() {
+        let err1 = StatusError::NotInitialized;
+        assert!(err1.to_string().contains("not initialized"));
+
+        let err2 = StatusError::Context(ContextError::Platform(
+            crate::platform::PlatformError::InvalidSegment("test".to_string()),
+        ));
+        assert!(err2.to_string().contains("Context resolution error"));
+
+        let err3 = StatusError::Scanner(ScannerError::InvalidTestName {
+            name: "bad/name".to_string(),
+            reason: "reason".to_string(),
+        });
+        assert!(err3.to_string().contains("Scanner error"));
+
+        let err4 = StatusError::Config(ConfigError::Validation("bad config".to_string()));
+        assert!(err4.to_string().contains("Config error"));
+
+        let err5 = StatusError::Manifest(ManifestError::Validation("bad manifest".to_string()));
+        assert!(err5.to_string().contains("Manifest error"));
+
+        let err6 = StatusError::Io(std::io::Error::other("io test"));
+        assert!(err6.to_string().contains("IO error"));
+    }
 }

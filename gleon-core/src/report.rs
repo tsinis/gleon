@@ -703,4 +703,32 @@ mod tests {
             assert_eq!(formatted2, "C:/foo/bar.png");
         }
     }
+
+    #[test]
+    fn test_report_error_display() {
+        let err1 = ReportError::Render {
+            template: "report.html",
+            source: minijinja::Error::new(minijinja::ErrorKind::UndefinedError, "test"),
+        };
+        assert!(err1.to_string().contains("Template rendering failed"));
+    }
+
+    #[test]
+    fn test_formatted_path_all_components() {
+        let root_path = std::path::Path::new("/a/.././b");
+        let formatted = FormattedPath {
+            path: root_path,
+            report_dir: None,
+        }
+        .to_string();
+        assert!(formatted.contains("a"));
+
+        let empty_path = std::path::Path::new("");
+        let formatted_empty = FormattedPath {
+            path: empty_path,
+            report_dir: None,
+        }
+        .to_string();
+        assert_eq!(formatted_empty, ".");
+    }
 }

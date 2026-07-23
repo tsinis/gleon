@@ -295,3 +295,173 @@ pub fn run_diff(
         runs_dir,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(not(miri))]
+    use crate::cli::Cli;
+    #[cfg(not(miri))]
+    use crate::manifest::{ImageHash, Manifest, ManifestIndex};
+    #[cfg(not(miri))]
+    use crate::ops::{init_workspace, stage_workspace};
+    #[cfg(not(miri))]
+    use std::fs;
+    #[cfg(not(miri))]
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_diff_error_display() {
+        let err1 = DiffOpError::NotInitialized;
+        assert!(err1.to_string().contains("not initialized"));
+
+        let err2 = DiffOpError::Context(ContextError::Platform(
+            crate::platform::PlatformError::InvalidSegment("test".to_string()),
+        ));
+        assert!(err2.to_string().contains("Context resolution error"));
+
+        let err3 = DiffOpError::Scanner(ScannerError::InvalidTestName {
+            name: "bad/name".to_string(),
+            reason: "reason".to_string(),
+        });
+        assert!(err3.to_string().contains("Scanner error"));
+
+        let err4 = DiffOpError::Config(ConfigError::Validation("bad config".to_string()));
+        assert!(err4.to_string().contains("Config error"));
+
+        let err5 = DiffOpError::Manifest(ManifestError::Validation("bad manifest".to_string()));
+        assert!(err5.to_string().contains("Manifest error"));
+
+        let err6 = DiffOpError::Report(ReportError::Render {
+            template: "report.html",
+            source: minijinja::Error::new(minijinja::ErrorKind::UndefinedError, "test"),
+        });
+        assert!(err6.to_string().contains("Report error"));
+
+        let err7 = DiffOpError::Io(std::io::Error::other("io test"));
+        assert!(err7.to_string().contains("IO error"));
+    }
+
+    #[test]
+    fn test_diff_report_result_derived() {
+        let res = DiffReportResult {
+            total_tests: 5,
+            failed_tests: 0,
+            passed: true,
+            runs_dir: PathBuf::from("runs/latest"),
+        };
+        let cloned = res.clone();
+        assert_eq!(res, cloned);
+        assert!(!format!("{:?}", res).is_empty());
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn test_diff_missing_manifest_entry_and_missing_blob() {
+        let dir = tempdir().unwrap();
+        let base_path = dir.path();
+
+        let cli_init = Cli::for_test(crate::cli::Commands::Init);
+        let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+        init_workspace(&ctx_init, base_path).unwrap();
+
+        let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let png_bytes = fs::read(fixtures_dir.join("200x100.png")).unwrap();
+
+        let billing_dir = base_path.join("billing");
+        fs::create_dir_all(&billing_dir).unwrap();
+        fs::write(billing_dir.join("form.png"), &png_bytes).unwrap();
+        fs::write(billing_dir.join("missing_entry.png"), &png_bytes).unwrap();
+
+        let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+        fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+
+        let cli = Cli::for_test(crate::cli::Commands::Stage { paths: vec![] });
+        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        stage_workspace(&ctx, base_path, None).unwrap();
+
+        // Now remove form.png entry or tamper with manifest index
+        let platform_key = ctx.platform.to_key().unwrap();
+        let index_path = base_path
+            .join(".gleon/branches/main")
+            .join(&platform_key)
+            .join("manifest_index.json");
+
+        let index = ManifestIndex::load(&index_path).unwrap();
+        let manifest_hash = index.test_manifests.get("billing").unwrap().clone();
+        let manifest_path = base_path
+            .join(".gleon/blobs")
+            .join(manifest_hash.scheme())
+            .join(manifest_hash.value());
+
+        let mut manifest = Manifest::load(&manifest_path).unwrap();
+        // Remove missing_entry.png from manifest entries so it triggers "No baseline manifest entry found"
+        manifest.entries.remove("billing/missing_entry.png");
+
+        // Set form.png to point to a non-existent blob sha
+        let fake_hash = ImageHash::new(
+            "sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap();
+        if let Some(entry) = manifest.entries.get_mut("billing/form.png") {
+            entry.hash = fake_hash;
+        }
+
+        manifest.save(&manifest_path).unwrap();
+
+        let cli_diff = Cli::for_test(crate::cli::Commands::Diff);
+        let ctx_diff = ResolvedContext::from_cli(&cli_diff, base_path).unwrap();
+        let res = run_diff(&ctx_diff, base_path).unwrap();
+
+        assert!(!res.passed);
+        assert_eq!(res.failed_tests, 2);
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn test_diff_corrupt_actual_image_and_dimension_mismatch() {
+        let dir = tempdir().unwrap();
+        let base_path = dir.path();
+
+        let cli_init = Cli::for_test(crate::cli::Commands::Init);
+        let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+        init_workspace(&ctx_init, base_path).unwrap();
+
+        let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let png_200 = fs::read(fixtures_dir.join("200x100.png")).unwrap();
+        let png_100 = fs::read(fixtures_dir.join("diff_16px_corners_100x100.png")).unwrap();
+
+        let billing_dir = base_path.join("billing");
+        fs::create_dir_all(&billing_dir).unwrap();
+        fs::write(billing_dir.join("form.png"), &png_200).unwrap();
+        fs::write(billing_dir.join("corrupt.png"), &png_200).unwrap();
+
+        let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+        fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+
+        let cli = Cli::for_test(crate::cli::Commands::Stage { paths: vec![] });
+        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        stage_workspace(&ctx, base_path, None).unwrap();
+
+        // 1. Overwrite form.png with 100x100 image (Dimension Mismatch)
+        fs::write(billing_dir.join("form.png"), &png_100).unwrap();
+        // 2. Overwrite corrupt.png with corrupt bytes (Decode Error)
+        fs::write(billing_dir.join("corrupt.png"), b"not a png image").unwrap();
+
+        let cli_diff = Cli::for_test(crate::cli::Commands::Diff);
+        let ctx_diff = ResolvedContext::from_cli(&cli_diff, base_path).unwrap();
+        let res = run_diff(&ctx_diff, base_path).unwrap();
+
+        assert!(!res.passed);
+        assert_eq!(res.failed_tests, 2);
+    }
+}
