@@ -4,7 +4,8 @@ use clap::Parser;
 use gleon_core::cli::{Cli, Commands};
 use tracing::info;
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Determine the log level based on CLI flags

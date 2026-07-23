@@ -16,6 +16,7 @@ anyhow = "1.0.103"
 assert_cmd = "2.2.2"
 
 bytemuck = "1.25.2"
+bytes = "1.12.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.4", features = ["derive", "env"] }
 futures = "0.3.33"
@@ -24,6 +25,7 @@ globset = "0.4.19"
 hex = "0.4.3"
 ignore = "0.4.31"
 image = { version = "0.25.5", default-features = false, features = ["png"] }
+indicatif = "0.18.6"
 image-compare = "0.5.0"
 image_hasher = "3.1.1"
 minijinja = "2.21.0"
