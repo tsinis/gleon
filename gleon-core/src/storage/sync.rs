@@ -367,14 +367,13 @@ impl SyncOrchestrator {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use crate::storage::StorageError;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[tokio::test]
-    #[cfg(not(miri))]
     async fn test_retry_with_backoff_permanent_error() {
         let options = SyncOptions {
             concurrency: 1,
@@ -397,7 +396,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(not(miri))]
     async fn test_retry_with_backoff_transient_error_success() {
         let options = SyncOptions {
             concurrency: 1,
