@@ -139,7 +139,7 @@ impl ObjectStoreAdapter {
 
         Ok(Self {
             store,
-            concurrency: config.concurrency,
+            concurrency: std::cmp::max(1, config.concurrency),
         })
     }
 
@@ -204,11 +204,17 @@ impl ObjectStoreAdapter {
         tokio::task::spawn_blocking(move || -> Result<(), StorageError> {
             let parent_dir = dest_path_buf.parent().unwrap_or_else(|| Path::new("."));
 
-            std::fs::create_dir_all(parent_dir)?;
+            std::fs::create_dir_all(parent_dir).map_err(|source| StorageError::Io { source })?;
 
-            let mut temp_file = NamedTempFile::new_in(parent_dir)?;
-            temp_file.write_all(&bytes)?;
-            temp_file.as_file().sync_all()?;
+            let mut temp_file =
+                NamedTempFile::new_in(parent_dir).map_err(|source| StorageError::Io { source })?;
+            temp_file
+                .write_all(&bytes)
+                .map_err(|source| StorageError::Io { source })?;
+            temp_file
+                .as_file()
+                .sync_all()
+                .map_err(|source| StorageError::Io { source })?;
             temp_file
                 .persist(&dest_path_buf)
                 .map_err(|e| StorageError::PersistFailed {

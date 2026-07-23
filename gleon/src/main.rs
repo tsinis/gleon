@@ -132,19 +132,20 @@ async fn run_sync(
         gleon_core::storage::sync::SyncOrchestrator::new(adapter, ctx.base_dir.clone());
     let platform_key = ctx.platform.to_key()?;
     let (spinner, options) = create_spinner(progress_msg, concurrency);
-    match direction {
+    let result = match direction {
         SyncDirection::Pull => {
             orchestrator
                 .pull(&ctx.branch, &platform_key, &options)
-                .await?;
+                .await
         }
         SyncDirection::Push => {
             orchestrator
                 .push(&ctx.branch, &platform_key, &options)
-                .await?;
+                .await
         }
-    }
+    };
     spinner.finish_and_clear();
+    result?;
     println!("{done_msg}");
     Ok(())
 }

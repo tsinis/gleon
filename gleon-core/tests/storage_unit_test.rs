@@ -100,3 +100,51 @@ async fn test_memory_store_blob_and_manifest_lifecycle() {
     let upload_err = adapter.upload_blob(blob_hash, &missing_local).await;
     assert!(matches!(upload_err, Err(StorageError::Io { .. })));
 }
+
+#[test]
+fn test_concurrency_clamp_to_one() {
+    let mut config = StorageConfig::new("memory://");
+    config.concurrency = 0;
+    let adapter = ObjectStoreAdapter::from_config(&config).unwrap();
+    assert_eq!(adapter.concurrency(), 1);
+}
+
+#[tokio::test]
+async fn test_adapter_download_io_errors() {
+    let config = StorageConfig::new("memory://");
+    let adapter = ObjectStoreAdapter::from_config(&config).unwrap();
+
+    let dir = tempdir().expect("tempdir creation");
+    let src_file = dir.path().join("sample_blob.png");
+    std::fs::write(&src_file, b"png_file_bytes").expect("write src file");
+
+    let blob_hash = "1111111111111111111111111111111111111111111111111111111111111111";
+    adapter.upload_blob(blob_hash, &src_file).await.unwrap();
+
+    let dest_dir = dir.path().join("read_only_dir");
+    std::fs::create_dir(&dest_dir).unwrap();
+
+    let mut perms = std::fs::metadata(&dest_dir).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&dest_dir, perms.clone()).unwrap();
+
+    let dest_file = dest_dir.join("downloaded.png");
+    let err = adapter.download_blob(blob_hash, &dest_file).await;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dest_dir, std::fs::Permissions::from_mode(0o755));
+    }
+    #[cfg(not(unix))]
+    {
+        perms.set_readonly(false);
+        let _ = std::fs::set_permissions(&dest_dir, perms);
+    }
+
+    assert!(
+        matches!(err, Err(StorageError::Io { .. })),
+        "Expected Io error: {:?}",
+        err
+    );
+}

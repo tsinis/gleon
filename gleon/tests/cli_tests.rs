@@ -216,7 +216,8 @@ fn test_test_placeholder() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_pull_placeholder() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("gleon")?;
-    cmd.arg("pull")
+    cmd.env_remove("GLEON_STORAGE_URL")
+        .arg("pull")
         .assert()
         .failure()
         .stderr(predicates::str::contains(
@@ -228,7 +229,8 @@ fn test_pull_placeholder() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_push_placeholder() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("gleon")?;
-    cmd.arg("push")
+    cmd.env_remove("GLEON_STORAGE_URL")
+        .arg("push")
         .assert()
         .failure()
         .stderr(predicates::str::contains(
@@ -512,6 +514,26 @@ fn test_pull_and_push_no_storage_configured() -> Result<(), Box<dyn std::error::
         .stdout(predicates::str::contains(
             "No storage configured via GLEON_STORAGE_URL. Skipping auto-pull.",
         ));
+
+    Ok(())
+}
+
+#[test]
+fn test_sync_fails_and_clears_spinner() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let mut cmd = Command::cargo_bin("gleon")?;
+
+    // Provide a valid URL format but fake S3 credentials to force a network error during pull.
+    // This ensures `run_sync` creates the spinner and then catches the error from `orchestrator.pull`,
+    // clearing the spinner before exiting.
+    cmd.current_dir(dir.path())
+        .env("GLEON_STORAGE_URL", "s3://non-existent-bucket-123456/gleon")
+        .env("AWS_ACCESS_KEY_ID", "fake")
+        .env("AWS_SECRET_ACCESS_KEY", "fake")
+        .env("AWS_REGION", "us-east-1")
+        .arg("pull")
+        .assert()
+        .failure();
 
     Ok(())
 }

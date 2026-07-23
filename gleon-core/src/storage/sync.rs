@@ -261,6 +261,14 @@ where
         match f().await {
             Ok(_) => return Ok(()),
             Err(e) => {
+                // Permanent errors should not be retried
+                if matches!(
+                    e,
+                    StorageError::BlobNotFound(_) | StorageError::InvalidUrl { .. }
+                ) {
+                    return Err(e);
+                }
+
                 if retries >= options.retries {
                     if options.fail_fast {
                         return Err(e);
@@ -356,5 +364,64 @@ impl SyncOrchestrator {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::StorageError;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_retry_with_backoff_permanent_error() {
+        let options = SyncOptions {
+            concurrency: 1,
+            retries: 3,
+            fail_fast: true,
+            on_progress: None,
+        };
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_clone = attempts.clone();
+
+        let result = retry_with_backoff("test_action", "target", &options, || async {
+            attempts_clone.fetch_add(1, Ordering::SeqCst);
+            Err(StorageError::BlobNotFound("hash".to_string()))
+        })
+        .await;
+
+        assert!(matches!(result, Err(StorageError::BlobNotFound(_))));
+        // Should fail immediately on the first attempt without retrying
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_retry_with_backoff_transient_error_success() {
+        let options = SyncOptions {
+            concurrency: 1,
+            retries: 3,
+            fail_fast: true,
+            on_progress: None,
+        };
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_clone = attempts.clone();
+
+        let result = retry_with_backoff("test_action", "target", &options, || async {
+            let count = attempts_clone.fetch_add(1, Ordering::SeqCst);
+            if count < 2 {
+                Err(StorageError::Io {
+                    source: std::io::Error::new(std::io::ErrorKind::ConnectionReset, "transient"),
+                })
+            } else {
+                Ok(())
+            }
+        })
+        .await;
+
+        assert!(result.is_ok());
+        // Succeeded on the 3rd attempt (index 2)
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
     }
 }
