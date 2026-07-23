@@ -52,39 +52,44 @@ where
     }
 }
 
-pub fn save_json_atomically<T: serde::Serialize, P: AsRef<Path>>(
-    path: P,
-    value: &T,
-) -> Result<(), IoError> {
+pub fn write_file_atomically<P, F, E>(path: P, f: F) -> Result<(), E>
+where
+    P: AsRef<Path>,
+    F: FnOnce(&mut std::io::BufWriter<&std::fs::File>) -> Result<(), E>,
+    E: From<IoError>,
+{
     let path = path.as_ref();
     let parent = match path.parent() {
         Some(p) if p.as_os_str().is_empty() => Path::new("."),
         Some(p) => p,
         None => {
-            return Err(IoError::Io(std::io::Error::new(
+            return Err(E::from(IoError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Cannot resolve parent directory for root path",
-            )));
+            ))));
         }
     };
-    std::fs::create_dir_all(parent)?;
+    std::fs::create_dir_all(parent).map_err(|e| E::from(IoError::Io(e)))?;
 
     let file_name = path.file_name().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid file name")
+        E::from(IoError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Invalid file name",
+        )))
     })?;
 
     let temp_file = tempfile::Builder::new()
         .prefix(file_name)
         .suffix(".tmp")
-        .tempfile_in(parent)?;
+        .tempfile_in(parent)
+        .map_err(|e| E::from(IoError::Io(e)))?;
 
-    use std::io::Write;
-    let mut writer = std::io::BufWriter::new(temp_file);
-    serde_json::to_writer_pretty(&mut writer, value)?;
-    writer.flush()?;
-    let temp_file = writer
-        .into_inner()
-        .map_err(|e| IoError::Io(e.into_error()))?;
+    {
+        let mut writer = std::io::BufWriter::new(temp_file.as_file());
+        f(&mut writer)?;
+        use std::io::Write;
+        writer.flush().map_err(|e| E::from(IoError::Io(e)))?;
+    }
 
     #[cfg(all(unix, not(miri)))]
     let perms_result = {
@@ -103,16 +108,22 @@ pub fn save_json_atomically<T: serde::Serialize, P: AsRef<Path>>(
                     .set_permissions(perms)
                     .map_err(IoError::Io)
             })
+            .map_err(E::from)
     };
     #[cfg(not(all(unix, not(miri))))]
-    let perms_result: Result<(), IoError> = Ok(());
+    let perms_result: Result<(), E> = Ok(());
 
     perms_result
-        .and_then(|_| temp_file.as_file().sync_all().map_err(IoError::Io))
+        .and_then(|_| {
+            temp_file
+                .as_file()
+                .sync_all()
+                .map_err(|e| E::from(IoError::Io(e)))
+        })
         .and_then(|_| {
             temp_file.persist(path).map_err(|e| {
-                tracing::error!("Failed to save JSON atomically to {:?}: {}", path, e);
-                IoError::Io(e.error)
+                tracing::error!("Failed to save file atomically to {:?}: {}", path, e);
+                E::from(IoError::Io(e.error))
             })
         })
         .map(|_| {
@@ -120,6 +131,21 @@ pub fn save_json_atomically<T: serde::Serialize, P: AsRef<Path>>(
                 let _ = dir.sync_all(); // Ignore directory fsync errors, especially on Windows
             }
         })
+}
+
+pub fn save_file_atomically<P: AsRef<Path>>(path: P, content: &[u8]) -> Result<(), IoError> {
+    write_file_atomically(path, |writer| {
+        use std::io::Write;
+        writer.write_all(content).map_err(IoError::Io)
+    })
+}
+
+pub fn save_json_atomically<T: serde::Serialize, P: AsRef<Path>>(
+    path: P,
+    value: &T,
+) -> Result<(), IoError> {
+    let content = serde_json::to_vec_pretty(value)?;
+    save_file_atomically(path, &content)
 }
 
 #[cfg(test)]
@@ -198,5 +224,16 @@ mod tests {
         // Verify the corrupted file content was NOT overwritten
         let raw_content = std::fs::read_to_string(&file_path).unwrap();
         assert_eq!(raw_content, "{ invalid json ");
+    }
+
+    #[test]
+    fn test_io_error_display() {
+        let err1 = IoError::Io(std::io::Error::other("io test"));
+        assert!(err1.to_string().contains("IO error"));
+
+        let serde_err: serde_json::Error =
+            serde_json::from_str::<serde_json::Value>("{ invalid").unwrap_err();
+        let err2 = IoError::JsonParse(serde_err);
+        assert!(err2.to_string().contains("JSON parse error"));
     }
 }

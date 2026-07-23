@@ -69,9 +69,9 @@ impl<'de> Deserialize<'de> for Dimension {
 
         #[derive(Deserialize)]
         #[serde(untagged)]
-        enum RawDimension {
+        enum RawDimension<'a> {
             Integer(u32),
-            Str(String),
+            Str(std::borrow::Cow<'a, str>),
         }
 
         RawDimension::deserialize(deserializer).and_then(|raw| match raw {
@@ -107,33 +107,42 @@ impl Serialize for Dimension {
     {
         match self {
             Dimension::Pixels(px) => serializer.serialize_u32(*px),
-            Dimension::Percent(pct) => serializer.serialize_str(&format!("{}%", pct)),
+            Dimension::Percent(pct) => serializer.collect_str(&format_args!("{}%", pct)),
         }
     }
 }
 
 /// A compiled glob pattern for fast file matching, serialized as a simple string.
 #[derive(Debug, Clone)]
-pub struct GlobPattern(pub globset::Glob);
+pub struct GlobPattern {
+    glob: globset::Glob,
+    matcher: globset::GlobMatcher,
+}
 
 impl GlobPattern {
     /// Create a new `GlobPattern` from a raw string.
     pub fn new(raw: &str) -> Result<Self, globset::Error> {
-        globset::GlobBuilder::new(raw)
+        let glob = globset::GlobBuilder::new(raw)
             .literal_separator(true)
             .case_insensitive(true)
-            .build()
-            .map(Self)
+            .build()?;
+        let matcher = glob.compile_matcher();
+        Ok(Self { glob, matcher })
     }
 
     /// Get the raw string representation.
     pub fn as_str(&self) -> &str {
-        self.0.glob()
+        self.glob.glob()
     }
 
     /// Access the compiled `globset::Glob`.
     pub fn as_glob(&self) -> &globset::Glob {
-        &self.0
+        &self.glob
+    }
+
+    /// Check if the path matches this pattern.
+    pub fn is_match<P: AsRef<std::path::Path>>(&self, path: P) -> bool {
+        self.matcher.is_match(path)
     }
 }
 
@@ -149,8 +158,8 @@ impl<'de> Deserialize<'de> for GlobPattern {
     where
         D: Deserializer<'de>,
     {
-        let raw = String::deserialize(deserializer)?;
-        Self::new(&raw).map_err(serde::de::Error::custom)
+        let s = std::borrow::Cow::<'de, str>::deserialize(deserializer)?;
+        GlobPattern::new(&s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -230,6 +239,20 @@ pub struct ScreenshotRule {
     /// Optional zones to mask out (ignore) during verification.
     #[serde(default)]
     pub masks: Vec<MaskRule>,
+}
+
+impl ScreenshotRule {
+    /// Returns all mask zones that match the given relative file path.
+    pub fn matched_mask_zones(&self, relative_path: &std::path::Path) -> Vec<Zone> {
+        if self.masks.is_empty() {
+            return Vec::new();
+        }
+        self.masks
+            .iter()
+            .filter(|m| m.path.is_match(relative_path))
+            .flat_map(|m| m.zones.clone())
+            .collect()
+    }
 }
 
 /// Configuration parameters for the diff engine.

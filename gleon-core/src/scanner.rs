@@ -51,7 +51,7 @@ pub struct TestCase {
 use crate::engine::MismatchDetail;
 
 /// Represents the result of running a test on a single screenshot.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum TestImageResult {
     /// The actual image matches the baseline.
@@ -124,6 +124,12 @@ pub fn validate_test_name(name: &str) -> Result<(), String> {
         if segment.is_empty() {
             return Err("Test name segment cannot be empty".to_string());
         }
+        if segment == "." || segment == ".." {
+            return Err(format!(
+                "Test name segment cannot be relative path navigation '{}'",
+                segment
+            ));
+        }
         for c in segment.chars() {
             if !c.is_ascii_lowercase() && !c.is_ascii_digit() && c != '_' && c != '-' && c != '.' {
                 return Err(format!(
@@ -161,31 +167,9 @@ impl FileScanner {
         }
         let exclude_set = exclude_builder.build()?;
 
-        let exclude_for_filter = exclude_set.clone();
-        let base_dir_for_filter = base_dir.to_path_buf();
+        let walker = Self::build_walker(base_dir, &exclude_set);
 
-        // TODO: For very large mono-repositories (10K+ images), consider replacing `build()`
-        // with `build_parallel()` and collecting cases via crossbeam_channel::mpsc to speed up traversal.
-        let walker = ignore::WalkBuilder::new(base_dir)
-            .standard_filters(false)
-            .filter_entry(move |entry| {
-                if entry.file_type().is_some_and(|ft| ft.is_dir()) && entry.file_name() == ".git" {
-                    return false;
-                }
-                if let Ok(rel_path) = entry.path().strip_prefix(&base_dir_for_filter) {
-                    if rel_path.as_os_str().is_empty() {
-                        return true;
-                    }
-                    let rel_path_str = Self::normalize_separators(rel_path);
-                    if exclude_for_filter.is_match(rel_path_str.as_ref()) {
-                        return false;
-                    }
-                }
-                true
-            })
-            .build();
-
-        let mut collected_paths = Vec::new();
+        let mut temp_cases = std::collections::BTreeMap::<String, Vec<TestImage>>::new();
 
         for entry_res in walker {
             let entry = match entry_res {
@@ -196,18 +180,20 @@ impl FileScanner {
                 }
             };
 
-            if let Some(parsed) = Self::parse_entry(&entry, base_dir, &include_set, &exclude_set)? {
-                collected_paths.push(parsed);
+            if let Some((test_name, rel_path, abs_path)) =
+                Self::parse_entry(&entry, base_dir, &include_set, &exclude_set)?
+            {
+                let test_name_ref = test_name.as_ref();
+                let images = if let Some(images) = temp_cases.get_mut(test_name_ref) {
+                    images
+                } else {
+                    temp_cases.entry(test_name.into_owned()).or_default()
+                };
+                images.push(TestImage {
+                    relative_path: rel_path,
+                    absolute_path: abs_path,
+                });
             }
-        }
-
-        // Group into TestCases directly from the parsed paths
-        let mut temp_cases = std::collections::BTreeMap::<String, Vec<TestImage>>::new();
-        for (test_name, rel_path, abs_path) in collected_paths {
-            temp_cases.entry(test_name).or_default().push(TestImage {
-                relative_path: rel_path,
-                absolute_path: abs_path,
-            });
         }
 
         let cases = temp_cases
@@ -245,27 +231,7 @@ impl FileScanner {
             rule_sets.push((std::sync::Arc::new(rule.clone()), include_builder.build()?));
         }
 
-        let exclude_for_filter = exclude_set.clone();
-        let base_dir_for_filter = base_dir.to_path_buf();
-
-        let walker = ignore::WalkBuilder::new(base_dir)
-            .standard_filters(false)
-            .filter_entry(move |entry| {
-                if entry.file_type().is_some_and(|ft| ft.is_dir()) && entry.file_name() == ".git" {
-                    return false;
-                }
-                if let Ok(rel_path) = entry.path().strip_prefix(&base_dir_for_filter) {
-                    if rel_path.as_os_str().is_empty() {
-                        return true;
-                    }
-                    let rel_path_str = Self::normalize_separators(rel_path);
-                    if exclude_for_filter.is_match(rel_path_str.as_ref()) {
-                        return false;
-                    }
-                }
-                true
-            })
-            .build();
+        let walker = Self::build_walker(base_dir, &exclude_set);
 
         let mut temp_cases =
             std::collections::BTreeMap::<String, std::collections::BTreeMap<usize, TestCase>>::new(
@@ -299,7 +265,7 @@ impl FileScanner {
                     continue;
                 }
             };
-            let rel_path_str = Self::normalize_separators(rel_path);
+            let rel_path_str = Self::normalize_path_str(rel_path);
 
             if exclude_set.is_match(rel_path_str.as_ref()) {
                 continue;
@@ -312,26 +278,26 @@ impl FileScanner {
 
             if let Some((rule_index, (rule_arc, _))) = matched_rule {
                 let parent = rel_path.parent().unwrap_or(Path::new(""));
-                let parent_str = Self::normalize_separators(parent);
+                let parent_str = Self::normalize_path_str(parent);
                 let test_name_ref = if parent_str.is_empty() {
                     "."
                 } else {
                     parent_str.as_ref()
                 };
 
-                if !temp_cases.contains_key(test_name_ref) {
+                let rule_map = if let Some(rule_map) = temp_cases.get_mut(test_name_ref) {
+                    rule_map
+                } else {
                     if let Err(reason) = validate_test_name(test_name_ref) {
                         return Err(ScannerError::InvalidTestName {
                             name: test_name_ref.to_string(),
                             reason,
                         });
                     }
-                    temp_cases.insert(test_name_ref.to_string(), std::collections::BTreeMap::new());
-                }
+                    temp_cases.entry(test_name_ref.to_string()).or_default()
+                };
 
-                temp_cases
-                    .get_mut(test_name_ref)
-                    .unwrap()
+                rule_map
                     .entry(rule_index)
                     .or_insert_with(|| TestCase {
                         name: test_name_ref.to_string(),
@@ -358,25 +324,48 @@ impl FileScanner {
         Ok(cases)
     }
 
-    /// Normalizes path separators to forward slashes on Windows.
-    fn normalize_separators(path: &Path) -> Cow<'_, str> {
-        #[cfg(windows)]
-        {
-            Cow::Owned(path.to_string_lossy().replace('\\', "/"))
-        }
-        #[cfg(not(windows))]
-        {
-            path.to_string_lossy()
+    /// Builds a WalkBuilder configured for gleon directory scanning.
+    fn build_walker(base_dir: &Path, exclude_set: &globset::GlobSet) -> ignore::Walk {
+        let exclude_for_filter = exclude_set.clone();
+        let base_dir_for_filter = base_dir.to_path_buf();
+
+        ignore::WalkBuilder::new(base_dir)
+            .standard_filters(false)
+            .filter_entry(move |entry| {
+                if entry.file_type().is_some_and(|ft| ft.is_dir()) && entry.file_name() == ".git" {
+                    return false;
+                }
+                if let Ok(rel_path) = entry.path().strip_prefix(&base_dir_for_filter) {
+                    if rel_path.as_os_str().is_empty() {
+                        return true;
+                    }
+                    let rel_path_str = Self::normalize_path_str(rel_path);
+                    if exclude_for_filter.is_match(rel_path_str.as_ref()) {
+                        return false;
+                    }
+                }
+                true
+            })
+            .build()
+    }
+
+    /// Normalizes path separators to forward slashes for cross-platform manifest key consistency.
+    pub fn normalize_path_str(path: &Path) -> Cow<'_, str> {
+        let lossy = path.to_string_lossy();
+        if lossy.contains('\\') {
+            Cow::Owned(lossy.replace('\\', "/"))
+        } else {
+            lossy
         }
     }
 
     /// Parses a directory entry and returns the parsed paths if it's a valid matching PNG.
-    fn parse_entry(
-        entry: &ignore::DirEntry,
+    fn parse_entry<'a>(
+        entry: &'a ignore::DirEntry,
         base_dir: &Path,
         include_set: &globset::GlobSet,
         exclude_set: &globset::GlobSet,
-    ) -> Result<Option<(String, PathBuf, PathBuf)>, ScannerError> {
+    ) -> Result<Option<(Cow<'a, str>, PathBuf, PathBuf)>, ScannerError> {
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             return Ok(None);
         }
@@ -397,7 +386,7 @@ impl FileScanner {
                 return Ok(None);
             }
         };
-        let rel_path_str = Self::normalize_separators(rel_path);
+        let rel_path_str = Self::normalize_path_str(rel_path);
 
         if !include_set.is_match(rel_path_str.as_ref())
             || exclude_set.is_match(rel_path_str.as_ref())
@@ -406,17 +395,17 @@ impl FileScanner {
         }
 
         let parent = rel_path.parent().unwrap_or(Path::new(""));
-        let parent_str = Self::normalize_separators(parent);
+        let parent_str = Self::normalize_path_str(parent);
 
         let test_name = if parent_str.is_empty() {
-            ".".to_string()
+            Cow::Borrowed(".")
         } else {
-            parent_str.into_owned()
+            parent_str
         };
 
-        if let Err(reason) = validate_test_name(&test_name) {
+        if let Err(reason) = validate_test_name(test_name.as_ref()) {
             return Err(ScannerError::InvalidTestName {
-                name: test_name,
+                name: test_name.into_owned(),
                 reason,
             });
         }
@@ -456,6 +445,24 @@ mod tests {
         assert!(validate_test_name("/billing").is_err());
         assert!(validate_test_name("billing//stripe").is_err());
         assert!(validate_test_name("billing/stripe$").is_err());
+        assert!(validate_test_name("billing/..").is_err());
+        assert!(validate_test_name("billing/.").is_err());
+        assert!(validate_test_name("billing/../stripe").is_err());
+    }
+
+    #[test]
+    fn test_normalize_path_str() {
+        let p1 = Path::new("billing/stripe/form.png");
+        assert_eq!(
+            FileScanner::normalize_path_str(p1),
+            "billing/stripe/form.png"
+        );
+
+        let p2 = Path::new("billing\\stripe\\form.png");
+        assert_eq!(
+            FileScanner::normalize_path_str(p2),
+            "billing/stripe/form.png"
+        );
     }
 
     #[test]
@@ -931,8 +938,43 @@ screenshots:
                 masks: vec![],
             }),
         };
+
         let cloned_case = test_case.clone();
         assert_eq!(cloned_case.name, test_case.name);
-        assert_eq!(cloned_case.rule.mode, test_case.rule.mode);
+        assert_eq!(cloned_case.images.len(), test_case.images.len());
+    }
+
+    #[test]
+    fn test_normalize_separators() {
+        let p1 = Path::new("billing/stripe/form.png");
+        let res1 = FileScanner::normalize_path_str(p1);
+        assert_eq!(res1, "billing/stripe/form.png");
+
+        let p2 = Path::new("clean_path.png");
+        let res2 = FileScanner::normalize_path_str(p2);
+        assert_eq!(res2, "clean_path.png");
+    }
+
+    #[test]
+    fn test_scan_workspace_nested_entries_vacant_and_occupied() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_path = temp_dir.path();
+
+        let billing_dir = base_path.join("billing").join("stripe");
+        std::fs::create_dir_all(&billing_dir).unwrap();
+        std::fs::write(billing_dir.join("form1.png"), VALID_PNG_BYTES).unwrap();
+        std::fs::write(billing_dir.join("form2.png"), VALID_PNG_BYTES).unwrap();
+
+        let raw_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/stripe/*.png"
+"#;
+        let config: GleonConfig = serde_yaml::from_str(raw_yaml).unwrap();
+
+        let cases = FileScanner::scan_workspace(&config, base_path).unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].name, "billing/stripe");
+        assert_eq!(cases[0].images.len(), 2);
     }
 }

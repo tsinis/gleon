@@ -59,10 +59,8 @@ impl ResolvedContext {
                 path
             );
             let cfg = GleonConfig::load_from_file(path)?;
-            let root = path
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .map(|p| p.to_path_buf())
+            let root = find_config_and_root(base_dir)
+                .map(|(_, r)| r)
                 .unwrap_or_else(|| base_dir.to_path_buf());
             (Some(cfg), root)
         } else if let Some((config_path, root_dir)) = find_config_and_root(base_dir) {
@@ -161,7 +159,7 @@ mod tests {
             verbose: false,
             quiet: false,
             config: Some(config_path),
-            command: Commands::Status,
+            command: Commands::Status { json: false },
         };
 
         let context =
@@ -187,7 +185,7 @@ mod tests {
             verbose: false,
             quiet: false,
             config: None,
-            command: Commands::Status,
+            command: Commands::Status { json: false },
         };
 
         let context =
@@ -221,7 +219,7 @@ mod tests {
             verbose: false,
             quiet: false,
             config: None,
-            command: Commands::Status,
+            command: Commands::Status { json: false },
         };
 
         let context =
@@ -247,7 +245,7 @@ mod tests {
             verbose: false,
             quiet: false,
             config: None,
-            command: Commands::Status,
+            command: Commands::Status { json: false },
         };
         let context = ResolvedContext::from_cli(&cli, dir.path()).unwrap();
         assert_eq!(context.branch, "main");
@@ -269,7 +267,7 @@ mod tests {
             verbose: false,
             quiet: false,
             config: None,
-            command: Commands::Status,
+            command: Commands::Status { json: false },
         };
         let platform_env_conflict = PlatformEnv {
             os: Some("linux".to_string()),
@@ -295,7 +293,7 @@ mod tests {
             verbose: false,
             quiet: false,
             config: None,
-            command: Commands::Status,
+            command: Commands::Status { json: false },
         };
         let result = ResolvedContext::from_cli_impl(
             &cli_git_err,
@@ -333,7 +331,7 @@ mod tests {
             verbose: false,
             quiet: false,
             config: None,
-            command: Commands::Status,
+            command: Commands::Status { json: false },
         };
 
         // Call from nested_dir
@@ -343,5 +341,33 @@ mod tests {
 
         assert!(ctx.config.is_some());
         assert_eq!(ctx.base_dir, root_dir);
+    }
+
+    #[test]
+    fn test_from_cli_corrupted_discovered_config() {
+        let dir = tempdir().unwrap();
+        let root_dir = dir.path();
+        let config_path = root_dir.join("gleon.yaml");
+        std::fs::write(&config_path, "invalid_yaml: : : [bad syntax]").unwrap();
+
+        let cli = Cli {
+            branch: None,
+            target_branch: "main".to_string(),
+            os: None,
+            arch: None,
+            renderer: None,
+            labels: vec![],
+            platform: None,
+            verbose: false,
+            quiet: false,
+            config: None,
+            command: Commands::Status { json: false },
+        };
+
+        let result =
+            ResolvedContext::from_cli_impl(&cli, root_dir, &EmptyEnv, &PlatformEnv::default());
+
+        assert!(result.is_err());
+        assert!(matches!(result, Err(ContextError::Config(_))));
     }
 }

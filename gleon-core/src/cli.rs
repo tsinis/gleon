@@ -60,6 +60,25 @@ pub struct Cli {
     pub command: Commands,
 }
 
+impl Cli {
+    /// Constructs a `Cli` instance populated with default test values for the given command.
+    pub fn for_test(command: Commands) -> Self {
+        Self {
+            branch: Some("main".to_string()),
+            os: None,
+            arch: None,
+            renderer: None,
+            labels: vec![],
+            platform: None,
+            verbose: false,
+            quiet: false,
+            config: None,
+            target_branch: "main".to_string(),
+            command,
+        }
+    }
+}
+
 pub(crate) fn parse_label(s: &str) -> Result<(String, String), String> {
     s.split_once('=')
         .ok_or_else(|| format!("invalid label: no '=' found in '{}'", s))
@@ -79,10 +98,20 @@ pub(crate) fn parse_label(s: &str) -> Result<(String, String), String> {
 /// The available subcommands in gleon.
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum Commands {
+    /// Initialize gleon directory structure and default configuration
+    Init,
     /// Print resolved configuration and active status
-    Status,
+    Status {
+        /// Format output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
     /// Stage actual screenshots as new baselines
-    Stage,
+    Stage {
+        /// Optional path filters to stage
+        #[arg(value_name = "PATHS")]
+        paths: Vec<std::path::PathBuf>,
+    },
     /// Run visual diff comparison against baseline images
     Diff,
     /// Execute tests and run diff comparison
@@ -122,7 +151,7 @@ mod tests {
         let args = ["gleon", "-b", "feature-test", "status"];
         let cli = Cli::try_parse_from(args)?;
         assert_eq!(cli.branch, Some("feature-test".to_string()));
-        assert_eq!(cli.command, Commands::Status);
+        assert_eq!(cli.command, Commands::Status { json: false });
         Ok(())
     }
 
@@ -171,7 +200,7 @@ mod tests {
                 ("locale".to_string(), "en".to_string())
             ]
         );
-        assert_eq!(cli.command, Commands::Stage);
+        assert_eq!(cli.command, Commands::Stage { paths: vec![] });
         Ok(())
     }
 
@@ -180,7 +209,7 @@ mod tests {
         let args = ["gleon", "--platform", "custom-opaque", "stage"];
         let cli = Cli::try_parse_from(args)?;
         assert_eq!(cli.platform, Some("custom-opaque".to_string()));
-        assert_eq!(cli.command, Commands::Stage);
+        assert_eq!(cli.command, Commands::Stage { paths: vec![] });
         Ok(())
     }
 

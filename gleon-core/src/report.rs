@@ -93,43 +93,7 @@ pub fn make_relative_path(target: &std::path::Path, base: &std::path::Path) -> s
 
 pub struct ReportGenerator;
 
-impl ReportGenerator {
-    /// Helper to format paths consistently with forward slashes for the web report.
-    /// If `report_dir` is provided, computes a relative path from `report_dir` to `path`.
-    fn format_path_string(path: &std::path::Path, report_dir: Option<&std::path::Path>) -> String {
-        use std::path::Component;
-        let path_to_format = match report_dir {
-            Some(base) => make_relative_path(path, base),
-            None => path.to_path_buf(),
-        };
-
-        let mut s = String::new();
-        let mut first = true;
-        for comp in path_to_format.components() {
-            if !first && !s.ends_with('/') {
-                s.push('/');
-            }
-            first = false;
-            match comp {
-                Component::Normal(os_str) => s.push_str(&os_str.to_string_lossy()),
-                Component::ParentDir => s.push_str(".."),
-                Component::CurDir => s.push('.'),
-                Component::RootDir => {
-                    s.push('/');
-                    first = true;
-                }
-                Component::Prefix(prefix) => {
-                    s.push_str(&prefix.as_os_str().to_string_lossy());
-                    first = true;
-                }
-            }
-        }
-        if s.is_empty() {
-            s.push('.');
-        }
-        s
-    }
-}
+impl ReportGenerator {}
 
 // Zero-copy serialization wrapper for formatting a single path
 struct FormattedPath<'a> {
@@ -137,15 +101,68 @@ struct FormattedPath<'a> {
     report_dir: Option<&'a std::path::Path>,
 }
 
+impl<'a> std::fmt::Display for FormattedPath<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::path::Component;
+        let path_to_format = match self.report_dir {
+            Some(base) => std::borrow::Cow::Owned(make_relative_path(self.path, base)),
+            None => std::borrow::Cow::Borrowed(self.path),
+        };
+
+        let mut first = true;
+        let mut last_was_slash = false;
+        let mut has_output = false;
+
+        for comp in path_to_format.components() {
+            if !first
+                && !last_was_slash
+                && !matches!(comp, Component::RootDir | Component::Prefix(_))
+            {
+                write!(f, "/")?;
+            }
+            first = false;
+            match comp {
+                Component::Normal(os_str) => {
+                    write!(f, "{}", os_str.to_string_lossy())?;
+                    last_was_slash = false;
+                    has_output = true;
+                }
+                Component::ParentDir => {
+                    write!(f, "..")?;
+                    last_was_slash = false;
+                    has_output = true;
+                }
+                Component::CurDir => {
+                    write!(f, ".")?;
+                    last_was_slash = false;
+                    has_output = true;
+                }
+                Component::RootDir => {
+                    write!(f, "/")?;
+                    last_was_slash = true;
+                    has_output = true;
+                }
+                Component::Prefix(prefix) => {
+                    write!(f, "{}", prefix.as_os_str().to_string_lossy())?;
+                    last_was_slash = false;
+                    first = true;
+                    has_output = true;
+                }
+            }
+        }
+        if !has_output {
+            write!(f, ".")?;
+        }
+        Ok(())
+    }
+}
+
 impl<'a> Serialize for FormattedPath<'a> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        serializer.serialize_str(&ReportGenerator::format_path_string(
-            self.path,
-            self.report_dir,
-        ))
+        serializer.collect_str(self)
     }
 }
 
@@ -182,7 +199,7 @@ impl<'a> Serialize for HtmlFailureView<'a> {
                 state.serialize_field("actual_path", &None::<String>)?;
                 state.serialize_field("baseline_path", &None::<String>)?;
                 state.serialize_field("diff_path", &None::<String>)?;
-                state.serialize_field("diff_count", &None::<u32>)?;
+                state.serialize_field("diff_count", &None::<u64>)?;
                 state.serialize_field("actual_size", &None::<String>)?;
                 state.serialize_field("baseline_size", &None::<String>)?;
             }
@@ -217,7 +234,7 @@ impl<'a> Serialize for HtmlFailureView<'a> {
                     },
                 )?;
                 state.serialize_field("diff_path", &None::<String>)?;
-                state.serialize_field("diff_count", &None::<u32>)?;
+                state.serialize_field("diff_count", &None::<u64>)?;
                 state.serialize_field(
                     "actual_size",
                     &format!("{}x{}", actual_size.0, actual_size.1),
@@ -532,7 +549,11 @@ impl ReportGenerator {
                         .replace('\r', "")
                 };
                 let safe_name = sanitize_cell(&tc.name);
-                let path_str = Self::format_path_string(res.relative_path(), None);
+                let path_str = FormattedPath {
+                    path: res.relative_path(),
+                    report_dir: None,
+                }
+                .to_string();
                 let safe_path = sanitize_cell(&path_str);
                 writeln!(table, "| {} | {} | {} |", safe_name, safe_path, status)
                     .expect("fmt::Write on String is infallible");
@@ -657,5 +678,57 @@ mod tests {
         let md = ReportGenerator::generate_markdown(&[tc]);
         assert!(md.contains("billing \\\\\\| feature line"));
         assert!(md.contains("corrupt \\| file.png"));
+    }
+
+    #[test]
+    fn test_formatted_path_display() {
+        let path1 = std::path::Path::new("foo/bar/baz.png");
+        assert_eq!(
+            FormattedPath {
+                path: path1,
+                report_dir: None
+            }
+            .to_string(),
+            "foo/bar/baz.png"
+        );
+
+        #[cfg(windows)]
+        {
+            let path2 = std::path::Path::new("C:\\foo\\bar.png");
+            let formatted2 = FormattedPath {
+                path: path2,
+                report_dir: None,
+            }
+            .to_string();
+            assert_eq!(formatted2, "C:/foo/bar.png");
+        }
+    }
+
+    #[test]
+    fn test_report_error_display() {
+        let err1 = ReportError::Render {
+            template: "report.html",
+            source: minijinja::Error::new(minijinja::ErrorKind::UndefinedError, "test"),
+        };
+        assert!(err1.to_string().contains("Template rendering failed"));
+    }
+
+    #[test]
+    fn test_formatted_path_all_components() {
+        let root_path = std::path::Path::new("/a/.././b");
+        let formatted = FormattedPath {
+            path: root_path,
+            report_dir: None,
+        }
+        .to_string();
+        assert!(formatted.contains("a"));
+
+        let empty_path = std::path::Path::new("");
+        let formatted_empty = FormattedPath {
+            path: empty_path,
+            report_dir: None,
+        }
+        .to_string();
+        assert_eq!(formatted_empty, ".");
     }
 }

@@ -8,6 +8,7 @@ pub mod git;
 pub mod io;
 pub mod manifest;
 pub mod masking;
+pub mod ops;
 pub mod platform;
 pub mod report;
 pub mod scanner;
