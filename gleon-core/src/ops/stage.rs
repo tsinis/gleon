@@ -231,6 +231,7 @@ pub fn stage_workspace(
 
         let test_manifest = Manifest {
             schema_version: SUPPORTED_MANIFEST_SCHEMA_VERSION,
+            version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: env!("CARGO_PKG_VERSION").to_string(),

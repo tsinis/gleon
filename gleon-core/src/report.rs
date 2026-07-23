@@ -173,6 +173,124 @@ struct HtmlFailureView<'a> {
     report_dir: Option<&'a std::path::Path>,
 }
 
+struct FormattedDimensions(u32, u32);
+
+impl std::fmt::Display for FormattedDimensions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}x{}", self.0, self.1)
+    }
+}
+
+impl Serialize for FormattedDimensions {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
+struct HtmlMismatchMessageView<'a>(&'a MismatchDetail);
+
+impl<'a> std::fmt::Display for HtmlMismatchMessageView<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            MismatchDetail::Pixel { diff_count } => {
+                write!(f, "Visual mismatch ({} pixels)", diff_count)
+            }
+            MismatchDetail::Ssim { ssim_score } => {
+                write!(f, "Visual mismatch (SSIM: {:.4})", ssim_score)
+            }
+            MismatchDetail::SsimFallback { diff_count } => {
+                write!(f, "Visual mismatch (SSIM Fallback: {} pixels)", diff_count)
+            }
+        }
+    }
+}
+
+impl<'a> Serialize for HtmlMismatchMessageView<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
+struct XmlDecodeErrorView<'a>(&'a str);
+
+impl<'a> std::fmt::Display for XmlDecodeErrorView<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Decode error: {}", self.0)
+    }
+}
+
+impl<'a> Serialize for XmlDecodeErrorView<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
+struct XmlDimensionMismatchView((u32, u32), (u32, u32));
+
+impl std::fmt::Display for XmlDimensionMismatchView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Dimension mismatch (Baseline: {}x{}, Actual: {}x{})",
+            (self.0).0,
+            (self.0).1,
+            (self.1).0,
+            (self.1).1
+        )
+    }
+}
+
+impl Serialize for XmlDimensionMismatchView {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
+struct XmlMismatchMessageView<'a>(&'a MismatchDetail);
+
+impl<'a> std::fmt::Display for XmlMismatchMessageView<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            MismatchDetail::Pixel { diff_count } => {
+                write!(f, "Visual mismatch detected ({} pixels)", diff_count)
+            }
+            MismatchDetail::Ssim { ssim_score } => {
+                write!(
+                    f,
+                    "Visual mismatch detected (SSIM score: {:.4})",
+                    ssim_score
+                )
+            }
+            MismatchDetail::SsimFallback { diff_count } => write!(
+                f,
+                "Visual mismatch detected (SSIM Fallback: {} pixels)",
+                diff_count
+            ),
+        }
+    }
+}
+
+impl<'a> Serialize for XmlMismatchMessageView<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
 impl<'a> Serialize for HtmlFailureView<'a> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -237,11 +355,11 @@ impl<'a> Serialize for HtmlFailureView<'a> {
                 state.serialize_field("diff_count", &None::<u64>)?;
                 state.serialize_field(
                     "actual_size",
-                    &format!("{}x{}", actual_size.0, actual_size.1),
+                    &FormattedDimensions(actual_size.0, actual_size.1),
                 )?;
                 state.serialize_field(
                     "baseline_size",
-                    &format!("{}x{}", baseline_size.0, baseline_size.1),
+                    &FormattedDimensions(baseline_size.0, baseline_size.1),
                 )?;
             }
             TestImageResult::Mismatch {
@@ -260,21 +378,13 @@ impl<'a> Serialize for HtmlFailureView<'a> {
                 )?;
                 state.serialize_field("type", "Mismatch")?;
 
-                let (error_msg, diff_count) = match detail {
-                    MismatchDetail::Pixel { diff_count } => (
-                        format!("Visual mismatch ({} pixels)", diff_count),
-                        Some(*diff_count),
-                    ),
-                    MismatchDetail::Ssim { ssim_score } => {
-                        (format!("Visual mismatch (SSIM: {:.4})", ssim_score), None)
-                    }
-                    MismatchDetail::SsimFallback { diff_count } => (
-                        format!("Visual mismatch (SSIM Fallback: {} pixels)", diff_count),
-                        Some(*diff_count),
-                    ),
+                let diff_count = match detail {
+                    MismatchDetail::Pixel { diff_count }
+                    | MismatchDetail::SsimFallback { diff_count } => Some(*diff_count),
+                    MismatchDetail::Ssim { .. } => None,
                 };
 
-                state.serialize_field("error", &error_msg)?;
+                state.serialize_field("error", &HtmlMismatchMessageView(detail))?;
                 state.serialize_field(
                     "actual_path",
                     &FormattedPath {
@@ -355,10 +465,7 @@ impl<'a> Serialize for XmlTestImageResultView<'a> {
             }
             TestImageResult::DecodeError { error, .. } => {
                 state.serialize_field("status", "DecodeError")?;
-                state.serialize_field(
-                    "failure_message",
-                    &Some(format!("Decode error: {}", error)),
-                )?;
+                state.serialize_field("failure_message", &Some(XmlDecodeErrorView(error)))?;
             }
             TestImageResult::DimensionMismatch {
                 baseline_size,
@@ -368,27 +475,12 @@ impl<'a> Serialize for XmlTestImageResultView<'a> {
                 state.serialize_field("status", "DimensionMismatch")?;
                 state.serialize_field(
                     "failure_message",
-                    &Some(format!(
-                        "Dimension mismatch (Baseline: {}x{}, Actual: {}x{})",
-                        baseline_size.0, baseline_size.1, actual_size.0, actual_size.1
-                    )),
+                    &Some(XmlDimensionMismatchView(*baseline_size, *actual_size)),
                 )?;
             }
             TestImageResult::Mismatch { detail, .. } => {
                 state.serialize_field("status", "Mismatch")?;
-                let msg = match detail {
-                    MismatchDetail::Pixel { diff_count } => {
-                        format!("Visual mismatch detected ({} pixels)", diff_count)
-                    }
-                    MismatchDetail::Ssim { ssim_score } => {
-                        format!("Visual mismatch detected (SSIM score: {:.4})", ssim_score)
-                    }
-                    MismatchDetail::SsimFallback { diff_count } => format!(
-                        "Visual mismatch detected (SSIM Fallback: {} pixels)",
-                        diff_count
-                    ),
-                };
-                state.serialize_field("failure_message", &Some(msg))?;
+                state.serialize_field("failure_message", &Some(XmlMismatchMessageView(detail)))?;
             }
         }
         state.end()

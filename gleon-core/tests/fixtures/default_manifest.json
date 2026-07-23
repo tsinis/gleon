@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "version": 1,
   "hashAlgo": "sha256",
   "pixelFormat": "rgba",
   "generatorVersion": "1.0.0",

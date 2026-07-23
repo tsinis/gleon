@@ -22,7 +22,7 @@ fn test_diff_uninitialized_fails() {
         quiet: false,
         config: None,
         target_branch: "main".to_string(),
-        command: Commands::Diff,
+        command: Commands::Diff { auto_pull: false },
     };
 
     let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
@@ -73,7 +73,7 @@ screenshots:
         quiet: false,
         config: None,
         target_branch: "main".to_string(),
-        command: Commands::Diff,
+        command: Commands::Diff { auto_pull: false },
     };
 
     let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
@@ -118,7 +118,7 @@ fn test_diff_from_nested_subdirectory() {
     let nested_dir = root_dir.join("src").join("billing");
     fs::create_dir_all(&nested_dir).unwrap();
 
-    let cli = Cli::for_test(Commands::Diff);
+    let cli = Cli::for_test(Commands::Diff { auto_pull: false });
     let ctx = ResolvedContext::from_cli(&cli, &nested_dir).unwrap();
     assert_eq!(ctx.base_dir, root_dir);
 
@@ -153,7 +153,7 @@ screenshots:
 "#;
     fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli::for_test(Commands::Diff);
+    let cli = Cli::for_test(Commands::Diff { auto_pull: false });
     let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
 
     // Stage baseline

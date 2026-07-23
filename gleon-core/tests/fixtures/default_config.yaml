@@ -7,4 +7,6 @@ screenshots:
     anti_alias: true
     min_similarity: 0.95
   masks: []
-exclude: []
+exclude:
+- node_modules/**
+- target/**

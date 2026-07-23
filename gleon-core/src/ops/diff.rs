@@ -414,7 +414,7 @@ screenshots:
 
         manifest.save(&manifest_path).unwrap();
 
-        let cli_diff = Cli::for_test(crate::cli::Commands::Diff);
+        let cli_diff = Cli::for_test(crate::cli::Commands::Diff { auto_pull: false });
         let ctx_diff = ResolvedContext::from_cli(&cli_diff, base_path).unwrap();
         let res = run_diff(&ctx_diff, base_path).unwrap();
 
@@ -457,7 +457,7 @@ screenshots:
         // 2. Overwrite corrupt.png with corrupt bytes (Decode Error)
         fs::write(billing_dir.join("corrupt.png"), b"not a png image").unwrap();
 
-        let cli_diff = Cli::for_test(crate::cli::Commands::Diff);
+        let cli_diff = Cli::for_test(crate::cli::Commands::Diff { auto_pull: false });
         let ctx_diff = ResolvedContext::from_cli(&cli_diff, base_path).unwrap();
         let res = run_diff(&ctx_diff, base_path).unwrap();
 

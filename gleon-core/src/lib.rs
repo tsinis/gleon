@@ -12,3 +12,4 @@ pub mod ops;
 pub mod platform;
 pub mod report;
 pub mod scanner;
+pub mod storage;

@@ -197,10 +197,11 @@ pub fn validate_segment(s: &str) -> Result<std::borrow::Cow<'_, str>, PlatformEr
 impl PlatformInfo {
     /// Generates a deterministic flat key from PlatformInfo fields.
     pub fn to_key(&self) -> Result<String, PlatformError> {
-        let mut parts = Vec::new();
+        use std::fmt::Write;
+        let mut key_out = String::new();
 
         match validate_segment(&self.os) {
-            Ok(os) => parts.push(format!("{}:{}", os.len(), os)),
+            Ok(os) => write!(&mut key_out, "{}:{}", os.len(), os).unwrap(),
             Err(e) => {
                 return Err(PlatformError::InvalidSegment(format!(
                     "OS '{}' is empty or invalid: {}",
@@ -211,7 +212,9 @@ impl PlatformInfo {
 
         if let Some(ref arch) = self.arch {
             match validate_segment(arch) {
-                Ok(clean_arch) => parts.push(format!("{}:{}", clean_arch.len(), clean_arch)),
+                Ok(clean_arch) => {
+                    write!(&mut key_out, "-{}:{}", clean_arch.len(), clean_arch).unwrap()
+                }
                 Err(e) => {
                     return Err(PlatformError::InvalidSegment(format!(
                         "Architecture '{}' is invalid: {}",
@@ -224,7 +227,7 @@ impl PlatformInfo {
         if let Some(ref renderer) = self.renderer {
             match validate_segment(renderer) {
                 Ok(clean_renderer) => {
-                    parts.push(format!("{}:{}", clean_renderer.len(), clean_renderer))
+                    write!(&mut key_out, "-{}:{}", clean_renderer.len(), clean_renderer).unwrap()
                 }
                 Err(e) => {
                     return Err(PlatformError::InvalidSegment(format!(
@@ -237,7 +240,7 @@ impl PlatformInfo {
 
         for (k, v) in &self.labels {
             let key = match validate_segment(k) {
-                Ok(key) => key.into_owned(),
+                Ok(key) => key,
                 Err(e) => {
                     return Err(PlatformError::InvalidSegment(format!(
                         "Label key '{}' is invalid: {}",
@@ -246,7 +249,7 @@ impl PlatformInfo {
                 }
             };
             let val = match validate_segment(v) {
-                Ok(val) => val.into_owned(),
+                Ok(val) => val,
                 Err(e) => {
                     return Err(PlatformError::InvalidSegment(format!(
                         "Label value '{}' is invalid for key '{}': {}",
@@ -254,10 +257,10 @@ impl PlatformInfo {
                     )));
                 }
             };
-            parts.push(format!("{}:{}={}:{}", key.len(), key, val.len(), val));
+            write!(&mut key_out, "-{}:{}={}:{}", key.len(), key, val.len(), val).unwrap();
         }
 
-        Ok(parts.join("-"))
+        Ok(key_out)
     }
 }
 

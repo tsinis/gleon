@@ -220,7 +220,7 @@ fn test_pull_placeholder() -> Result<(), Box<dyn std::error::Error>> {
         .assert()
         .success()
         .stdout(predicates::str::contains(
-            "Subcommand pull is not fully implemented yet",
+            "No storage configured via GLEON_STORAGE_URL. Nothing to pull.",
         ));
     Ok(())
 }
@@ -232,7 +232,7 @@ fn test_push_placeholder() -> Result<(), Box<dyn std::error::Error>> {
         .assert()
         .success()
         .stdout(predicates::str::contains(
-            "Subcommand push is not fully implemented yet",
+            "No storage configured via GLEON_STORAGE_URL. Nothing to push.",
         ));
     Ok(())
 }

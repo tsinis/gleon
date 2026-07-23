@@ -332,8 +332,11 @@ impl FileScanner {
         ignore::WalkBuilder::new(base_dir)
             .standard_filters(false)
             .filter_entry(move |entry| {
-                if entry.file_type().is_some_and(|ft| ft.is_dir()) && entry.file_name() == ".git" {
-                    return false;
+                if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                    let name = entry.file_name();
+                    if name == ".git" || name == ".gleon" {
+                        return false;
+                    }
                 }
                 if let Ok(rel_path) = entry.path().strip_prefix(&base_dir_for_filter) {
                     if rel_path.as_os_str().is_empty() {
