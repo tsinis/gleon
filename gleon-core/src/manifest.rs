@@ -131,11 +131,16 @@ fn deserialize_lowercase_string<'de, D: Deserializer<'de>>(d: D) -> Result<Strin
     }
 }
 
+fn default_manifest_version() -> u64 {
+    1
+}
+
 /// The manifest file structure representing previous run results.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Manifest {
     pub schema_version: u64,
+    #[serde(default = "default_manifest_version")]
     pub version: u64,
     /// The hashing algorithm used (always lowercase, e.g. "sha256").
     #[serde(deserialize_with = "deserialize_lowercase_string")]
@@ -832,5 +837,19 @@ mod tests {
             result.unwrap_err(),
             ManifestError::Io(IoError::JsonParse(_))
         ));
+    }
+
+    #[test]
+    fn test_legacy_manifest_without_version_field() {
+        let legacy_json = r#"{
+            "schemaVersion": 1,
+            "hashAlgo": "sha256",
+            "pixelFormat": "rgba",
+            "generatorVersion": "0.1.0",
+            "entries": {}
+        }"#;
+
+        let manifest: Manifest = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(manifest.version, 1);
     }
 }

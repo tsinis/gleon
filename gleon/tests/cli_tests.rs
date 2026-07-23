@@ -523,14 +523,14 @@ fn test_sync_fails_and_clears_spinner() -> Result<(), Box<dyn std::error::Error>
     let dir = init_temp_dir();
     let mut cmd = Command::cargo_bin("gleon")?;
 
-    // Provide a valid URL format but fake S3 credentials to force a network error during pull.
-    // This ensures `run_sync` creates the spinner and then catches the error from `orchestrator.pull`,
-    // clearing the spinner before exiting.
+    // Provide a valid S3 URL format but point AWS_ENDPOINT_URL to a closed local loopback port (http://127.0.0.1:1).
+    // This forces an instant, deterministic connection refusal error during pull without network/DNS delays.
     cmd.current_dir(dir.path())
         .env("GLEON_STORAGE_URL", "s3://non-existent-bucket-123456/gleon")
         .env("AWS_ACCESS_KEY_ID", "fake")
         .env("AWS_SECRET_ACCESS_KEY", "fake")
         .env("AWS_REGION", "us-east-1")
+        .env("AWS_ENDPOINT_URL", "http://127.0.0.1:1")
         .arg("pull")
         .assert()
         .failure();
@@ -631,6 +631,50 @@ fn test_unimplemented_subcommands() -> Result<(), Box<dyn std::error::Error>> {
         .assert()
         .success()
         .stdout(predicates::str::contains("not fully implemented yet"));
+
+    Ok(())
+}
+
+#[test]
+fn test_status_json_flag() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let mut cmd_init = Command::cargo_bin("gleon")?;
+    cmd_init
+        .current_dir(dir.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    let mut cmd_status = Command::cargo_bin("gleon")?;
+    cmd_status
+        .current_dir(dir.path())
+        .arg("status")
+        .arg("--json")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("\"added\":"));
+
+    Ok(())
+}
+
+#[test]
+fn test_stage_path_filter() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let mut cmd_init = Command::cargo_bin("gleon")?;
+    cmd_init
+        .current_dir(dir.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    let mut cmd_stage = Command::cargo_bin("gleon")?;
+    cmd_stage
+        .current_dir(dir.path())
+        .arg("stage")
+        .arg("non_existent_folder")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Already up to date"));
 
     Ok(())
 }

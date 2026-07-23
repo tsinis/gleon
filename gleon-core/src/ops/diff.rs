@@ -113,12 +113,13 @@ pub fn run_diff(
             })
         });
 
+        let rule = case.rule;
         for (img_idx, img) in case.images.into_iter().enumerate() {
             work_items.push((
                 case_idx,
                 case_name.clone(),
                 img_idx,
-                case.rule.clone(),
+                rule.clone(),
                 img,
                 manifest_opt.clone(),
             ));
@@ -493,5 +494,64 @@ screenshots:
 
         assert!(!res.passed);
         assert_eq!(res.failed_tests, 2);
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn test_diff_corrupt_baseline_blob_and_read_error() {
+        let dir = tempdir().unwrap();
+        let base_path = dir.path();
+
+        let cli_init = Cli::for_test(crate::cli::Commands::Init);
+        let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+        init_workspace(&ctx_init, base_path).unwrap();
+
+        let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let png_200 = fs::read(fixtures_dir.join("200x100.png")).unwrap();
+
+        let billing_dir = base_path.join("billing");
+        fs::create_dir_all(&billing_dir).unwrap();
+        fs::write(billing_dir.join("form.png"), &png_200).unwrap();
+
+        let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+        fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+
+        let cli = Cli::for_test(crate::cli::Commands::Stage { paths: vec![] });
+        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        stage_workspace(&ctx, base_path, None).unwrap();
+
+        let platform_key = ctx.platform.to_key().unwrap();
+        let index_path = base_path
+            .join(".gleon/branches/main")
+            .join(&platform_key)
+            .join("manifest_index.json");
+
+        let index = ManifestIndex::load(&index_path).unwrap();
+        let manifest_hash = index.test_manifests.get("billing").unwrap().clone();
+        let manifest_path = base_path
+            .join(".gleon/blobs")
+            .join(manifest_hash.scheme())
+            .join(manifest_hash.value());
+
+        let manifest = Manifest::load(&manifest_path).unwrap();
+        let form_entry = manifest.entries.get("billing/form.png").unwrap();
+        let blob_path = base_path
+            .join(".gleon/blobs")
+            .join(form_entry.hash.scheme())
+            .join(form_entry.hash.value());
+
+        // Overwrite baseline blob with invalid non-PNG data
+        fs::write(&blob_path, b"corrupted image blob").unwrap();
+
+        let cli_diff = Cli::for_test(crate::cli::Commands::Diff { auto_pull: false });
+        let ctx_diff = ResolvedContext::from_cli(&cli_diff, base_path).unwrap();
+        let res = run_diff(&ctx_diff, base_path).unwrap();
+
+        assert!(!res.passed);
+        assert_eq!(res.failed_tests, 1);
     }
 }

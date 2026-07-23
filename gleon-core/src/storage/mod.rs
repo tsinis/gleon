@@ -35,8 +35,8 @@ pub enum StorageError {
         reason: String,
     },
 
-    /// Specified blob hash was not found on remote.
-    #[error("Blob not found on remote storage: sha256:{0}")]
+    /// Specified blob hash or object key was not found on remote.
+    #[error("Object or blob not found on remote storage: {0}")]
     BlobNotFound(String),
 
     /// Persist operation failed during atomic download.

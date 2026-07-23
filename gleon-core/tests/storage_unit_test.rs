@@ -121,30 +121,31 @@ async fn test_adapter_download_io_errors() {
     let blob_hash = "1111111111111111111111111111111111111111111111111111111111111111";
     adapter.upload_blob(blob_hash, &src_file).await.unwrap();
 
-    let dest_dir = dir.path().join("read_only_dir");
-    std::fs::create_dir(&dest_dir).unwrap();
+    let file_as_dir = dir.path().join("regular_file.txt");
+    std::fs::write(&file_as_dir, b"not a directory").expect("write file as dir");
 
-    let mut perms = std::fs::metadata(&dest_dir).unwrap().permissions();
-    perms.set_readonly(true);
-    std::fs::set_permissions(&dest_dir, perms.clone()).unwrap();
-
-    let dest_file = dest_dir.join("downloaded.png");
+    let dest_file = file_as_dir.join("downloaded.png");
     let err = adapter.download_blob(blob_hash, &dest_file).await;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dest_dir, std::fs::Permissions::from_mode(0o755));
-    }
-    #[cfg(not(unix))]
-    {
-        perms.set_readonly(false);
-        let _ = std::fs::set_permissions(&dest_dir, perms);
-    }
 
     assert!(
         matches!(err, Err(StorageError::Io { .. })),
         "Expected Io error: {:?}",
         err
     );
+}
+
+#[tokio::test]
+async fn test_adapter_list_blobs() {
+    let config = StorageConfig::new("memory://");
+    let adapter = ObjectStoreAdapter::from_config(&config).unwrap();
+
+    let dir = tempdir().expect("tempdir creation");
+    let src_file = dir.path().join("blob.png");
+    std::fs::write(&src_file, b"sample bytes").unwrap();
+
+    let blob_hash = "2222222222222222222222222222222222222222222222222222222222222222";
+    adapter.upload_blob(blob_hash, &src_file).await.unwrap();
+
+    let blobs = adapter.list_blobs().await.unwrap();
+    assert_eq!(blobs, vec![blob_hash.to_string()]);
 }

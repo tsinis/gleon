@@ -140,7 +140,10 @@ impl SyncOrchestrator {
             .join("manifest_index.json");
 
         let final_local_index = match ManifestIndex::load(&local_index_path) {
-            Ok(local_index) => ManifestMerger::merge_indexes(&remote_index, &local_index),
+            Ok(local_index) => {
+                self.merge_indexes_and_manifests(&remote_index, &local_index, options)
+                    .await?
+            }
             Err(_) => remote_index.clone(),
         };
 
@@ -213,7 +216,7 @@ impl SyncOrchestrator {
         blobs_to_upload.sort();
         blobs_to_upload.dedup();
 
-        // Upload blobs concurrently. Skip blobs that already exist on remote (via list_blobs bulk check).
+        // Upload blobs concurrently. Skip blobs that already exist on remote (via blob_exists HEAD check).
         self.upload_blobs_concurrently(&blobs_to_upload, options)
             .await?;
 
@@ -226,7 +229,8 @@ impl SyncOrchestrator {
                     serde_json::from_slice(&bytes).map_err(|e| StorageError::Io {
                         source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
                     })?;
-                ManifestMerger::merge_indexes(&remote_index, &local_index)
+                self.merge_indexes_and_manifests(&remote_index, &local_index, options)
+                    .await?
             }
             Err(StorageError::BlobNotFound(_)) => local_index,
             Err(e) => return Err(e),
@@ -243,6 +247,84 @@ impl SyncOrchestrator {
 
         info!("Push completed successfully.");
         Ok(())
+    }
+
+    async fn merge_indexes_and_manifests(
+        &self,
+        remote_index: &ManifestIndex,
+        local_index: &ManifestIndex,
+        options: &SyncOptions,
+    ) -> Result<ManifestIndex, StorageError> {
+        let mut final_index = ManifestMerger::merge_indexes(remote_index, local_index);
+
+        for (test_name, local_hash) in &local_index.test_manifests {
+            if let Some(remote_hash) = remote_index
+                .test_manifests
+                .get(test_name)
+                .filter(|h| *h != local_hash)
+            {
+                let local_manifest_path = self
+                    .workspace_root
+                    .join(".gleon/blobs/sha256")
+                    .join(local_hash.value());
+                let local_manifest = match Manifest::load(&local_manifest_path) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+
+                let remote_manifest_path = self
+                    .workspace_root
+                    .join(".gleon/blobs/sha256")
+                    .join(remote_hash.value());
+
+                if !remote_manifest_path.exists() {
+                    let _ = self
+                        .adapter
+                        .download_blob(remote_hash.value(), &remote_manifest_path)
+                        .await;
+                }
+
+                let remote_manifest = match Manifest::load(&remote_manifest_path) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+
+                let merged_manifest =
+                    ManifestMerger::merge_manifests(&remote_manifest, &local_manifest);
+
+                let manifest_bytes =
+                    serde_json::to_vec_pretty(&merged_manifest).map_err(|e| StorageError::Io {
+                        source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+                    })?;
+
+                use sha2::Digest;
+                let merged_hash_hex = hex::encode(sha2::Sha256::digest(&manifest_bytes));
+                let merged_manifest_path = self
+                    .workspace_root
+                    .join(".gleon/blobs/sha256")
+                    .join(&merged_hash_hex);
+
+                let _ = crate::io::save_file_atomically(&merged_manifest_path, &manifest_bytes);
+
+                retry_with_backoff(
+                    "upload_merged_manifest",
+                    &merged_hash_hex,
+                    options,
+                    || async {
+                        self.adapter
+                            .upload_blob(&merged_hash_hex, &merged_manifest_path)
+                            .await
+                    },
+                )
+                .await?;
+
+                if let Ok(hash) = crate::manifest::ImageHash::new("sha256", &merged_hash_hex) {
+                    final_index.test_manifests.insert(test_name.clone(), hash);
+                }
+            }
+        }
+
+        Ok(final_index)
     }
 }
 
@@ -421,5 +503,54 @@ mod tests {
         assert!(result.is_ok());
         // Succeeded on the 3rd attempt (index 2)
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_retry_with_backoff_fail_fast_false() {
+        let options = SyncOptions {
+            concurrency: 1,
+            retries: 1,
+            fail_fast: false,
+            on_progress: None,
+        };
+
+        let result = retry_with_backoff("test_action", "target", &options, || async {
+            Err(StorageError::Io {
+                source: std::io::Error::new(std::io::ErrorKind::ConnectionReset, "transient"),
+            })
+        })
+        .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_download_and_upload_blobs_progress_and_empty() {
+        let options = SyncOptions {
+            concurrency: 2,
+            retries: 1,
+            fail_fast: true,
+            on_progress: Some(Arc::new(|| {})),
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let adapter = Arc::new(
+            ObjectStoreAdapter::from_config(&crate::storage::StorageConfig::new("memory://"))
+                .unwrap(),
+        );
+        let orchestrator = SyncOrchestrator::new(adapter, dir.path().to_path_buf());
+
+        assert!(
+            orchestrator
+                .download_blobs_concurrently(&[], &options)
+                .await
+                .is_ok()
+        );
+        assert!(
+            orchestrator
+                .upload_blobs_concurrently(&[], &options)
+                .await
+                .is_ok()
+        );
     }
 }

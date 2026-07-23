@@ -150,6 +150,7 @@ pub fn stage_workspace(
             existing_manifests.insert(case.name.clone(), m.entries);
         }
 
+        let rule = case.rule.clone();
         for img in &case.images {
             if let Some(filters) = filter_paths {
                 let matches_filter = filters
@@ -159,7 +160,7 @@ pub fn stage_workspace(
                     continue;
                 }
             }
-            image_items.push((case.name.clone(), case.rule.clone(), img.clone()));
+            image_items.push((case.name.clone(), rule.clone(), img.clone()));
         }
     }
 
