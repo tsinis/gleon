@@ -80,4 +80,23 @@ async fn test_memory_store_blob_and_manifest_lifecycle() {
         manifest_not_found,
         Err(StorageError::BlobNotFound(_))
     ));
+
+    // 7. Check blob_exists
+    assert!(
+        adapter
+            .blob_exists(blob_hash)
+            .await
+            .expect("blob_exists ok")
+    );
+    assert!(
+        !adapter
+            .blob_exists("0000000000000000000000000000000000000000000000000000000000000000")
+            .await
+            .expect("blob_exists false ok")
+    );
+
+    // 8. Upload missing local file -> StorageError::Io
+    let missing_local = dir.path().join("non_existent_file.png");
+    let upload_err = adapter.upload_blob(blob_hash, &missing_local).await;
+    assert!(matches!(upload_err, Err(StorageError::Io { .. })));
 }

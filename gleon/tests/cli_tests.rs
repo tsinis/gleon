@@ -218,8 +218,8 @@ fn test_pull_placeholder() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("gleon")?;
     cmd.arg("pull")
         .assert()
-        .success()
-        .stdout(predicates::str::contains(
+        .failure()
+        .stderr(predicates::str::contains(
             "No storage configured via GLEON_STORAGE_URL. Nothing to pull.",
         ));
     Ok(())
@@ -230,8 +230,8 @@ fn test_push_placeholder() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("gleon")?;
     cmd.arg("push")
         .assert()
-        .success()
-        .stdout(predicates::str::contains(
+        .failure()
+        .stderr(predicates::str::contains(
             "No storage configured via GLEON_STORAGE_URL. Nothing to push.",
         ));
     Ok(())
@@ -468,6 +468,147 @@ screenshots:
         .assert()
         .success()
         .stdout(predicates::str::contains("Already up to date."));
+
+    Ok(())
+}
+
+#[test]
+fn test_pull_and_push_no_storage_configured() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+
+    // Pull without GLEON_STORAGE_URL
+    let mut cmd_pull = Command::cargo_bin("gleon")?;
+    cmd_pull
+        .current_dir(dir.path())
+        .env_remove("GLEON_STORAGE_URL")
+        .arg("pull")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "No storage configured via GLEON_STORAGE_URL. Nothing to pull.",
+        ));
+
+    // Push without GLEON_STORAGE_URL
+    let mut cmd_push = Command::cargo_bin("gleon")?;
+    cmd_push
+        .current_dir(dir.path())
+        .env_remove("GLEON_STORAGE_URL")
+        .arg("push")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "No storage configured via GLEON_STORAGE_URL. Nothing to push.",
+        ));
+
+    // Diff --auto-pull without GLEON_STORAGE_URL
+    let mut cmd_diff = Command::cargo_bin("gleon")?;
+    cmd_diff
+        .current_dir(dir.path())
+        .env_remove("GLEON_STORAGE_URL")
+        .arg("diff")
+        .arg("--auto-pull")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "No storage configured via GLEON_STORAGE_URL. Skipping auto-pull.",
+        ));
+
+    Ok(())
+}
+
+#[test]
+fn test_pull_and_push_with_file_storage_url() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let remote_dir = tempfile::tempdir()?;
+    let remote_url = url::Url::from_directory_path(remote_dir.path())
+        .unwrap()
+        .to_string();
+
+    // 1. Stage a screenshot first
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let core_fixtures = manifest_dir
+        .parent()
+        .ok_or("No parent dir")?
+        .join("gleon-core/tests/fixtures");
+
+    let img_200 = std::fs::read(core_fixtures.join("200x100.png"))?;
+    let billing_dir = dir.path().join("billing");
+    std::fs::create_dir_all(&billing_dir)?;
+    std::fs::write(billing_dir.join("form.png"), &img_200)?;
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+    std::fs::write(dir.path().join("gleon.yaml"), config_yaml)?;
+
+    let mut cmd_stage = Command::cargo_bin("gleon")?;
+    cmd_stage
+        .current_dir(dir.path())
+        .arg("stage")
+        .assert()
+        .success();
+
+    // 2. Push with storage URL
+    let mut cmd_push = Command::cargo_bin("gleon")?;
+    cmd_push
+        .current_dir(dir.path())
+        .env("GLEON_STORAGE_URL", &remote_url)
+        .arg("push")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Push complete."));
+
+    // 3. Pull in clean workspace
+    let fresh_dir = tempfile::tempdir()?;
+    let mut cmd_init2 = Command::cargo_bin("gleon")?;
+    cmd_init2
+        .current_dir(fresh_dir.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    let mut cmd_pull = Command::cargo_bin("gleon")?;
+    cmd_pull
+        .current_dir(fresh_dir.path())
+        .env("GLEON_STORAGE_URL", &remote_url)
+        .arg("pull")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Pull complete."));
+
+    Ok(())
+}
+
+#[test]
+fn test_unimplemented_subcommands() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+
+    let mut cmd_test = Command::cargo_bin("gleon")?;
+    cmd_test
+        .current_dir(dir.path())
+        .arg("test")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("not fully implemented yet"));
+
+    let mut cmd_merge = Command::cargo_bin("gleon")?;
+    cmd_merge
+        .current_dir(dir.path())
+        .arg("merge")
+        .arg("main")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("not fully implemented yet"));
+
+    let mut cmd_gc = Command::cargo_bin("gleon")?;
+    cmd_gc
+        .current_dir(dir.path())
+        .arg("gc")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("not fully implemented yet"));
 
     Ok(())
 }

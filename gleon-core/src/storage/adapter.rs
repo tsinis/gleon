@@ -156,10 +156,13 @@ impl ObjectStoreAdapter {
     #[instrument(skip(self, src_path), level = "debug")]
     pub async fn upload_blob(&self, sha256: &str, src_path: &Path) -> Result<(), StorageError> {
         let key = blob_key(sha256);
-        let bytes = tokio::fs::read(src_path).await?;
+        let bytes = tokio::fs::read(src_path)
+            .await
+            .map_err(|source| StorageError::Io { source })?;
         self.store
             .put(&key, object_store::PutPayload::from(bytes))
-            .await?;
+            .await
+            .map_err(|source| StorageError::Store { source })?;
         debug!(sha256 = %sha256, "Successfully uploaded blob to remote storage");
         Ok(())
     }
@@ -192,29 +195,36 @@ impl ObjectStoreAdapter {
             Err(err) => return Err(StorageError::Store { source: err }),
         };
 
-        let parent_dir = dest_path.parent().unwrap_or_else(|| Path::new("."));
+        let bytes = get_output
+            .bytes()
+            .await
+            .map_err(|source| StorageError::Store { source })?;
 
-        tokio::fs::create_dir_all(parent_dir).await?;
+        let dest_path_buf = dest_path.to_path_buf();
+        tokio::task::spawn_blocking(move || -> Result<(), StorageError> {
+            let parent_dir = dest_path_buf.parent().unwrap_or_else(|| Path::new("."));
 
-        let mut temp_file = NamedTempFile::new_in(parent_dir)?;
-        let mut stream = get_output.into_stream();
+            std::fs::create_dir_all(parent_dir)?;
 
-        while let Some(chunk_res) = stream.next().await {
-            let chunk: bytes::Bytes = chunk_res?;
-            temp_file.write_all(&chunk)?;
-        }
+            let mut temp_file = NamedTempFile::new_in(parent_dir)?;
+            temp_file.write_all(&bytes)?;
+            temp_file.as_file().sync_all()?;
+            temp_file
+                .persist(&dest_path_buf)
+                .map_err(|e| StorageError::PersistFailed {
+                    path: dest_path_buf.display().to_string(),
+                    source: e,
+                })?;
 
-        temp_file.as_file().sync_all()?;
-        temp_file
-            .persist(dest_path)
-            .map_err(|e| StorageError::PersistFailed {
-                path: dest_path.display().to_string(),
-                source: e,
-            })?;
-
-        if let Ok(dir_file) = std::fs::File::open(parent_dir) {
-            let _ = dir_file.sync_all();
-        }
+            if let Ok(dir_file) = std::fs::File::open(parent_dir) {
+                let _ = dir_file.sync_all();
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| StorageError::Io {
+            source: std::io::Error::other(e),
+        })??;
 
         debug!(sha256 = %sha256, path = %dest_path.display(), "Successfully downloaded blob from remote storage");
         Ok(())
@@ -234,7 +244,8 @@ impl ObjectStoreAdapter {
         let key = manifest_key(branch, platform);
         self.store
             .put(&key, object_store::PutPayload::from(bytes.to_vec()))
-            .await?;
+            .await
+            .map_err(|source| StorageError::Store { source })?;
         debug!(branch = %branch, platform = %platform, "Successfully uploaded manifest to remote storage");
         Ok(())
     }
@@ -262,7 +273,10 @@ impl ObjectStoreAdapter {
             Err(err) => return Err(StorageError::Store { source: err }),
         };
 
-        let bytes = get_output.bytes().await?;
+        let bytes = get_output
+            .bytes()
+            .await
+            .map_err(|source| StorageError::Store { source })?;
         debug!(branch = %branch, platform = %platform, "Successfully downloaded manifest from remote storage");
         Ok(bytes.to_vec())
     }
@@ -278,7 +292,7 @@ impl ObjectStoreAdapter {
 
         let mut hashes = Vec::new();
         while let Some(meta_res) = list_stream.next().await {
-            let meta = meta_res?;
+            let meta = meta_res.map_err(|source| StorageError::Store { source })?;
             if let Some(filename) = meta.location.filename() {
                 hashes.push(filename.to_string());
             }

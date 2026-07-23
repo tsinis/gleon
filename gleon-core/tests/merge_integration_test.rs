@@ -101,3 +101,76 @@ fn test_manifest_merge_empty() {
     assert_eq!(merged.version, 2);
     assert_eq!(merged.entries.len(), 0);
 }
+
+#[test]
+fn test_manifest_index_merge_local_wins() {
+    use gleon_core::manifest::ManifestIndex;
+
+    let mut remote_manifests = BTreeMap::new();
+    remote_manifests.insert(
+        "test1".to_string(),
+        ImageHash::new(
+            "sha256",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .unwrap(),
+    );
+    remote_manifests.insert(
+        "remote_only".to_string(),
+        ImageHash::new(
+            "sha256",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+        )
+        .unwrap(),
+    );
+    let remote_index = ManifestIndex {
+        schema_version: 1,
+        test_manifests: remote_manifests,
+    };
+
+    let mut local_manifests = BTreeMap::new();
+    local_manifests.insert(
+        "test1".to_string(),
+        ImageHash::new(
+            "sha256",
+            "3333333333333333333333333333333333333333333333333333333333333333",
+        )
+        .unwrap(),
+    );
+    local_manifests.insert(
+        "local_only".to_string(),
+        ImageHash::new(
+            "sha256",
+            "4444444444444444444444444444444444444444444444444444444444444444",
+        )
+        .unwrap(),
+    );
+    let local_index = ManifestIndex {
+        schema_version: 1,
+        test_manifests: local_manifests,
+    };
+
+    let merged_index = ManifestMerger::merge_indexes(&remote_index, &local_index);
+
+    assert_eq!(merged_index.test_manifests.len(), 3);
+    assert_eq!(
+        merged_index.test_manifests.get("test1").unwrap().value(),
+        "3333333333333333333333333333333333333333333333333333333333333333"
+    );
+    assert_eq!(
+        merged_index
+            .test_manifests
+            .get("remote_only")
+            .unwrap()
+            .value(),
+        "2222222222222222222222222222222222222222222222222222222222222222"
+    );
+    assert_eq!(
+        merged_index
+            .test_manifests
+            .get("local_only")
+            .unwrap()
+            .value(),
+        "4444444444444444444444444444444444444444444444444444444444444444"
+    );
+}

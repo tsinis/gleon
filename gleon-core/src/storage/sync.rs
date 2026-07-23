@@ -89,6 +89,8 @@ impl SyncOrchestrator {
                 missing_manifest_blobs.push(blob_hash);
             }
         }
+        missing_manifest_blobs.sort();
+        missing_manifest_blobs.dedup();
 
         // 2. Download missing Manifest blobs
         self.download_blobs_concurrently(&missing_manifest_blobs, options)
@@ -242,7 +244,46 @@ impl SyncOrchestrator {
         info!("Push completed successfully.");
         Ok(())
     }
+}
 
+async fn retry_with_backoff<F, Fut>(
+    action_name: &str,
+    target: &str,
+    options: &SyncOptions,
+    f: F,
+) -> Result<(), StorageError>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<(), StorageError>>,
+{
+    let mut retries = 0;
+    loop {
+        match f().await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                if retries >= options.retries {
+                    if options.fail_fast {
+                        return Err(e);
+                    }
+                    error!(
+                        "Failed to {} {} after {} retries: {}",
+                        action_name, target, retries, e
+                    );
+                    return Ok(());
+                }
+                retries += 1;
+                debug!(
+                    "Retrying {} for {} (attempt {})",
+                    action_name, target, retries
+                );
+                let backoff_ms = 50 * (1 << (retries - 1).min(6));
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+            }
+        }
+    }
+}
+
+impl SyncOrchestrator {
     async fn download_blobs_concurrently(
         &self,
         blobs: &[String],
@@ -255,28 +296,11 @@ impl SyncOrchestrator {
         info!("Downloading {} missing blobs", blobs.len());
 
         let stream = futures::stream::iter(blobs).map(|hash| async move {
-            let mut retries = 0;
-            loop {
-                let dest_path = self.workspace_root.join(".gleon/blobs/sha256").join(hash);
-                match self.adapter.download_blob(hash, &dest_path).await {
-                    Ok(_) => return Ok(()),
-                    Err(e) => {
-                        if retries >= options.retries {
-                            if options.fail_fast {
-                                return Err(e);
-                            } else {
-                                error!(
-                                    "Failed to download blob {} after {} retries: {}",
-                                    hash, retries, e
-                                );
-                                return Ok(()); // Skip on error if not fail fast
-                            }
-                        }
-                        retries += 1;
-                        debug!("Retrying download for blob {} (attempt {})", hash, retries);
-                    }
-                }
-            }
+            let dest_path = self.workspace_root.join(".gleon/blobs/sha256").join(hash);
+            retry_with_backoff("download", hash, options, || {
+                self.adapter.download_blob(hash, &dest_path)
+            })
+            .await
         });
 
         let mut buffered = stream.buffer_unordered(options.concurrency);
@@ -299,53 +323,28 @@ impl SyncOrchestrator {
             return Ok(());
         }
 
-        // Fetch remote blobs in bulk to avoid O(N) HEAD network latency requests
-        let existing_blobs_vec = self.adapter.list_blobs().await?;
-        let existing_blobs: std::collections::HashSet<_> = existing_blobs_vec.into_iter().collect();
-        let existing_blobs_arc = std::sync::Arc::new(existing_blobs);
+        info!("Uploading {} blob(s)", blobs.len());
 
-        info!(
-            "Uploading {} blob(s) (remote already has {} blob(s))",
-            blobs.len(),
-            existing_blobs_arc.len()
-        );
-
-        let stream = futures::stream::iter(blobs).map(|hash| {
-            let existing = std::sync::Arc::clone(&existing_blobs_arc);
-            async move {
-                let src_path = self.workspace_root.join(".gleon/blobs/sha256").join(hash);
-                if !src_path.exists() {
-                    // Should not happen if local manifest is correct
-                    return Ok(());
-                }
-
-                if existing.contains(hash) {
-                    debug!("Blob {} already exists on remote, skipping upload.", hash);
-                    return Ok(());
-                }
-
-                let mut retries = 0;
-                loop {
-                    match self.adapter.upload_blob(hash, &src_path).await {
-                        Ok(_) => return Ok(()),
-                        Err(e) => {
-                            if retries >= options.retries {
-                                if options.fail_fast {
-                                    return Err(e);
-                                } else {
-                                    error!(
-                                        "Failed to upload blob {} after {} retries: {}",
-                                        hash, retries, e
-                                    );
-                                    return Ok(()); // Skip on error if not fail fast
-                                }
-                            }
-                            retries += 1;
-                            debug!("Retrying upload for blob {} (attempt {})", hash, retries);
-                        }
-                    }
-                }
+        let stream = futures::stream::iter(blobs).map(|hash| async move {
+            let src_path = self.workspace_root.join(".gleon/blobs/sha256").join(hash);
+            if !src_path.exists() {
+                return Err(StorageError::Io {
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("Local blob missing for upload: {hash}"),
+                    ),
+                });
             }
+
+            retry_with_backoff("upload", hash, options, || async {
+                if self.adapter.blob_exists(hash).await? {
+                    debug!("Blob {} already exists on remote, skipping upload.", hash);
+                    Ok(())
+                } else {
+                    self.adapter.upload_blob(hash, &src_path).await
+                }
+            })
+            .await
         });
 
         let mut buffered = stream.buffer_unordered(options.concurrency);

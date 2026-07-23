@@ -88,12 +88,12 @@ impl std::str::FromStr for ImageHash {
         } else {
             std::borrow::Cow::Borrowed(scheme)
         };
-        validate_hash_parts(&scheme_cow, value).map_err(ManifestError::Validation)?;
-
-        Ok(ImageHash {
-            scheme: scheme_cow.into_owned(),
-            value: value.to_string(),
-        })
+        validate_hash_parts(&scheme_cow, value)
+            .map_err(ManifestError::Validation)
+            .map(|()| ImageHash {
+                scheme: scheme_cow.into_owned(),
+                value: value.to_string(),
+            })
     }
 }
 
