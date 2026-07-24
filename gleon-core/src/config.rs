@@ -451,7 +451,12 @@ impl Default for GleonConfig {
                 diff: DiffConfig::default(),
                 masks: vec![],
             }],
-            exclude: vec![],
+            exclude: vec![
+                #[allow(clippy::expect_used)]
+                GlobPattern::new("node_modules/**").expect("Valid pattern"),
+                #[allow(clippy::expect_used)]
+                GlobPattern::new("target/**").expect("Valid pattern"),
+            ],
         }
     }
 }

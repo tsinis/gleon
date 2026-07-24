@@ -51,7 +51,10 @@ fn validate_hash_parts(scheme: &str, value: &str) -> Result<(), String> {
 impl ImageHash {
     /// Constructs a new ImageHash, returning a validation error if invalid.
     pub fn new(scheme: impl Into<String>, value: impl Into<String>) -> Result<Self, ManifestError> {
-        let scheme_str = scheme.into().to_lowercase();
+        let mut scheme_str = scheme.into();
+        if scheme_str.chars().any(|c| c.is_ascii_uppercase()) {
+            scheme_str.make_ascii_lowercase();
+        }
         let value_str = value.into();
         validate_hash_parts(&scheme_str, &value_str)
             .map_err(ManifestError::Validation)
@@ -80,13 +83,17 @@ impl std::str::FromStr for ImageHash {
             ManifestError::Validation("Hash must be in 'scheme:value' format".to_string())
         })?;
 
-        let scheme_lower = scheme.to_lowercase();
-        validate_hash_parts(&scheme_lower, value).map_err(ManifestError::Validation)?;
-
-        Ok(ImageHash {
-            scheme: scheme_lower,
-            value: value.to_string(),
-        })
+        let scheme_cow = if scheme.chars().any(|c| c.is_ascii_uppercase()) {
+            std::borrow::Cow::Owned(scheme.to_ascii_lowercase())
+        } else {
+            std::borrow::Cow::Borrowed(scheme)
+        };
+        validate_hash_parts(&scheme_cow, value)
+            .map_err(ManifestError::Validation)
+            .map(|()| ImageHash {
+                scheme: scheme_cow.into_owned(),
+                value: value.to_string(),
+            })
     }
 }
 
@@ -118,10 +125,14 @@ impl std::fmt::Display for ImageHash {
 fn deserialize_lowercase_string<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     let cow = std::borrow::Cow::<'de, str>::deserialize(d)?;
     if cow.chars().any(|c| c.is_ascii_uppercase()) {
-        Ok(cow.to_lowercase())
+        Ok(cow.to_ascii_lowercase())
     } else {
         Ok(cow.into_owned())
     }
+}
+
+fn default_manifest_version() -> u64 {
+    1
 }
 
 /// The manifest file structure representing previous run results.
@@ -129,6 +140,8 @@ fn deserialize_lowercase_string<'de, D: Deserializer<'de>>(d: D) -> Result<Strin
 #[serde(rename_all = "camelCase")]
 pub struct Manifest {
     pub schema_version: u64,
+    #[serde(default = "default_manifest_version")]
+    pub version: u64,
     /// The hashing algorithm used (always lowercase, e.g. "sha256").
     #[serde(deserialize_with = "deserialize_lowercase_string")]
     pub hash_algo: String,
@@ -258,6 +271,7 @@ impl Manifest {
             path,
             || Self {
                 schema_version: SUPPORTED_MANIFEST_SCHEMA_VERSION,
+                version: 1,
                 hash_algo: "sha256".to_string(),
                 pixel_format: "rgba".to_string(),
                 generator_version: "unknown".to_string(),
@@ -414,6 +428,7 @@ mod tests {
 
         let manifest = Manifest {
             schema_version: 1,
+            version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
@@ -486,6 +501,7 @@ mod tests {
 
         let manifest = Manifest {
             schema_version: 1,
+            version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
@@ -524,6 +540,7 @@ mod tests {
         );
         let manifest_mismatch = Manifest {
             schema_version: 1,
+            version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
@@ -550,6 +567,7 @@ mod tests {
         );
         let manifest_truncated = Manifest {
             schema_version: 1,
+            version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
@@ -576,6 +594,7 @@ mod tests {
         );
         let manifest_non_hex = Manifest {
             schema_version: 1,
+            version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
@@ -602,6 +621,7 @@ mod tests {
         );
         let manifest_mixed_case = Manifest {
             schema_version: 1,
+            version: 1,
             hash_algo: "ShA256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
@@ -625,6 +645,7 @@ mod tests {
         );
         let manifest_phash = Manifest {
             schema_version: 1,
+            version: 1,
             hash_algo: "phash".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
@@ -642,6 +663,7 @@ mod tests {
 
         let manifest = Manifest {
             schema_version: 1,
+            version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
@@ -656,6 +678,7 @@ mod tests {
     fn test_manifest_save_invalid_filename() {
         let manifest = Manifest {
             schema_version: 1,
+            version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
@@ -675,6 +698,7 @@ mod tests {
 
         let manifest = Manifest {
             schema_version: 1,
+            version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
@@ -703,6 +727,7 @@ mod tests {
 
         let manifest = Manifest {
             schema_version: 1,
+            version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
@@ -726,6 +751,7 @@ mod tests {
         let nested_path = blocker_file.join("subdir/manifest.json");
         let manifest = Manifest {
             schema_version: 1,
+            version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
@@ -743,6 +769,7 @@ mod tests {
         let file_path = dir.path().join("unsupported_manifest.json");
         let manifest = Manifest {
             schema_version: 2,
+            version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
@@ -810,5 +837,19 @@ mod tests {
             result.unwrap_err(),
             ManifestError::Io(IoError::JsonParse(_))
         ));
+    }
+
+    #[test]
+    fn test_legacy_manifest_without_version_field() {
+        let legacy_json = r#"{
+            "schemaVersion": 1,
+            "hashAlgo": "sha256",
+            "pixelFormat": "rgba",
+            "generatorVersion": "0.1.0",
+            "entries": {}
+        }"#;
+
+        let manifest: Manifest = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(manifest.version, 1);
     }
 }

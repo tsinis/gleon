@@ -119,7 +119,10 @@ pub fn stage_workspace(
 
     let mut test_manifest_map = BTreeMap::new();
 
-    for case in test_cases {
+    let mut image_items = Vec::new();
+    let mut existing_manifests = BTreeMap::new();
+
+    for case in &test_cases {
         // If filter_paths is specified, skip test cases that don't match any path
         if let Some(filters) = filter_paths {
             let matched = case.images.iter().any(|img| {
@@ -143,8 +146,11 @@ pub fn stage_workspace(
             None => None,
         };
 
-        let mut manifest_entries = existing_manifest.map(|m| m.entries).unwrap_or_default();
+        if let Some(m) = existing_manifest {
+            existing_manifests.insert(case.name.clone(), m.entries);
+        }
 
+        let rule = case.rule.clone();
         for img in &case.images {
             if let Some(filters) = filter_paths {
                 let matches_filter = filters
@@ -154,8 +160,16 @@ pub fn stage_workspace(
                     continue;
                 }
             }
+            image_items.push((case.name.clone(), rule.clone(), img.clone()));
+        }
+    }
 
-            let matched_zones = case.rule.matched_mask_zones(&img.relative_path);
+    use rayon::prelude::*;
+
+    let processed_results: Result<Vec<_>, StageError> = image_items
+        .into_par_iter()
+        .map(|(case_name, rule, img)| {
+            let matched_zones = rule.matched_mask_zones(&img.relative_path);
 
             let (png_bytes, width, height, rgba_img) = if !matched_zones.is_empty() {
                 let dynamic_img =
@@ -204,33 +218,55 @@ pub fn stage_workspace(
 
             let rel_path_str = FileScanner::normalize_path_str(&img.relative_path).into_owned();
 
-            let is_unchanged = manifest_entries
-                .get(&rel_path_str)
-                .is_some_and(|existing| existing.hash.value() == sha256_hex);
+            Ok((
+                case_name,
+                rel_path_str,
+                sha256_hex,
+                phash_str,
+                width,
+                height,
+            ))
+        })
+        .collect();
 
-            if !is_unchanged {
-                let entry = ManifestEntry {
-                    hash: ImageHash::new("sha256", &sha256_hex).map_err(StageError::Manifest)?,
-                    phash: phash_str
-                        .parse::<ImageHash>()
-                        .map_err(StageError::Manifest)?,
-                    width,
-                    height,
-                    created_at: chrono::Utc::now(),
-                    created_by: commit_author.clone(),
-                    source_commit: commit_sha.clone(),
-                };
-                manifest_entries.insert(rel_path_str, entry);
-                total_screenshots_staged += 1;
-            }
+    let processed_results = processed_results?;
+
+    let mut case_entries: BTreeMap<String, BTreeMap<String, ManifestEntry>> = BTreeMap::new();
+    for (case_name, entries) in existing_manifests {
+        case_entries.insert(case_name, entries);
+    }
+
+    for (case_name, rel_path_str, sha256_hex, phash_str, width, height) in processed_results {
+        let entries = case_entries.entry(case_name.clone()).or_default();
+        let is_unchanged = entries
+            .get(&rel_path_str)
+            .is_some_and(|existing| existing.hash.value() == sha256_hex);
+
+        if !is_unchanged {
+            let entry = ManifestEntry {
+                hash: ImageHash::new("sha256", &sha256_hex).map_err(StageError::Manifest)?,
+                phash: phash_str
+                    .parse::<ImageHash>()
+                    .map_err(StageError::Manifest)?,
+                width,
+                height,
+                created_at: chrono::Utc::now(),
+                created_by: commit_author.clone(),
+                source_commit: commit_sha.clone(),
+            };
+            entries.insert(rel_path_str, entry);
+            total_screenshots_staged += 1;
         }
+    }
 
+    for (case_name, manifest_entries) in case_entries {
         if manifest_entries.is_empty() {
             continue;
         }
 
         let test_manifest = Manifest {
             schema_version: SUPPORTED_MANIFEST_SCHEMA_VERSION,
+            version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -248,11 +284,11 @@ pub fn stage_workspace(
             .map_err(StageError::from)?;
 
         test_manifest_map.insert(
-            case.name.clone(),
+            case_name.clone(),
             ImageHash::new("sha256", &test_manifest_sha256).map_err(StageError::Manifest)?,
         );
 
-        staged_test_cases.push(case.name);
+        staged_test_cases.push(case_name);
     }
 
     // Update manifest_index.json atomically

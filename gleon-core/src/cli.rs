@@ -113,7 +113,11 @@ pub enum Commands {
         paths: Vec<std::path::PathBuf>,
     },
     /// Run visual diff comparison against baseline images
-    Diff,
+    Diff {
+        /// Automatically pull the latest remote baselines before diffing
+        #[arg(long = "auto-pull")]
+        auto_pull: bool,
+    },
     /// Execute tests and run diff comparison
     Test,
     /// Pull latest baselines from remote storage
@@ -160,7 +164,7 @@ mod tests {
         let args = ["gleon", "--branch", "another-branch", "diff"];
         let cli = Cli::try_parse_from(args)?;
         assert_eq!(cli.branch, Some("another-branch".to_string()));
-        assert_eq!(cli.command, Commands::Diff);
+        assert_eq!(cli.command, Commands::Diff { auto_pull: false });
         assert_eq!(cli.target_branch, "main"); // Default value
         Ok(())
     }

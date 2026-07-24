@@ -96,182 +96,220 @@ pub fn run_diff(
 
     let test_cases = FileScanner::scan_workspace(&config, base_dir)?;
 
-    let (test_case_results, total_tests, failed_tests) = test_cases
-        .into_par_iter()
-        .map(|case| {
-            let mut image_results = Vec::new();
-            let mut case_total = 0;
-            let mut case_failed = 0;
+    let mut case_names = Vec::new();
+    let mut work_items = Vec::new();
 
-            // Check if baseline manifest exists for this test case
-            let manifest_opt = manifest_index.as_ref().and_then(|idx| {
-                idx.test_manifests.get(&case.name).and_then(|hash| {
-                    let manifest_path = gleon_dir
-                        .join("blobs")
-                        .join(hash.scheme())
-                        .join(hash.value());
-                    Manifest::load(manifest_path).ok()
-                })
-            });
+    for (case_idx, case) in test_cases.into_iter().enumerate() {
+        let case_name = std::sync::Arc::new(case.name);
+        case_names.push(case_name.clone());
 
-            for img in &case.images {
-                case_total += 1;
-                let rel_path_str = FileScanner::normalize_path_str(&img.relative_path);
-
-                let entry_opt = manifest_opt
-                    .as_ref()
-                    .and_then(|m| m.entries.get(rel_path_str.as_ref()));
-
-                let baseline_entry = match entry_opt {
-                    Some(entry) => entry,
-                    None => {
-                        case_failed += 1;
-                        image_results.push(TestImageResult::DecodeError {
-                            relative_path: img.relative_path.clone(),
-                            error: "No baseline manifest entry found".to_string(),
-                        });
-                        continue;
-                    }
-                };
-
-                let baseline_blob_path = gleon_dir
+        let manifest_opt = match manifest_index
+            .as_ref()
+            .and_then(|idx| idx.test_manifests.get(case_name.as_str()))
+        {
+            Some(hash) => {
+                let manifest_path = gleon_dir
                     .join("blobs")
-                    .join(baseline_entry.hash.scheme())
-                    .join(baseline_entry.hash.value());
+                    .join(hash.scheme())
+                    .join(hash.value());
+                let manifest = Manifest::load(manifest_path).map_err(DiffOpError::Manifest)?;
+                Some(std::sync::Arc::new(manifest))
+            }
+            None => None,
+        };
 
-                let baseline_bytes = match std::fs::read(&baseline_blob_path) {
-                    Ok(b) => b,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        case_failed += 1;
-                        image_results.push(TestImageResult::DecodeError {
-                            relative_path: img.relative_path.clone(),
+        let rule = case.rule;
+        for (img_idx, img) in case.images.into_iter().enumerate() {
+            work_items.push((
+                case_idx,
+                case_name.clone(),
+                img_idx,
+                rule.clone(),
+                img,
+                manifest_opt.clone(),
+            ));
+        }
+    }
+
+    let mut evaluated: Vec<_> = work_items
+        .into_par_iter()
+        .map(|(case_idx, case_name, img_idx, rule, img, manifest_opt)| {
+            let rel_path_str = FileScanner::normalize_path_str(&img.relative_path);
+
+            let entry_opt = manifest_opt
+                .as_ref()
+                .and_then(|m| m.entries.get(rel_path_str.as_ref()));
+
+            let baseline_entry = match entry_opt {
+                Some(entry) => entry,
+                None => {
+                    return (
+                        case_idx,
+                        img_idx,
+                        TestImageResult::DecodeError {
+                            relative_path: img.relative_path,
+                            error: "No baseline manifest entry found".to_string(),
+                        },
+                        true,
+                    );
+                }
+            };
+
+            let baseline_blob_path = gleon_dir
+                .join("blobs")
+                .join(baseline_entry.hash.scheme())
+                .join(baseline_entry.hash.value());
+
+            let baseline_bytes = match std::fs::read(&baseline_blob_path) {
+                Ok(b) => b,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return (
+                        case_idx,
+                        img_idx,
+                        TestImageResult::DecodeError {
+                            relative_path: img.relative_path,
                             error: format!(
                                 "Baseline blob not found: {}",
                                 baseline_entry.hash.value()
                             ),
-                        });
-                        continue;
-                    }
-                    Err(e) => {
-                        case_failed += 1;
-                        image_results.push(TestImageResult::DecodeError {
-                            relative_path: img.relative_path.clone(),
-                            error: format!("Failed to read baseline blob file: {}", e),
-                        });
-                        continue;
-                    }
-                };
-
-                let baseline_dyn_img = match image::load_from_memory(&baseline_bytes) {
-                    Ok(img) => img,
-                    Err(e) => {
-                        case_failed += 1;
-                        image_results.push(TestImageResult::DecodeError {
-                            relative_path: img.relative_path.clone(),
-                            error: format!("Failed to decode baseline blob: {}", e),
-                        });
-                        continue;
-                    }
-                };
-                let mut baseline_rgba = baseline_dyn_img.to_rgba8();
-
-                let actual_dyn_img = match image::open(&img.absolute_path) {
-                    Ok(img) => img,
-                    Err(e) => {
-                        case_failed += 1;
-                        image_results.push(TestImageResult::DecodeError {
-                            relative_path: img.relative_path.clone(),
-                            error: format!("Failed to decode actual screenshot: {}", e),
-                        });
-                        continue;
-                    }
-                };
-                let mut actual_rgba = actual_dyn_img.to_rgba8();
-
-                // Apply ignore-zone masks if defined (idempotent for baseline, handles newly added mask rules)
-                let matched_zones = case.rule.matched_mask_zones(&img.relative_path);
-                if !matched_zones.is_empty() {
-                    apply_masks(&mut baseline_rgba, &matched_zones);
-                    apply_masks(&mut actual_rgba, &matched_zones);
+                        },
+                        true,
+                    );
                 }
+                Err(e) => {
+                    return (
+                        case_idx,
+                        img_idx,
+                        TestImageResult::DecodeError {
+                            relative_path: img.relative_path,
+                            error: format!("Failed to read baseline blob file: {}", e),
+                        },
+                        true,
+                    );
+                }
+            };
 
-                // Perform engine comparison
-                let comp_result = compare_images(
-                    &baseline_rgba,
-                    &actual_rgba,
-                    case.rule.mode,
-                    &case.rule.diff,
-                );
+            let baseline_dyn_img = match image::load_from_memory(&baseline_bytes) {
+                Ok(img) => img,
+                Err(e) => {
+                    return (
+                        case_idx,
+                        img_idx,
+                        TestImageResult::DecodeError {
+                            relative_path: img.relative_path,
+                            error: format!("Failed to decode baseline blob: {}", e),
+                        },
+                        true,
+                    );
+                }
+            };
+            let mut baseline_rgba = baseline_dyn_img.to_rgba8();
 
-                match comp_result {
-                    ComparisonResult::Match => {
-                        image_results.push(TestImageResult::Success {
-                            relative_path: img.relative_path.clone(),
-                        });
-                    }
-                    ComparisonResult::DimensionMismatch {
+            let actual_dyn_img = match image::open(&img.absolute_path) {
+                Ok(img) => img,
+                Err(e) => {
+                    return (
+                        case_idx,
+                        img_idx,
+                        TestImageResult::DecodeError {
+                            relative_path: img.relative_path,
+                            error: format!("Failed to decode actual screenshot: {}", e),
+                        },
+                        true,
+                    );
+                }
+            };
+            let mut actual_rgba = actual_dyn_img.to_rgba8();
+
+            // Apply ignore-zone masks if defined (idempotent for baseline, handles newly added mask rules)
+            let matched_zones = rule.matched_mask_zones(&img.relative_path);
+            if !matched_zones.is_empty() {
+                apply_masks(&mut baseline_rgba, &matched_zones);
+                apply_masks(&mut actual_rgba, &matched_zones);
+            }
+
+            // Perform engine comparison
+            let comp_result = compare_images(&baseline_rgba, &actual_rgba, rule.mode, &rule.diff);
+
+            match comp_result {
+                ComparisonResult::Match => (
+                    case_idx,
+                    img_idx,
+                    TestImageResult::Success {
+                        relative_path: img.relative_path,
+                    },
+                    false,
+                ),
+                ComparisonResult::DimensionMismatch {
+                    baseline_size,
+                    actual_size,
+                } => (
+                    case_idx,
+                    img_idx,
+                    TestImageResult::DimensionMismatch {
+                        relative_path: img.relative_path,
                         baseline_size,
                         actual_size,
-                    } => {
-                        case_failed += 1;
-                        image_results.push(TestImageResult::DimensionMismatch {
-                            relative_path: img.relative_path.clone(),
-                            baseline_size,
-                            actual_size,
-                            baseline_path: baseline_blob_path,
-                            actual_path: img.absolute_path.clone(),
-                        });
+                        baseline_path: baseline_blob_path,
+                        actual_path: img.absolute_path,
+                    },
+                    true,
+                ),
+                ComparisonResult::Mismatch { detail, diff_image } => {
+                    // Write diff visualization image to .gleon/runs/latest/diffs/<case_name>/<file_name>
+                    let case_diff_dir = diffs_dir.join(case_name.as_str());
+                    let raw_file_name = img
+                        .relative_path
+                        .file_name()
+                        .unwrap_or_else(|| std::ffi::OsStr::new("diff.png"))
+                        .to_string_lossy();
+                    let diff_file_name = format!("{img_idx}_{raw_file_name}");
+                    let diff_path = case_diff_dir.join(diff_file_name);
+
+                    if let Err(e) = crate::io::write_file_atomically(&diff_path, |writer| {
+                        diff_image
+                            .write_to(writer, image::ImageFormat::Png)
+                            .map_err(|e| crate::io::IoError::Io(std::io::Error::other(e)))
+                    }) {
+                        tracing::warn!("Failed to save diff image to {:?}: {}", diff_path, e);
                     }
-                    ComparisonResult::Mismatch { detail, diff_image } => {
-                        case_failed += 1;
-                        // Write diff visualization image to .gleon/runs/latest/diffs/<case_name>/<file_name>
-                        let case_diff_dir = diffs_dir.join(&case.name);
-                        let diff_file_name = img
-                            .relative_path
-                            .file_name()
-                            .unwrap_or_else(|| std::ffi::OsStr::new("diff.png"));
-                        let diff_path = case_diff_dir.join(diff_file_name);
 
-                        if let Err(e) = crate::io::write_file_atomically(&diff_path, |writer| {
-                            diff_image
-                                .write_to(writer, image::ImageFormat::Png)
-                                .map_err(|e| crate::io::IoError::Io(std::io::Error::other(e)))
-                        }) {
-                            tracing::warn!("Failed to save diff image to {:?}: {}", diff_path, e);
-                        }
-
-                        image_results.push(TestImageResult::Mismatch {
-                            relative_path: img.relative_path.clone(),
+                    (
+                        case_idx,
+                        img_idx,
+                        TestImageResult::Mismatch {
+                            relative_path: img.relative_path,
                             detail,
                             diff_path,
                             baseline_path: baseline_blob_path,
-                            actual_path: img.absolute_path.clone(),
-                        });
-                    }
+                            actual_path: img.absolute_path,
+                        },
+                        true,
+                    )
                 }
             }
-
-            let case_res = TestCaseResult {
-                name: case.name.clone(),
-                results: image_results,
-            };
-
-            (case_res, case_total, case_failed)
         })
-        .fold(
-            || (Vec::new(), 0, 0),
-            |(mut res_acc, tot_acc, fail_acc), (c_res, c_tot, c_fail)| {
-                res_acc.push(c_res);
-                (res_acc, tot_acc + c_tot, fail_acc + c_fail)
-            },
-        )
-        .reduce(
-            || (Vec::new(), 0, 0),
-            |(mut r1, t1, f1), (r2, t2, f2)| {
-                r1.extend(r2);
-                (r1, t1 + t2, f1 + f2)
-            },
-        );
+        .collect();
+
+    evaluated.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+    let mut test_case_results: Vec<TestCaseResult> = case_names
+        .iter()
+        .map(|name| TestCaseResult {
+            name: (**name).clone(),
+            results: Vec::new(),
+        })
+        .collect();
+
+    let total_tests = evaluated.len();
+    let mut failed_tests = 0;
+
+    for (case_idx, _img_idx, img_res, is_failed) in evaluated {
+        if is_failed {
+            failed_tests += 1;
+        }
+        test_case_results[case_idx].results.push(img_res);
+    }
 
     // Write report files to .gleon/runs/latest/
     if let Some(html_content) = ReportGenerator::generate_html(&test_case_results, Some(&runs_dir))?
@@ -414,7 +452,7 @@ screenshots:
 
         manifest.save(&manifest_path).unwrap();
 
-        let cli_diff = Cli::for_test(crate::cli::Commands::Diff);
+        let cli_diff = Cli::for_test(crate::cli::Commands::Diff { auto_pull: false });
         let ctx_diff = ResolvedContext::from_cli(&cli_diff, base_path).unwrap();
         let res = run_diff(&ctx_diff, base_path).unwrap();
 
@@ -457,11 +495,70 @@ screenshots:
         // 2. Overwrite corrupt.png with corrupt bytes (Decode Error)
         fs::write(billing_dir.join("corrupt.png"), b"not a png image").unwrap();
 
-        let cli_diff = Cli::for_test(crate::cli::Commands::Diff);
+        let cli_diff = Cli::for_test(crate::cli::Commands::Diff { auto_pull: false });
         let ctx_diff = ResolvedContext::from_cli(&cli_diff, base_path).unwrap();
         let res = run_diff(&ctx_diff, base_path).unwrap();
 
         assert!(!res.passed);
         assert_eq!(res.failed_tests, 2);
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn test_diff_corrupt_baseline_blob_and_read_error() {
+        let dir = tempdir().unwrap();
+        let base_path = dir.path();
+
+        let cli_init = Cli::for_test(crate::cli::Commands::Init);
+        let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+        init_workspace(&ctx_init, base_path).unwrap();
+
+        let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let png_200 = fs::read(fixtures_dir.join("200x100.png")).unwrap();
+
+        let billing_dir = base_path.join("billing");
+        fs::create_dir_all(&billing_dir).unwrap();
+        fs::write(billing_dir.join("form.png"), &png_200).unwrap();
+
+        let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+        fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+
+        let cli = Cli::for_test(crate::cli::Commands::Stage { paths: vec![] });
+        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        stage_workspace(&ctx, base_path, None).unwrap();
+
+        let platform_key = ctx.platform.to_key().unwrap();
+        let index_path = base_path
+            .join(".gleon/branches/main")
+            .join(&platform_key)
+            .join("manifest_index.json");
+
+        let index = ManifestIndex::load(&index_path).unwrap();
+        let manifest_hash = index.test_manifests.get("billing").unwrap().clone();
+        let manifest_path = base_path
+            .join(".gleon/blobs")
+            .join(manifest_hash.scheme())
+            .join(manifest_hash.value());
+
+        let manifest = Manifest::load(&manifest_path).unwrap();
+        let form_entry = manifest.entries.get("billing/form.png").unwrap();
+        let blob_path = base_path
+            .join(".gleon/blobs")
+            .join(form_entry.hash.scheme())
+            .join(form_entry.hash.value());
+
+        // Overwrite baseline blob with invalid non-PNG data
+        fs::write(&blob_path, b"corrupted image blob").unwrap();
+
+        let cli_diff = Cli::for_test(crate::cli::Commands::Diff { auto_pull: false });
+        let ctx_diff = ResolvedContext::from_cli(&cli_diff, base_path).unwrap();
+        let res = run_diff(&ctx_diff, base_path).unwrap();
+
+        assert!(!res.passed);
+        assert_eq!(res.failed_tests, 1);
     }
 }
