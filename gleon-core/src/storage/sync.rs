@@ -144,7 +144,16 @@ impl SyncOrchestrator {
                 self.merge_indexes_and_manifests(&remote_index, &local_index, options)
                     .await?
             }
-            Err(_) => remote_index.clone(),
+            Err(crate::manifest::ManifestError::Io(crate::io::IoError::Io(e)))
+                if e.kind() == std::io::ErrorKind::NotFound =>
+            {
+                remote_index.clone()
+            }
+            Err(e) => {
+                return Err(StorageError::Io {
+                    source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+                });
+            }
         };
 
         final_local_index
@@ -253,7 +262,7 @@ impl SyncOrchestrator {
         &self,
         remote_index: &ManifestIndex,
         local_index: &ManifestIndex,
-        options: &SyncOptions,
+        _options: &SyncOptions,
     ) -> Result<ManifestIndex, StorageError> {
         let mut final_index = ManifestMerger::merge_indexes(remote_index, local_index);
 
@@ -267,10 +276,13 @@ impl SyncOrchestrator {
                     .workspace_root
                     .join(".gleon/blobs/sha256")
                     .join(local_hash.value());
-                let local_manifest = match Manifest::load(&local_manifest_path) {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
+                let local_manifest =
+                    Manifest::load(&local_manifest_path).map_err(|e| StorageError::Io {
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("Failed to load local manifest for {test_name}: {e}"),
+                        ),
+                    })?;
 
                 let remote_manifest_path = self
                     .workspace_root
@@ -278,16 +290,18 @@ impl SyncOrchestrator {
                     .join(remote_hash.value());
 
                 if !remote_manifest_path.exists() {
-                    let _ = self
-                        .adapter
+                    self.adapter
                         .download_blob(remote_hash.value(), &remote_manifest_path)
-                        .await;
+                        .await?;
                 }
 
-                let remote_manifest = match Manifest::load(&remote_manifest_path) {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
+                let remote_manifest =
+                    Manifest::load(&remote_manifest_path).map_err(|e| StorageError::Io {
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("Failed to load remote manifest for {test_name}: {e}"),
+                        ),
+                    })?;
 
                 let merged_manifest =
                     ManifestMerger::merge_manifests(&remote_manifest, &local_manifest);
@@ -304,19 +318,15 @@ impl SyncOrchestrator {
                     .join(".gleon/blobs/sha256")
                     .join(&merged_hash_hex);
 
-                let _ = crate::io::save_file_atomically(&merged_manifest_path, &manifest_bytes);
-
-                retry_with_backoff(
-                    "upload_merged_manifest",
-                    &merged_hash_hex,
-                    options,
-                    || async {
-                        self.adapter
-                            .upload_blob(&merged_hash_hex, &merged_manifest_path)
-                            .await
+                crate::io::save_file_atomically(&merged_manifest_path, &manifest_bytes).map_err(
+                    |e| StorageError::Io {
+                        source: std::io::Error::other(e.to_string()),
                     },
-                )
-                .await?;
+                )?;
+
+                self.adapter
+                    .upload_blob(&merged_hash_hex, &merged_manifest_path)
+                    .await?;
 
                 if let Ok(hash) = crate::manifest::ImageHash::new("sha256", &merged_hash_hex) {
                     final_index.test_manifests.insert(test_name.clone(), hash);

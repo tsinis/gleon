@@ -638,14 +638,8 @@ fn test_unimplemented_subcommands() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_status_json_flag() -> Result<(), Box<dyn std::error::Error>> {
     let dir = init_temp_dir();
-    let mut cmd_init = Command::cargo_bin("gleon")?;
-    cmd_init
-        .current_dir(dir.path())
-        .arg("init")
-        .assert()
-        .success();
-
-    let mut cmd_status = Command::cargo_bin("gleon")?;
+    let mut cmd_status = Command::cargo_bin("gleon")
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?;
     cmd_status
         .current_dir(dir.path())
         .arg("status")
@@ -660,14 +654,8 @@ fn test_status_json_flag() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_stage_path_filter() -> Result<(), Box<dyn std::error::Error>> {
     let dir = init_temp_dir();
-    let mut cmd_init = Command::cargo_bin("gleon")?;
-    cmd_init
-        .current_dir(dir.path())
-        .arg("init")
-        .assert()
-        .success();
-
-    let mut cmd_stage = Command::cargo_bin("gleon")?;
+    let mut cmd_stage = Command::cargo_bin("gleon")
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?;
     cmd_stage
         .current_dir(dir.path())
         .arg("stage")

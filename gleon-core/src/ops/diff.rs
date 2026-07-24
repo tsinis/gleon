@@ -103,15 +103,20 @@ pub fn run_diff(
         let case_name = std::sync::Arc::new(case.name);
         case_names.push(case_name.clone());
 
-        let manifest_opt = manifest_index.as_ref().and_then(|idx| {
-            idx.test_manifests.get(case_name.as_str()).and_then(|hash| {
+        let manifest_opt = match manifest_index
+            .as_ref()
+            .and_then(|idx| idx.test_manifests.get(case_name.as_str()))
+        {
+            Some(hash) => {
                 let manifest_path = gleon_dir
                     .join("blobs")
                     .join(hash.scheme())
                     .join(hash.value());
-                Manifest::load(manifest_path).ok().map(std::sync::Arc::new)
-            })
-        });
+                let manifest = Manifest::load(manifest_path).map_err(DiffOpError::Manifest)?;
+                Some(std::sync::Arc::new(manifest))
+            }
+            None => None,
+        };
 
         let rule = case.rule;
         for (img_idx, img) in case.images.into_iter().enumerate() {
@@ -253,10 +258,12 @@ pub fn run_diff(
                 ComparisonResult::Mismatch { detail, diff_image } => {
                     // Write diff visualization image to .gleon/runs/latest/diffs/<case_name>/<file_name>
                     let case_diff_dir = diffs_dir.join(case_name.as_str());
-                    let diff_file_name = img
+                    let raw_file_name = img
                         .relative_path
                         .file_name()
-                        .unwrap_or_else(|| std::ffi::OsStr::new("diff.png"));
+                        .unwrap_or_else(|| std::ffi::OsStr::new("diff.png"))
+                        .to_string_lossy();
+                    let diff_file_name = format!("{img_idx}_{raw_file_name}");
                     let diff_path = case_diff_dir.join(diff_file_name);
 
                     if let Err(e) = crate::io::write_file_atomically(&diff_path, |writer| {

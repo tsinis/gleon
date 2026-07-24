@@ -100,7 +100,7 @@ screenshots:
 
     // 7. Verify generated artifacts on disk
     let runs_dir = base_path.join(".gleon/runs/latest");
-    assert!(runs_dir.join("diffs/billing/form.png").is_file());
+    assert!(runs_dir.join("diffs/billing/0_form.png").is_file());
     assert!(runs_dir.join("report.html").is_file());
     assert!(runs_dir.join("report.md").is_file());
     assert!(runs_dir.join("junit.xml").is_file());
