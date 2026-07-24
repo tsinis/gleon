@@ -262,7 +262,7 @@ impl SyncOrchestrator {
         &self,
         remote_index: &ManifestIndex,
         local_index: &ManifestIndex,
-        _options: &SyncOptions,
+        options: &SyncOptions,
     ) -> Result<ManifestIndex, StorageError> {
         let mut final_index = ManifestMerger::merge_indexes(remote_index, local_index);
 
@@ -290,9 +290,17 @@ impl SyncOrchestrator {
                     .join(remote_hash.value());
 
                 if !remote_manifest_path.exists() {
-                    self.adapter
-                        .download_blob(remote_hash.value(), &remote_manifest_path)
-                        .await?;
+                    retry_with_backoff(
+                        "download_remote_manifest",
+                        remote_hash.value(),
+                        options,
+                        || async {
+                            self.adapter
+                                .download_blob(remote_hash.value(), &remote_manifest_path)
+                                .await
+                        },
+                    )
+                    .await?;
                 }
 
                 let remote_manifest =
@@ -324,9 +332,17 @@ impl SyncOrchestrator {
                     },
                 )?;
 
-                self.adapter
-                    .upload_blob(&merged_hash_hex, &merged_manifest_path)
-                    .await?;
+                retry_with_backoff(
+                    "upload_merged_manifest",
+                    &merged_hash_hex,
+                    options,
+                    || async {
+                        self.adapter
+                            .upload_blob(&merged_hash_hex, &merged_manifest_path)
+                            .await
+                    },
+                )
+                .await?;
 
                 if let Ok(hash) = crate::manifest::ImageHash::new("sha256", &merged_hash_hex) {
                     final_index.test_manifests.insert(test_name.clone(), hash);
