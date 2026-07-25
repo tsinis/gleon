@@ -3,7 +3,8 @@ use std::sync::Arc;
 use tempfile::tempdir;
 
 use gleon_core::manifest::{
-    ImageHash, Manifest, ManifestEntry, ManifestIndex, SUPPORTED_MANIFEST_SCHEMA_VERSION,
+    ImageHash, Manifest, ManifestEntry, ManifestIndexPointer, ManifestIndexRevision,
+    SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION, SUPPORTED_MANIFEST_SCHEMA_VERSION, TestManifestState,
 };
 use gleon_core::storage::adapter::{ObjectStoreAdapter, StorageConfig};
 use gleon_core::storage::sync::{SyncOptions, SyncOrchestrator};
@@ -61,34 +62,48 @@ async fn test_sync_orchestrator_push_and_pull() {
         hash_algo: "sha256".to_string(),
         pixel_format: "rgba".to_string(),
         generator_version: "1.0.0".to_string(),
+        parent_hashes: Vec::new(),
         entries,
     };
     let test_manifest_json = serde_json::to_vec(&test_manifest).unwrap();
     std::fs::write(blobs_dir.join(manifest_blob_hash), test_manifest_json).unwrap();
 
+    let revision_hash = "3333333333333333333333333333333333333333333333333333333333333333";
     let mut test_manifests = std::collections::BTreeMap::new();
     test_manifests.insert(
         "test".to_string(),
-        ImageHash::new("sha256", manifest_blob_hash).unwrap(),
+        TestManifestState::Present(ImageHash::new("sha256", manifest_blob_hash).unwrap()),
     );
-
-    let index = ManifestIndex {
-        schema_version: 1,
+    let revision = ManifestIndexRevision {
+        schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
+        parent_hashes: Vec::new(),
         test_manifests,
     };
+    std::fs::write(
+        blobs_dir.join(revision_hash),
+        serde_json::to_vec(&revision).unwrap(),
+    )
+    .unwrap();
 
     let branches_dir = local_root.join(".gleon/branches/main/mac");
     std::fs::create_dir_all(&branches_dir).unwrap();
-    index
-        .save(branches_dir.join("manifest_index.json"))
-        .unwrap();
+    ManifestIndexPointer {
+        schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
+        revision_hash: ImageHash::new("sha256", revision_hash).unwrap(),
+    }
+    .save(branches_dir.join("manifest_index.json"))
+    .unwrap();
 
     // 2. Push to remote
     orchestrator.push("main", "mac", &options).await.unwrap();
 
-    // Verify remote has the blobs and the index
+    // Verify remote has the image, manifest, revision CAS blobs, and pointer.
     assert!(adapter.blob_exists(blob_hash).await.unwrap());
     assert!(adapter.blob_exists(manifest_blob_hash).await.unwrap());
+    assert!(adapter.blob_exists(revision_hash).await.unwrap());
+    let remote_pointer: ManifestIndexPointer =
+        serde_json::from_slice(&adapter.download_manifest("main", "mac").await.unwrap()).unwrap();
+    assert_eq!(remote_pointer.revision_hash.value(), revision_hash);
 
     // 3. Pull from remote into a fresh local workspace
     let fresh_local_dir = tempdir().unwrap();
@@ -100,7 +115,7 @@ async fn test_sync_orchestrator_push_and_pull() {
         .await
         .unwrap();
 
-    // Verify the fresh local workspace has the blobs and the index
+    // Verify the fresh workspace resolves pointer -> revision -> manifest/image CAS blobs.
     assert!(
         fresh_local_root
             .join(".gleon/blobs/sha256")
@@ -113,11 +128,21 @@ async fn test_sync_orchestrator_push_and_pull() {
             .join(manifest_blob_hash)
             .exists()
     );
-    assert!(
+    let fresh_pointer = ManifestIndexPointer::load(
+        fresh_local_root.join(".gleon/branches/main/mac/manifest_index.json"),
+    )
+    .unwrap();
+    assert_eq!(fresh_pointer.revision_hash.value(), revision_hash);
+    let fresh_revision = ManifestIndexRevision::load(
         fresh_local_root
-            .join(".gleon/branches/main/mac/manifest_index.json")
-            .exists()
-    );
+            .join(".gleon/blobs/sha256")
+            .join(fresh_pointer.revision_hash.value()),
+    )
+    .unwrap();
+    assert!(matches!(
+        fresh_revision.test_manifests.get("test"),
+        Some(TestManifestState::Present(hash)) if hash.value() == manifest_blob_hash
+    ));
 }
 
 #[tokio::test]
@@ -155,23 +180,32 @@ async fn test_sync_orchestrator_pull_corrupt_manifest_fails() {
     )
     .unwrap();
 
+    let revision_hash = "4444444444444444444444444444444444444444444444444444444444444444";
     let mut test_manifests = std::collections::BTreeMap::new();
     test_manifests.insert(
         "test".to_string(),
-        ImageHash::new("sha256", manifest_blob_hash).unwrap(),
+        TestManifestState::Present(ImageHash::new("sha256", manifest_blob_hash).unwrap()),
     );
-
-    let index = ManifestIndex {
-        schema_version: 1,
+    let revision = ManifestIndexRevision {
+        schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
+        parent_hashes: Vec::new(),
         test_manifests,
     };
+    std::fs::write(
+        remote_blobs_dir.join(revision_hash),
+        serde_json::to_vec(&revision).unwrap(),
+    )
+    .unwrap();
 
-    let remote_index_bytes = serde_json::to_vec(&index).unwrap();
     let remote_index_dir = remote_dir.path().join("branches/main/mac");
     std::fs::create_dir_all(&remote_index_dir).unwrap();
+    let pointer = ManifestIndexPointer {
+        schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
+        revision_hash: ImageHash::new("sha256", revision_hash).unwrap(),
+    };
     std::fs::write(
         remote_index_dir.join("manifest_index.json"),
-        remote_index_bytes,
+        serde_json::to_vec(&pointer).unwrap(),
     )
     .unwrap();
 
@@ -219,22 +253,26 @@ async fn test_sync_orchestrator_push_missing_local_blob_fails() {
     let manifest_blob_hash = "2222222222222222222222222222222222222222222222222222222222222222";
     let blob_hash = "1111111111111111111111111111111111111111111111111111111111111111";
 
+    let revision_hash = "3333333333333333333333333333333333333333333333333333333333333333";
     let mut test_manifests = std::collections::BTreeMap::new();
     test_manifests.insert(
         "test".to_string(),
-        ImageHash::new("sha256", manifest_blob_hash).unwrap(),
+        TestManifestState::Present(ImageHash::new("sha256", manifest_blob_hash).unwrap()),
     );
-
-    let index = ManifestIndex {
-        schema_version: 1,
+    let revision = ManifestIndexRevision {
+        schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
+        parent_hashes: Vec::new(),
         test_manifests,
     };
 
     let branches_dir = local_root.join(".gleon/branches/main/mac");
     std::fs::create_dir_all(&branches_dir).unwrap();
-    index
-        .save(branches_dir.join("manifest_index.json"))
-        .unwrap();
+    ManifestIndexPointer {
+        schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
+        revision_hash: ImageHash::new("sha256", revision_hash).unwrap(),
+    }
+    .save(branches_dir.join("manifest_index.json"))
+    .unwrap();
 
     // Create the manifest, but deliberately OMIT the referenced image blob from disk
     let mut entries = std::collections::BTreeMap::new();
@@ -257,12 +295,18 @@ async fn test_sync_orchestrator_push_missing_local_blob_fails() {
         hash_algo: "sha256".to_string(),
         pixel_format: "rgba".to_string(),
         generator_version: "1.0.0".to_string(),
+        parent_hashes: Vec::new(),
         entries,
     };
     let test_manifest_json = serde_json::to_vec(&test_manifest).unwrap();
     let blobs_dir = local_root.join(".gleon/blobs/sha256");
     std::fs::create_dir_all(&blobs_dir).unwrap();
     std::fs::write(blobs_dir.join(manifest_blob_hash), test_manifest_json).unwrap();
+    std::fs::write(
+        blobs_dir.join(revision_hash),
+        serde_json::to_vec(&revision).unwrap(),
+    )
+    .unwrap();
 
     // DO NOT write `blob_hash` to disk!
 

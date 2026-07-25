@@ -147,6 +147,9 @@ pub struct Manifest {
     pub hash_algo: String,
     pub pixel_format: String,
     pub generator_version: String,
+    /// Content hashes of the immediate predecessor manifests in the DAG.
+    #[serde(default)]
+    pub parent_hashes: Vec<ImageHash>,
     #[serde(deserialize_with = "deserialize_normalized_entries")]
     pub entries: BTreeMap<String, ManifestEntry>,
 }
@@ -182,15 +185,67 @@ pub struct ManifestEntry {
     pub source_commit: String,
 }
 
-pub const SUPPORTED_MANIFEST_SCHEMA_VERSION: u64 = 1;
-pub const SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION: u64 = 1;
+pub const SUPPORTED_MANIFEST_SCHEMA_VERSION: u64 = 2;
+pub const SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION: u64 = 2;
 
-/// The index mapping test paths to their respective manifest hashes.
+/// The state of a test manifest in an immutable index revision.
+///
+/// `Deleted` is a tombstone: it prevents a manifest from an ancestor revision
+/// from being resurrected when revisions are merged.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TestManifestState {
+    Present(ImageHash),
+    Deleted,
+}
+
+/// An immutable content-addressed revision of the manifest index DAG.
+///
+/// A revision is stored as a CAS blob. `parent_hashes` records its immediate
+/// predecessor revisions; an empty list denotes the root revision.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct ManifestIndex {
+pub struct ManifestIndexRevision {
     pub schema_version: u64,
-    pub test_manifests: BTreeMap<String, ImageHash>,
+    #[serde(default)]
+    pub parent_hashes: Vec<ImageHash>,
+    pub test_manifests: BTreeMap<String, TestManifestState>,
+}
+
+/// A mutable reference to the current immutable manifest-index revision.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestIndexPointer {
+    pub schema_version: u64,
+    pub revision_hash: ImageHash,
+}
+
+fn validate_cas_hash(hash: &ImageHash, field: &str) -> Result<(), ManifestError> {
+    if hash.scheme() != "sha256" {
+        return Err(ManifestError::Validation(format!(
+            "{field} must use the sha256 scheme, got '{}'",
+            hash.scheme()
+        )));
+    }
+    if hash.value().len() != 64 || !hash.value().chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ManifestError::Validation(format!(
+            "{field} must be a 64-character hexadecimal sha256 digest"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_parent_hashes(parent_hashes: &[ImageHash], field: &str) -> Result<(), ManifestError> {
+    let mut unique_hashes = std::collections::BTreeSet::new();
+    for hash in parent_hashes {
+        validate_cas_hash(hash, field)?;
+        if !unique_hashes.insert(hash) {
+            return Err(ManifestError::Validation(format!(
+                "{field} must not contain duplicate hashes"
+            )));
+        }
+    }
+    Ok(())
 }
 
 impl Manifest {
@@ -203,6 +258,8 @@ impl Manifest {
                 SUPPORTED_MANIFEST_SCHEMA_VERSION, self.schema_version
             )));
         }
+        validate_parent_hashes(&self.parent_hashes, "Manifest parent_hashes")?;
+
         // Normalize for comparison: hash_algo is lowercase when loaded from disk via serde,
         // but Manifest can also be constructed programmatically with any casing.
         let algo_lower: std::borrow::Cow<'_, str> =
@@ -275,6 +332,7 @@ impl Manifest {
                 hash_algo: "sha256".to_string(),
                 pixel_format: "rgba".to_string(),
                 generator_version: "unknown".to_string(),
+                parent_hashes: Vec::new(),
                 entries: BTreeMap::new(),
             },
             |manifest: &mut Self| {
@@ -288,58 +346,68 @@ impl Manifest {
     }
 }
 
-impl ManifestIndex {
-    /// Validates that the schema version is supported.
+impl ManifestIndexRevision {
+    /// Validates the immutable index revision and all of its CAS references.
     pub fn validate(&self) -> Result<(), ManifestError> {
         if self.schema_version != SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION {
             return Err(ManifestError::Validation(format!(
-                "Unsupported manifest index schema version: expected {}, got {}",
+                "Unsupported manifest index revision schema version: expected {}, got {}",
                 SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION, self.schema_version
             )));
+        }
+        validate_parent_hashes(&self.parent_hashes, "Manifest index revision parent_hashes")?;
+        for (test_path, state) in &self.test_manifests {
+            if test_path.is_empty() {
+                return Err(ManifestError::Validation(
+                    "Manifest index revision test path cannot be empty".to_string(),
+                ));
+            }
+            if let TestManifestState::Present(manifest_hash) = state {
+                validate_cas_hash(manifest_hash, "Manifest index revision manifest hash")?;
+            }
         }
         Ok(())
     }
 
-    /// Load a manifest index from a JSON file.
+    /// Load an immutable manifest-index revision from a JSON blob.
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ManifestError> {
-        let path = path.as_ref();
-        tracing::debug!("Loading manifest index from {:?}", path);
-        let index: Self = load_json(path)?;
-        index.validate()?;
-        Ok(index)
+        let revision: Self = load_json(path)?;
+        revision.validate()?;
+        Ok(revision)
     }
 
-    /// Save a manifest index to a JSON file atomically.
+    /// Save an immutable manifest-index revision to a CAS blob path.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), ManifestError> {
-        let path = path.as_ref();
-        tracing::info!("Saving manifest index to {:?}", path);
         self.validate()?;
         save_json_atomically(path, self)?;
-        tracing::debug!("Manifest index saved successfully to {:?}", path);
         Ok(())
     }
+}
 
-    /// Load, modify, and save a manifest index atomically under an exclusive file lock.
-    pub fn update<P: AsRef<Path>, F: FnOnce(&mut Self)>(
-        path: P,
-        f: F,
-    ) -> Result<(), ManifestError> {
-        let path = path.as_ref();
-        tracing::info!("Updating manifest index atomically at {:?}", path);
-        update_json_atomically(
-            path,
-            || Self {
-                schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
-                test_manifests: BTreeMap::new(),
-            },
-            |index: &mut Self| {
-                f(index);
-                index.validate()
-            },
-        )
-        .map(|_| {
-            tracing::debug!("Manifest index updated successfully at {:?}", path);
-        })
+impl ManifestIndexPointer {
+    /// Validates that the pointer targets a valid CAS revision hash.
+    pub fn validate(&self) -> Result<(), ManifestError> {
+        if self.schema_version != SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION {
+            return Err(ManifestError::Validation(format!(
+                "Unsupported manifest index pointer schema version: expected {}, got {}",
+                SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION, self.schema_version
+            )));
+        }
+        validate_cas_hash(&self.revision_hash, "Manifest index pointer revision_hash")
+    }
+
+    /// Load a manifest-index pointer from a JSON file.
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ManifestError> {
+        let pointer: Self = load_json(path)?;
+        pointer.validate()?;
+        Ok(pointer)
+    }
+
+    /// Save a manifest-index pointer atomically.
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), ManifestError> {
+        self.validate()?;
+        save_json_atomically(path, self)?;
+        Ok(())
     }
 }
 
@@ -401,7 +469,6 @@ mod tests {
 
     #[test]
     fn test_manifest_json_snapshot() {
-        use std::path::PathBuf;
         use tempfile::tempdir;
 
         let dir = tempdir().unwrap();
@@ -427,11 +494,12 @@ mod tests {
         );
 
         let manifest = Manifest {
-            schema_version: 1,
+            schema_version: 2,
             version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
+            parent_hashes: Vec::new(),
             entries,
         };
 
@@ -439,39 +507,70 @@ mod tests {
 
         let generated_json = std::fs::read_to_string(&file_path).unwrap();
 
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let fixture_path = manifest_dir.join("tests/fixtures/default_manifest.json");
-        let expected_json = std::fs::read_to_string(fixture_path).unwrap();
+        let expected_json = r#"{
+  "schemaVersion": 2,
+  "version": 1,
+  "hashAlgo": "sha256",
+  "pixelFormat": "rgba",
+  "generatorVersion": "1.0.0",
+  "parentHashes": [],
+  "entries": {
+    "src/login.png": {
+      "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "phash": "dhash:0123456789abcdef",
+      "width": 800,
+      "height": 600,
+      "createdAt": "2024-03-09T16:00:00Z",
+      "createdBy": "Test User <test@example.com>",
+      "sourceCommit": "abcdef1234567890"
+    }
+  }
+}"#;
 
-        assert_eq!(generated_json.trim(), expected_json.trim());
+        assert_eq!(generated_json.trim(), expected_json);
     }
 
     #[test]
-    fn test_manifest_index_serialization() {
+    fn test_manifest_index_revision_and_pointer_serialization() {
         use tempfile::tempdir;
 
         let dir = tempdir().unwrap();
-        let file_path = dir.path().join("manifest_index.json");
+        let revision_path = dir.path().join("manifest_index_revision.json");
+        let pointer_path = dir.path().join("manifest_index_pointer.json");
+        let revision_hash = ImageHash::new(
+            "sha256",
+            "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        )
+        .unwrap();
 
         let mut test_manifests = BTreeMap::new();
         test_manifests.insert(
             "tests/ui/login".to_string(),
-            ImageHash::new(
-                "sha256",
-                "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-            )
-            .unwrap(),
+            TestManifestState::Present(revision_hash.clone()),
         );
-
-        let index = ManifestIndex {
-            schema_version: 1,
+        test_manifests.insert("tests/ui/removed".to_string(), TestManifestState::Deleted);
+        let revision = ManifestIndexRevision {
+            schema_version: 2,
+            parent_hashes: Vec::new(),
             test_manifests,
         };
+        let pointer = ManifestIndexPointer {
+            schema_version: 2,
+            revision_hash,
+        };
 
-        index.save(&file_path).unwrap();
+        revision.save(&revision_path).unwrap();
+        pointer.save(&pointer_path).unwrap();
 
-        let loaded_index = ManifestIndex::load(&file_path).unwrap();
-        assert_eq!(index, loaded_index);
+        assert_eq!(
+            revision,
+            ManifestIndexRevision::load(&revision_path).unwrap()
+        );
+        assert_eq!(pointer, ManifestIndexPointer::load(&pointer_path).unwrap());
+        assert_eq!(
+            serde_json::to_value(&revision).unwrap()["testManifests"]["tests/ui/removed"],
+            "deleted"
+        );
     }
 
     #[test]
@@ -500,11 +599,12 @@ mod tests {
         );
 
         let manifest = Manifest {
-            schema_version: 1,
+            schema_version: 2,
             version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
+            parent_hashes: Vec::new(),
             entries: screenshots,
         };
 
@@ -539,11 +639,12 @@ mod tests {
             },
         );
         let manifest_mismatch = Manifest {
-            schema_version: 1,
+            schema_version: 2,
             version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
+            parent_hashes: Vec::new(),
             entries: entries.clone(),
         };
         let save_err = manifest_mismatch.save(&file_path).unwrap_err();
@@ -566,11 +667,12 @@ mod tests {
             },
         );
         let manifest_truncated = Manifest {
-            schema_version: 1,
+            schema_version: 2,
             version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
+            parent_hashes: Vec::new(),
             entries: entries_truncated,
         };
         let save_err2 = manifest_truncated.save(&file_path).unwrap_err();
@@ -593,11 +695,12 @@ mod tests {
             },
         );
         let manifest_non_hex = Manifest {
-            schema_version: 1,
+            schema_version: 2,
             version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
+            parent_hashes: Vec::new(),
             entries: entries_non_hex,
         };
         let save_err3 = manifest_non_hex.save(&file_path).unwrap_err();
@@ -620,11 +723,12 @@ mod tests {
             },
         );
         let manifest_mixed_case = Manifest {
-            schema_version: 1,
+            schema_version: 2,
             version: 1,
             hash_algo: "ShA256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
+            parent_hashes: Vec::new(),
             entries: entries_mixed_case,
         };
         assert!(manifest_mixed_case.save(&file_path).is_ok());
@@ -644,11 +748,12 @@ mod tests {
             },
         );
         let manifest_phash = Manifest {
-            schema_version: 1,
+            schema_version: 2,
             version: 1,
             hash_algo: "phash".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
+            parent_hashes: Vec::new(),
             entries: entries_phash,
         };
         assert!(manifest_phash.save(&file_path).is_ok());
@@ -662,11 +767,12 @@ mod tests {
         let file_path = dir.path().join("manifest.json");
 
         let manifest = Manifest {
-            schema_version: 1,
+            schema_version: 2,
             version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
+            parent_hashes: Vec::new(),
             entries: BTreeMap::new(),
         };
         manifest.save(&file_path).unwrap();
@@ -677,11 +783,12 @@ mod tests {
     #[test]
     fn test_manifest_save_invalid_filename() {
         let manifest = Manifest {
-            schema_version: 1,
+            schema_version: 2,
             version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
+            parent_hashes: Vec::new(),
             entries: BTreeMap::new(),
         };
         let err = manifest.save(Path::new("/")).unwrap_err();
@@ -697,11 +804,12 @@ mod tests {
         std::fs::create_dir(&file_path).unwrap();
 
         let manifest = Manifest {
-            schema_version: 1,
+            schema_version: 2,
             version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
+            parent_hashes: Vec::new(),
             entries: BTreeMap::new(),
         };
 
@@ -726,18 +834,19 @@ mod tests {
         let nested_path = dir.path().join("subdir/nested/manifest.json");
 
         let manifest = Manifest {
-            schema_version: 1,
+            schema_version: 2,
             version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
+            parent_hashes: Vec::new(),
             entries: BTreeMap::new(),
         };
         manifest.save(&nested_path).unwrap();
 
         assert!(nested_path.exists());
         let loaded = Manifest::load(&nested_path).unwrap();
-        assert_eq!(loaded.schema_version, 1);
+        assert_eq!(loaded.schema_version, 2);
     }
 
     #[test]
@@ -750,11 +859,12 @@ mod tests {
 
         let nested_path = blocker_file.join("subdir/manifest.json");
         let manifest = Manifest {
-            schema_version: 1,
+            schema_version: 2,
             version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
+            parent_hashes: Vec::new(),
             entries: BTreeMap::new(),
         };
         let err = manifest.save(&nested_path).unwrap_err();
@@ -768,14 +878,48 @@ mod tests {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("unsupported_manifest.json");
         let manifest = Manifest {
+            schema_version: 3,
+            version: 1,
+            hash_algo: "sha256".to_string(),
+            pixel_format: "rgba".to_string(),
+            generator_version: "1.0.0".to_string(),
+            parent_hashes: Vec::new(),
+            entries: BTreeMap::new(),
+        };
+        assert!(manifest.save(&file_path).is_err());
+    }
+
+    #[test]
+    fn test_manifest_parent_hash_validation() {
+        let parent = ImageHash::new("sha256", "0".repeat(64)).unwrap();
+        let manifest = Manifest {
             schema_version: 2,
             version: 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: "1.0.0".to_string(),
+            parent_hashes: vec![parent.clone()],
             entries: BTreeMap::new(),
         };
-        assert!(manifest.save(&file_path).is_err());
+        assert!(manifest.validate().is_ok());
+
+        let duplicate_parents = Manifest {
+            parent_hashes: vec![parent.clone(), parent],
+            ..manifest.clone()
+        };
+        assert!(matches!(
+            duplicate_parents.validate(),
+            Err(ManifestError::Validation(message)) if message.contains("duplicate")
+        ));
+
+        let invalid_parent = Manifest {
+            parent_hashes: vec![ImageHash::new("dhash", "0123456789abcdef").unwrap()],
+            ..manifest
+        };
+        assert!(matches!(
+            invalid_parent.validate(),
+            Err(ManifestError::Validation(message)) if message.contains("sha256")
+        ));
     }
 
     #[test]
@@ -794,26 +938,53 @@ mod tests {
     }
 
     #[test]
-    fn test_manifest_index_validation_failures() {
+    fn test_manifest_index_revision_and_pointer_validation_failures() {
         use tempfile::tempdir;
 
         let dir = tempdir().unwrap();
-        let file_path = dir.path().join("invalid_index.json");
-
-        let index_bad_version = ManifestIndex {
-            schema_version: 2,
+        let revision_path = dir.path().join("invalid_index_revision.json");
+        let pointer_path = dir.path().join("invalid_index_pointer.json");
+        let index_bad_version = ManifestIndexRevision {
+            schema_version: 3,
+            parent_hashes: Vec::new(),
             test_manifests: BTreeMap::new(),
         };
-        assert!(index_bad_version.save(&file_path).is_err());
+        assert!(index_bad_version.save(&revision_path).is_err());
 
-        let bad_json = r#"{
-            "schemaVersion": 1,
-            "testManifests": {
-                "tests/ui/login": "not-prefixed-hash-value"
-            }
+        let duplicate_parent = ImageHash::new("sha256", "0".repeat(64)).unwrap();
+        let duplicate_parents = ManifestIndexRevision {
+            schema_version: 2,
+            parent_hashes: vec![duplicate_parent.clone(), duplicate_parent],
+            test_manifests: BTreeMap::new(),
+        };
+        assert!(duplicate_parents.save(&revision_path).is_err());
+
+        let invalid_present = ManifestIndexRevision {
+            schema_version: 2,
+            parent_hashes: Vec::new(),
+            test_manifests: BTreeMap::from([(
+                "tests/ui/login".to_string(),
+                TestManifestState::Present(ImageHash::new("dhash", "0123456789abcdef").unwrap()),
+            )]),
+        };
+        assert!(invalid_present.save(&revision_path).is_err());
+
+        let deleted_manifest = ManifestIndexRevision {
+            schema_version: 2,
+            parent_hashes: Vec::new(),
+            test_manifests: BTreeMap::from([(
+                "tests/ui/removed".to_string(),
+                TestManifestState::Deleted,
+            )]),
+        };
+        assert!(deleted_manifest.save(&revision_path).is_ok());
+
+        let bad_pointer = r#"{
+            "schemaVersion": 2,
+            "revisionHash": "sha256:abc"
         }"#;
-        std::fs::write(&file_path, bad_json).unwrap();
-        assert!(ManifestIndex::load(&file_path).is_err());
+        std::fs::write(&pointer_path, bad_pointer).unwrap();
+        assert!(ManifestIndexPointer::load(&pointer_path).is_err());
     }
 
     #[test]
@@ -842,7 +1013,7 @@ mod tests {
     #[test]
     fn test_legacy_manifest_without_version_field() {
         let legacy_json = r#"{
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "hashAlgo": "sha256",
             "pixelFormat": "rgba",
             "generatorVersion": "0.1.0",

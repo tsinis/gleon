@@ -2,9 +2,12 @@
 
 use crate::config::ConfigError;
 use crate::context::{ContextError, ResolvedContext};
-use crate::manifest::{Manifest, ManifestError, ManifestIndex};
+use crate::manifest::{
+    Manifest, ManifestError, ManifestIndexPointer, ManifestIndexRevision, TestManifestState,
+};
 use crate::scanner::{FileScanner, ScannerError};
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -116,14 +119,26 @@ pub fn check_status(
         .join(&platform_key)
         .join("manifest_index.json");
 
-    let manifest_index = match ManifestIndex::load(&index_path) {
-        Ok(idx) => Some(idx),
+    let manifest_index_pointer = match ManifestIndexPointer::load(&index_path) {
+        Ok(pointer) => Some(pointer),
         Err(ManifestError::Io(crate::io::IoError::Io(e)))
             if e.kind() == std::io::ErrorKind::NotFound =>
         {
             None
         }
         Err(e) => return Err(StatusError::Manifest(e)),
+    };
+    let manifest_index_revision = match &manifest_index_pointer {
+        Some(pointer) => Some(
+            ManifestIndexRevision::load(
+                gleon_dir
+                    .join("blobs")
+                    .join(pointer.revision_hash.scheme())
+                    .join(pointer.revision_hash.value()),
+            )
+            .map_err(StatusError::Manifest)?,
+        ),
+        None => None,
     };
 
     let config = context.config.as_ref().cloned().unwrap_or_default();
@@ -135,11 +150,26 @@ pub fn check_status(
     let mut modified = Vec::new();
     let mut deleted = Vec::new();
 
-    // Map test manifests to their entries
+    let deleted_test_cases: BTreeSet<String> = manifest_index_revision
+        .as_ref()
+        .map(|revision| {
+            revision
+                .test_manifests
+                .iter()
+                .filter(|(_, state)| matches!(state, TestManifestState::Deleted))
+                .map(|(test_name, _)| test_name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Map present test manifests to their entries.
     let mut baseline_entries = std::collections::BTreeMap::<String, (u32, u32, String)>::new();
 
-    if let Some(ref index) = manifest_index {
-        for manifest_hash in index.test_manifests.values() {
+    if let Some(ref revision) = manifest_index_revision {
+        for state in revision.test_manifests.values() {
+            let TestManifestState::Present(manifest_hash) = state else {
+                continue;
+            };
             let manifest_blob_path = gleon_dir
                 .join("blobs")
                 .join(manifest_hash.scheme())
@@ -156,6 +186,9 @@ pub fn check_status(
     }
 
     for case in test_cases {
+        if deleted_test_cases.contains(&case.name) {
+            continue;
+        }
         for img in case.images {
             let rel_path = img.relative_path;
             let rel_path_str = FileScanner::normalize_path_str(&rel_path);

@@ -4,7 +4,7 @@ pub mod adapter;
 pub mod merge;
 pub mod sync;
 
-pub use adapter::{ObjectStoreAdapter, StorageConfig};
+pub use adapter::{ManifestPointer, ObjectStoreAdapter, StorageConfig};
 use object_store::path::Path as ObjPath;
 
 /// Storage error types.
@@ -48,6 +48,17 @@ pub enum StorageError {
         #[source]
         source: tempfile::PersistError,
     },
+
+    /// A conditional manifest write could not be applied because the remote object changed.
+    #[error("Conditional manifest write conflicted for remote object: {path}")]
+    Conflict {
+        /// Remote object path whose version or existence precondition failed.
+        path: String,
+    },
+
+    /// The remote backend does not support conditional manifest writes.
+    #[error("Remote storage does not support conditional manifest writes")]
+    ConditionalWriteNotSupported,
 }
 
 /// Helper function constructing the remote object path for a CAS blob hash.

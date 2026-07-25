@@ -1,9 +1,13 @@
 use futures::StreamExt;
-use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, error, info};
 
-use crate::manifest::{Manifest, ManifestIndex};
+use crate::manifest::{
+    ImageHash, Manifest, ManifestIndexPointer, ManifestIndexRevision,
+    SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION, TestManifestState,
+};
 use crate::storage::StorageError;
 use crate::storage::adapter::ObjectStoreAdapter;
 use crate::storage::merge::ManifestMerger;
@@ -51,7 +55,7 @@ impl SyncOrchestrator {
         }
     }
 
-    /// Pull remote manifest index, compute delta, and download missing blobs.
+    /// Pull the remote manifest-index pointer and its immutable revision.
     pub async fn pull(
         &self,
         branch: &str,
@@ -63,110 +67,55 @@ impl SyncOrchestrator {
             branch, platform
         );
 
-        let remote_manifest_bytes = match self.adapter.download_manifest(branch, platform).await {
-            Ok(bytes) => bytes,
+        let remote_pointer = match self.adapter.download_manifest(branch, platform).await {
+            Ok(bytes) => Self::parse_pointer(&bytes)?,
             Err(StorageError::BlobNotFound(_)) => {
-                info!("Remote manifest not found. Nothing to pull.");
+                info!("Remote manifest pointer not found. Nothing to pull.");
                 return Ok(());
             }
-            Err(e) => return Err(e),
+            Err(error) => return Err(error),
         };
-
-        let remote_index: ManifestIndex =
-            serde_json::from_slice(&remote_manifest_bytes).map_err(|e| StorageError::Io {
-                source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-            })?;
-
-        // 1. Collect missing Manifest blobs
-        let mut missing_manifest_blobs = Vec::new();
-        for hash in remote_index.test_manifests.values() {
-            let blob_hash = hash.value().to_string();
-            let dest_path = self
-                .workspace_root
-                .join(".gleon/blobs/sha256")
-                .join(&blob_hash);
-            if !dest_path.exists() {
-                missing_manifest_blobs.push(blob_hash);
-            }
-        }
-        missing_manifest_blobs.sort();
-        missing_manifest_blobs.dedup();
-
-        // 2. Download missing Manifest blobs
-        self.download_blobs_concurrently(&missing_manifest_blobs, options)
+        let remote_revision = self
+            .resolve_remote_revision(&remote_pointer, options)
             .await?;
 
-        // 3. Parse the downloaded Manifests to find missing PNG blobs
-        let mut missing_png_blobs = Vec::new();
-        for hash in remote_index.test_manifests.values() {
-            let blob_hash = hash.value();
-            let manifest_path = self
-                .workspace_root
-                .join(".gleon/blobs/sha256")
-                .join(blob_hash);
-            let manifest = Manifest::load(&manifest_path).map_err(|e| StorageError::Io {
-                source: std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "Downloaded manifest blob missing or corrupt for hash {blob_hash}: {e}"
-                    ),
-                ),
-            })?;
-            for entry in manifest.entries.values() {
-                let png_hash = entry.hash.value();
-                let png_path = self
-                    .workspace_root
-                    .join(".gleon/blobs/sha256")
-                    .join(png_hash);
-                if !png_path.exists() {
-                    missing_png_blobs.push(png_hash.to_string());
+        let (final_pointer, final_revision, merged) =
+            match self.load_local_revision(branch, platform)? {
+                Some((local_pointer, local_revision))
+                    if local_pointer.revision_hash != remote_pointer.revision_hash =>
+                {
+                    let revision = self
+                        .merge_revisions_and_manifests(
+                            &remote_revision,
+                            &local_revision,
+                            &remote_pointer.revision_hash,
+                            &local_pointer.revision_hash,
+                            options,
+                        )
+                        .await?;
+                    let pointer = self.persist_revision(&revision)?;
+                    (pointer, revision, true)
                 }
-            }
-        }
+                _ => (remote_pointer, remote_revision, false),
+            };
 
-        missing_png_blobs.sort();
-        missing_png_blobs.dedup();
-
-        // 4. Download missing PNG blobs
-        self.download_blobs_concurrently(&missing_png_blobs, options)
+        self.download_revision_tree(&final_revision, options)
             .await?;
-
-        // 5. Update local manifest index
-        let local_index_path = self
-            .workspace_root
-            .join(".gleon/branches")
-            .join(branch)
-            .join(platform)
-            .join("manifest_index.json");
-
-        let final_local_index = match ManifestIndex::load(&local_index_path) {
-            Ok(local_index) => {
-                self.merge_indexes_and_manifests(&remote_index, &local_index, options)
-                    .await?
-            }
-            Err(crate::manifest::ManifestError::Io(crate::io::IoError::Io(e)))
-                if e.kind() == std::io::ErrorKind::NotFound =>
-            {
-                remote_index.clone()
-            }
-            Err(e) => {
-                return Err(StorageError::Io {
-                    source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-                });
-            }
-        };
-
-        final_local_index
-            .save(&local_index_path)
-            .map_err(|e| StorageError::Io {
-                source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-            })?;
+        if merged {
+            self.upload_blob_if_missing(
+                final_pointer.revision_hash.value(),
+                &self.blob_path(&final_pointer.revision_hash),
+                options,
+            )
+            .await?;
+        }
+        self.save_local_pointer(branch, platform, &final_pointer)?;
 
         info!("Pull completed successfully.");
         Ok(())
     }
 
-    /// Push local manifest index, merge with remote if present, and upload missing blobs.
+    /// Push local immutable revisions and conditionally advance the remote pointer.
     pub async fn push(
         &self,
         branch: &str,
@@ -178,179 +127,367 @@ impl SyncOrchestrator {
             branch, platform
         );
 
-        let local_index_path = self
-            .workspace_root
+        let Some((local_pointer, local_revision)) = self.load_local_revision(branch, platform)?
+        else {
+            info!("No local manifest pointer found. Nothing to push.");
+            return Ok(());
+        };
+
+        self.upload_revision_tree(&local_pointer.revision_hash, &local_revision, options)
+            .await?;
+
+        for attempt in 0..=options.retries {
+            let remote = match self
+                .adapter
+                .download_manifest_pointer(branch, platform)
+                .await
+            {
+                Ok(pointer) => Some((Self::parse_pointer(&pointer.bytes)?, pointer.version)),
+                Err(StorageError::BlobNotFound(_)) => None,
+                Err(error) => return Err(error),
+            };
+
+            let (final_pointer, final_revision) = match &remote {
+                Some((remote_pointer, _))
+                    if remote_pointer.revision_hash != local_pointer.revision_hash =>
+                {
+                    let remote_revision = self
+                        .resolve_remote_revision(remote_pointer, options)
+                        .await?;
+                    let revision = self
+                        .merge_revisions_and_manifests(
+                            &remote_revision,
+                            &local_revision,
+                            &remote_pointer.revision_hash,
+                            &local_pointer.revision_hash,
+                            options,
+                        )
+                        .await?;
+                    let pointer = self.persist_revision(&revision)?;
+                    (pointer, revision)
+                }
+                Some((remote_pointer, _)) => (remote_pointer.clone(), local_revision.clone()),
+                None => (local_pointer.clone(), local_revision.clone()),
+            };
+
+            self.upload_revision_tree(&final_pointer.revision_hash, &final_revision, options)
+                .await?;
+            let pointer_bytes = Self::serialize_pointer(&final_pointer)?;
+            let write_result = match remote {
+                Some((_, version)) => {
+                    self.adapter
+                        .update_manifest(branch, platform, &pointer_bytes, version)
+                        .await
+                }
+                None => {
+                    self.adapter
+                        .create_manifest(branch, platform, &pointer_bytes)
+                        .await
+                }
+            };
+
+            match write_result {
+                Ok(_) => {
+                    self.save_local_pointer(branch, platform, &final_pointer)?;
+                    info!("Push completed successfully.");
+                    return Ok(());
+                }
+                Err(StorageError::Conflict { .. }) if attempt < options.retries => {
+                    debug!(
+                        "Manifest pointer changed while pushing; retrying conditional update (attempt {})",
+                        attempt + 1
+                    );
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        unreachable!("the bounded OCC loop always returns on its final attempt")
+    }
+
+    fn pointer_path(&self, branch: &str, platform: &str) -> PathBuf {
+        self.workspace_root
             .join(".gleon/branches")
             .join(branch)
             .join(platform)
-            .join("manifest_index.json");
+            .join("manifest_index.json")
+    }
 
-        let local_index = match ManifestIndex::load(&local_index_path) {
-            Ok(index) => index,
-            Err(crate::manifest::ManifestError::Io(crate::io::IoError::Io(e)))
-                if e.kind() == std::io::ErrorKind::NotFound =>
-            {
-                info!("No local manifest index found. Nothing to push.");
-                return Ok(());
-            }
-            Err(e) => {
-                return Err(StorageError::Io {
-                    source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-                });
-            }
-        };
+    fn blob_path(&self, hash: &ImageHash) -> PathBuf {
+        self.workspace_root
+            .join(".gleon/blobs")
+            .join(hash.scheme())
+            .join(hash.value())
+    }
 
-        // 1. Identify all local blobs referenced by the index and its manifests
-        let mut blobs_to_upload = Vec::new();
+    fn load_local_revision(
+        &self,
+        branch: &str,
+        platform: &str,
+    ) -> Result<Option<(ManifestIndexPointer, ManifestIndexRevision)>, StorageError> {
+        let pointer_path = self.pointer_path(branch, platform);
+        if !pointer_path.exists() {
+            return Ok(None);
+        }
+        let pointer = ManifestIndexPointer::load(&pointer_path).map_err(Self::manifest_error)?;
+        let revision = ManifestIndexRevision::load(self.blob_path(&pointer.revision_hash))
+            .map_err(Self::manifest_error)?;
+        Ok(Some((pointer, revision)))
+    }
 
-        for hash in local_index.test_manifests.values() {
-            let blob_hash = hash.value().to_string();
-            blobs_to_upload.push(blob_hash.clone());
+    fn save_local_pointer(
+        &self,
+        branch: &str,
+        platform: &str,
+        pointer: &ManifestIndexPointer,
+    ) -> Result<(), StorageError> {
+        pointer
+            .save(self.pointer_path(branch, platform))
+            .map_err(Self::manifest_error)
+    }
 
-            let manifest_path = self
-                .workspace_root
-                .join(".gleon/blobs/sha256")
-                .join(&blob_hash);
-            let manifest = Manifest::load(&manifest_path).map_err(|e| StorageError::Io {
-                source: std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("Local manifest missing or corrupt for hash {blob_hash}: {e}"),
-                ),
+    fn parse_pointer(bytes: &[u8]) -> Result<ManifestIndexPointer, StorageError> {
+        let pointer: ManifestIndexPointer =
+            serde_json::from_slice(bytes).map_err(|error| StorageError::Io {
+                source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
             })?;
-            for entry in manifest.entries.values() {
-                blobs_to_upload.push(entry.hash.value().to_string());
+        pointer.validate().map_err(Self::manifest_error)?;
+        Ok(pointer)
+    }
+
+    fn serialize_pointer(pointer: &ManifestIndexPointer) -> Result<Vec<u8>, StorageError> {
+        pointer.validate().map_err(Self::manifest_error)?;
+        serde_json::to_vec_pretty(pointer).map_err(|error| StorageError::Io {
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+        })
+    }
+
+    fn manifest_error(error: crate::manifest::ManifestError) -> StorageError {
+        StorageError::Io {
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+        }
+    }
+
+    fn persist_revision(
+        &self,
+        revision: &ManifestIndexRevision,
+    ) -> Result<ManifestIndexPointer, StorageError> {
+        revision.validate().map_err(Self::manifest_error)?;
+        let revision_bytes =
+            serde_json::to_vec_pretty(revision).map_err(|error| StorageError::Io {
+                source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+            })?;
+        use sha2::Digest;
+        let hash = hex::encode(sha2::Sha256::digest(&revision_bytes));
+        let revision_hash = ImageHash::new("sha256", hash).map_err(Self::manifest_error)?;
+        let revision_path = self.blob_path(&revision_hash);
+        if !revision_path.exists() {
+            crate::io::save_file_atomically(&revision_path, &revision_bytes).map_err(|error| {
+                StorageError::Io {
+                    source: std::io::Error::other(error.to_string()),
+                }
+            })?;
+        }
+        Ok(ManifestIndexPointer {
+            schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
+            revision_hash,
+        })
+    }
+
+    async fn resolve_remote_revision(
+        &self,
+        pointer: &ManifestIndexPointer,
+        options: &SyncOptions,
+    ) -> Result<ManifestIndexRevision, StorageError> {
+        let revision_path = self.blob_path(&pointer.revision_hash);
+        if !revision_path.exists() {
+            retry_with_backoff(
+                "download_manifest_revision",
+                pointer.revision_hash.value(),
+                options,
+                || {
+                    self.adapter
+                        .download_blob(pointer.revision_hash.value(), &revision_path)
+                },
+            )
+            .await?;
+        }
+        ManifestIndexRevision::load(revision_path).map_err(Self::manifest_error)
+    }
+
+    async fn merge_revisions_and_manifests(
+        &self,
+        remote_revision: &ManifestIndexRevision,
+        local_revision: &ManifestIndexRevision,
+        remote_revision_hash: &ImageHash,
+        local_revision_hash: &ImageHash,
+        options: &SyncOptions,
+    ) -> Result<ManifestIndexRevision, StorageError> {
+        let mut merged = ManifestMerger::merge_index_revisions(remote_revision, local_revision);
+        let mut parent_hashes = BTreeSet::new();
+        parent_hashes.insert(remote_revision_hash.clone());
+        parent_hashes.insert(local_revision_hash.clone());
+        merged.parent_hashes = parent_hashes.into_iter().collect();
+
+        for (test_name, local_state) in &local_revision.test_manifests {
+            let (
+                TestManifestState::Present(local_hash),
+                Some(TestManifestState::Present(remote_hash)),
+            ) = (local_state, remote_revision.test_manifests.get(test_name))
+            else {
+                continue;
+            };
+            if local_hash == remote_hash {
+                continue;
             }
+
+            let local_manifest = self.load_manifest(local_hash, test_name)?;
+            self.ensure_blob_downloaded(remote_hash, options).await?;
+            let remote_manifest = self.load_manifest(remote_hash, test_name)?;
+            let merged_manifest =
+                ManifestMerger::merge_manifests(&remote_manifest, &local_manifest).map_err(
+                    |error| StorageError::Io {
+                        source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+                    },
+                )?;
+            let merged_hash = self.persist_manifest(&merged_manifest)?;
+            self.upload_blob_if_missing(
+                merged_hash.value(),
+                &self.blob_path(&merged_hash),
+                options,
+            )
+            .await?;
+            merged
+                .test_manifests
+                .insert(test_name.clone(), TestManifestState::Present(merged_hash));
         }
 
-        blobs_to_upload.sort();
-        blobs_to_upload.dedup();
+        Ok(merged)
+    }
 
-        // Upload blobs concurrently. Skip blobs that already exist on remote (via blob_exists HEAD check).
-        self.upload_blobs_concurrently(&blobs_to_upload, options)
-            .await?;
+    fn load_manifest(&self, hash: &ImageHash, test_name: &str) -> Result<Manifest, StorageError> {
+        Manifest::load(self.blob_path(hash)).map_err(|error| StorageError::Io {
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to load manifest for {test_name}: {error}"),
+            ),
+        })
+    }
 
-        // 2. Fetch remote index and merge
-        let remote_manifest_bytes_res = self.adapter.download_manifest(branch, platform).await;
-
-        let final_index = match remote_manifest_bytes_res {
-            Ok(bytes) => {
-                let remote_index: ManifestIndex =
-                    serde_json::from_slice(&bytes).map_err(|e| StorageError::Io {
-                        source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-                    })?;
-                self.merge_indexes_and_manifests(&remote_index, &local_index, options)
-                    .await?
-            }
-            Err(StorageError::BlobNotFound(_)) => local_index,
-            Err(e) => return Err(e),
-        };
-
-        // 3. Upload the final manifest
-        let final_index_bytes =
-            serde_json::to_vec_pretty(&final_index).map_err(|e| StorageError::Io {
-                source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+    fn persist_manifest(&self, manifest: &Manifest) -> Result<ImageHash, StorageError> {
+        manifest.validate().map_err(Self::manifest_error)?;
+        let bytes = serde_json::to_vec_pretty(manifest).map_err(|error| StorageError::Io {
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+        })?;
+        use sha2::Digest;
+        let hash = ImageHash::new("sha256", hex::encode(sha2::Sha256::digest(&bytes)))
+            .map_err(Self::manifest_error)?;
+        let path = self.blob_path(&hash);
+        if !path.exists() {
+            crate::io::save_file_atomically(path, &bytes).map_err(|error| StorageError::Io {
+                source: std::io::Error::other(error.to_string()),
             })?;
-        self.adapter
-            .upload_manifest(branch, platform, &final_index_bytes)
+        }
+        Ok(hash)
+    }
+
+    async fn ensure_blob_downloaded(
+        &self,
+        hash: &ImageHash,
+        options: &SyncOptions,
+    ) -> Result<(), StorageError> {
+        let path = self.blob_path(hash);
+        if path.exists() {
+            return Ok(());
+        }
+        retry_with_backoff("download", hash.value(), options, || {
+            self.adapter.download_blob(hash.value(), &path)
+        })
+        .await
+    }
+
+    async fn download_revision_tree(
+        &self,
+        revision: &ManifestIndexRevision,
+        options: &SyncOptions,
+    ) -> Result<(), StorageError> {
+        let manifests: Vec<_> = revision
+            .test_manifests
+            .values()
+            .filter_map(|state| match state {
+                TestManifestState::Present(hash) => Some(hash.clone()),
+                TestManifestState::Deleted => None,
+            })
+            .collect();
+        let missing_manifests: Vec<_> = manifests
+            .iter()
+            .filter(|hash| !self.blob_path(hash).exists())
+            .map(|hash| hash.value().to_string())
+            .collect();
+        self.download_blobs_concurrently(&missing_manifests, options)
             .await?;
 
-        info!("Push completed successfully.");
+        let mut missing_images = BTreeSet::new();
+        for hash in &manifests {
+            let manifest = self.load_manifest(hash, "remote")?;
+            missing_images.extend(
+                manifest
+                    .entries
+                    .values()
+                    .map(|entry| entry.hash.value().to_string())
+                    .filter(|hash| {
+                        !self
+                            .workspace_root
+                            .join(".gleon/blobs/sha256")
+                            .join(hash)
+                            .exists()
+                    }),
+            );
+        }
+        self.download_blobs_concurrently(&missing_images.into_iter().collect::<Vec<_>>(), options)
+            .await?;
         Ok(())
     }
 
-    async fn merge_indexes_and_manifests(
+    async fn upload_revision_tree(
         &self,
-        remote_index: &ManifestIndex,
-        local_index: &ManifestIndex,
+        revision_hash: &ImageHash,
+        revision: &ManifestIndexRevision,
         options: &SyncOptions,
-    ) -> Result<ManifestIndex, StorageError> {
-        let mut final_index = ManifestMerger::merge_indexes(remote_index, local_index);
-
-        for (test_name, local_hash) in &local_index.test_manifests {
-            if let Some(remote_hash) = remote_index
-                .test_manifests
-                .get(test_name)
-                .filter(|h| *h != local_hash)
-            {
-                let local_manifest_path = self
-                    .workspace_root
-                    .join(".gleon/blobs/sha256")
-                    .join(local_hash.value());
-                let local_manifest =
-                    Manifest::load(&local_manifest_path).map_err(|e| StorageError::Io {
-                        source: std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("Failed to load local manifest for {test_name}: {e}"),
-                        ),
-                    })?;
-
-                let remote_manifest_path = self
-                    .workspace_root
-                    .join(".gleon/blobs/sha256")
-                    .join(remote_hash.value());
-
-                if !remote_manifest_path.exists() {
-                    retry_with_backoff(
-                        "download_remote_manifest",
-                        remote_hash.value(),
-                        options,
-                        || async {
-                            self.adapter
-                                .download_blob(remote_hash.value(), &remote_manifest_path)
-                                .await
-                        },
-                    )
-                    .await?;
-                }
-
-                let remote_manifest =
-                    Manifest::load(&remote_manifest_path).map_err(|e| StorageError::Io {
-                        source: std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("Failed to load remote manifest for {test_name}: {e}"),
-                        ),
-                    })?;
-
-                let merged_manifest =
-                    ManifestMerger::merge_manifests(&remote_manifest, &local_manifest);
-
-                let manifest_bytes =
-                    serde_json::to_vec_pretty(&merged_manifest).map_err(|e| StorageError::Io {
-                        source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-                    })?;
-
-                use sha2::Digest;
-                let merged_hash_hex = hex::encode(sha2::Sha256::digest(&manifest_bytes));
-                let merged_manifest_path = self
-                    .workspace_root
-                    .join(".gleon/blobs/sha256")
-                    .join(&merged_hash_hex);
-
-                crate::io::save_file_atomically(&merged_manifest_path, &manifest_bytes).map_err(
-                    |e| StorageError::Io {
-                        source: std::io::Error::other(e.to_string()),
-                    },
-                )?;
-
-                retry_with_backoff(
-                    "upload_merged_manifest",
-                    &merged_hash_hex,
-                    options,
-                    || async {
-                        self.adapter
-                            .upload_blob(&merged_hash_hex, &merged_manifest_path)
-                            .await
-                    },
-                )
-                .await?;
-
-                if let Ok(hash) = crate::manifest::ImageHash::new("sha256", &merged_hash_hex) {
-                    final_index.test_manifests.insert(test_name.clone(), hash);
-                }
-            }
+    ) -> Result<(), StorageError> {
+        let mut blobs = BTreeSet::new();
+        blobs.insert(revision_hash.value().to_string());
+        for state in revision.test_manifests.values() {
+            let TestManifestState::Present(manifest_hash) = state else {
+                continue;
+            };
+            blobs.insert(manifest_hash.value().to_string());
+            let manifest = self.load_manifest(manifest_hash, "local")?;
+            blobs.extend(
+                manifest
+                    .entries
+                    .values()
+                    .map(|entry| entry.hash.value().to_string()),
+            );
         }
+        self.upload_blobs_concurrently(&blobs.into_iter().collect::<Vec<_>>(), options)
+            .await
+    }
 
-        Ok(final_index)
+    async fn upload_blob_if_missing(
+        &self,
+        hash: &str,
+        path: &Path,
+        options: &SyncOptions,
+    ) -> Result<(), StorageError> {
+        retry_with_backoff("upload", hash, options, || async {
+            if self.adapter.blob_exists(hash).await? {
+                Ok(())
+            } else {
+                self.adapter.upload_blob(hash, path).await
+            }
+        })
+        .await
     }
 }
 
@@ -421,7 +558,7 @@ impl SyncOrchestrator {
 
         let mut buffered = stream.buffer_unordered(options.concurrency);
         while let Some(result) = buffered.next().await {
-            result?; // Return on first error if fail_fast
+            result?;
             if let Some(cb) = &options.on_progress {
                 cb();
             }
@@ -452,15 +589,7 @@ impl SyncOrchestrator {
                 });
             }
 
-            retry_with_backoff("upload", hash, options, || async {
-                if self.adapter.blob_exists(hash).await? {
-                    debug!("Blob {} already exists on remote, skipping upload.", hash);
-                    Ok(())
-                } else {
-                    self.adapter.upload_blob(hash, &src_path).await
-                }
-            })
-            .await
+            self.upload_blob_if_missing(hash, &src_path, options).await
         });
 
         let mut buffered = stream.buffer_unordered(options.concurrency);

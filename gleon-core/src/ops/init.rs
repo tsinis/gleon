@@ -1,6 +1,11 @@
 //! Initialization operation for gleon workspace.
 
 use crate::config::GleonConfig;
+use crate::manifest::{
+    ImageHash, ManifestIndexPointer, ManifestIndexRevision, SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
+};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -63,12 +68,32 @@ pub fn init_workspace(
         let _ = file.write_all(b"runs/\n");
     }
 
-    // Scaffold default manifest_index.json for current branch
+    // Scaffold a root manifest-index revision and its mutable pointer for the current branch.
     if let Ok(platform_key) = context.platform.to_key() {
         let branch_dir = branches_dir.join(&context.branch).join(&platform_key);
-        let index_path = branch_dir.join("manifest_index.json");
+        let pointer_path = branch_dir.join("manifest_index.json");
         std::fs::create_dir_all(&branch_dir)?;
-        let _ = crate::manifest::ManifestIndex::update(&index_path, |_| {});
+
+        if !pointer_path.exists() {
+            let revision = ManifestIndexRevision {
+                schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
+                parent_hashes: Vec::new(),
+                test_manifests: BTreeMap::new(),
+            };
+            let revision_json = serde_json::to_vec_pretty(&revision)
+                .map_err(|e| crate::manifest::ManifestError::Validation(e.to_string()))?;
+            let revision_hash = hex::encode(Sha256::digest(&revision_json));
+            let revision_path = blobs_dir.join(&revision_hash);
+            if !revision_path.exists() {
+                crate::io::save_file_atomically(&revision_path, &revision_json)?;
+            }
+
+            ManifestIndexPointer {
+                schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
+                revision_hash: ImageHash::new("sha256", revision_hash)?,
+            }
+            .save(&pointer_path)?;
+        }
     }
 
     let root_config = base_dir.join("gleon.yaml");
@@ -130,6 +155,21 @@ mod tests {
 
         assert!(base_path.join(".gleon/blobs/sha256").is_dir());
         assert!(base_path.join(".gleon/branches").is_dir());
+
+        let platform_key = ctx.platform.to_key().unwrap();
+        let pointer_path = base_path
+            .join(".gleon/branches/main")
+            .join(platform_key)
+            .join("manifest_index.json");
+        let pointer = crate::manifest::ManifestIndexPointer::load(&pointer_path).unwrap();
+        let revision = crate::manifest::ManifestIndexRevision::load(
+            base_path
+                .join(".gleon/blobs/sha256")
+                .join(pointer.revision_hash.value()),
+        )
+        .unwrap();
+        assert!(revision.parent_hashes.is_empty());
+        assert!(revision.test_manifests.is_empty());
         assert!(base_path.join(".gleon/runs/latest").is_dir());
         assert!(base_path.join(".gleon/.gitignore").is_file());
         assert_eq!(

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 2,
+  "version": 3,
+  "parentHashes": [],
+  "hashAlgo": "sha256",
+  "pixelFormat": "rgba",
+  "generatorVersion": "1.0.0",
+  "entries": {
+    "local_only.png": {
+      "hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "phash": "dhash:0123456789abcdef",
+      "width": 1024,
+      "height": 768,
+      "createdAt": "2024-03-10T16:00:00Z",
+      "createdBy": "Local User <local@example.com>",
+      "sourceCommit": "localcommit"
+    },
+    "shared.png": {
+      "hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "phash": "dhash:fedcba9876543210",
+      "width": 1024,
+      "height": 768,
+      "createdAt": "2024-03-10T16:00:00Z",
+      "createdBy": "Local User <local@example.com>",
+      "sourceCommit": "localcommit"
+    }
+  }
+}

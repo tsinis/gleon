@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use futures::StreamExt as _;
 use object_store::path::Path as ObjPath;
-use object_store::{ObjectStore, ObjectStoreExt, parse_url_opts};
+use object_store::{
+    ObjectStore, ObjectStoreExt, PutMode, PutOptions, UpdateVersion, parse_url_opts,
+};
 use tempfile::NamedTempFile;
 use tracing::{debug, instrument};
 
@@ -83,6 +85,15 @@ impl fmt::Debug for StorageConfig {
             .field("concurrency", &self.concurrency)
             .finish()
     }
+}
+
+/// A downloaded manifest pointer and the version required to update it conditionally.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestPointer {
+    /// Raw manifest index JSON bytes.
+    pub bytes: Vec<u8>,
+    /// The remote object's version at the time it was downloaded.
+    pub version: UpdateVersion,
 }
 
 /// Unified storage adapter backing baseline and blob operations via `object_store`.
@@ -267,24 +278,121 @@ impl ObjectStoreAdapter {
         branch: &str,
         platform: &str,
     ) -> Result<Vec<u8>, StorageError> {
+        Ok(self
+            .download_manifest_pointer(branch, platform)
+            .await?
+            .bytes)
+    }
+
+    /// Downloads a manifest index and its remote version for a later conditional update.
+    ///
+    /// # Errors
+    /// Returns [`StorageError::BlobNotFound`] if the manifest does not exist on remote storage,
+    /// or [`StorageError::Store`] on download failure.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn download_manifest_pointer(
+        &self,
+        branch: &str,
+        platform: &str,
+    ) -> Result<ManifestPointer, StorageError> {
         let key = manifest_key(branch, platform);
-        let get_result = self.store.get(&key).await;
-        let get_output = match get_result {
+        let get_output = match self.store.get(&key).await {
             Ok(output) => output,
             Err(object_store::Error::NotFound { .. }) => {
                 return Err(StorageError::BlobNotFound(format!(
                     "{branch}/{platform}/manifest_index.json"
                 )));
             }
-            Err(err) => return Err(StorageError::Store { source: err }),
+            Err(source) => return Err(StorageError::Store { source }),
         };
-
+        let version = UpdateVersion {
+            e_tag: get_output.meta.e_tag.clone(),
+            version: get_output.meta.version.clone(),
+        };
         let bytes = get_output
             .bytes()
             .await
             .map_err(|source| StorageError::Store { source })?;
-        debug!(branch = %branch, platform = %platform, "Successfully downloaded manifest from remote storage");
-        Ok(bytes.to_vec())
+
+        debug!(branch = %branch, platform = %platform, "Successfully downloaded manifest pointer from remote storage");
+        Ok(ManifestPointer {
+            bytes: bytes.to_vec(),
+            version,
+        })
+    }
+
+    /// Creates a manifest only when no manifest currently exists at the remote path.
+    ///
+    /// # Errors
+    /// Returns [`StorageError::Conflict`] when a manifest already exists, or
+    /// [`StorageError::ConditionalWriteNotSupported`] when the backend cannot perform
+    /// conditional writes.
+    #[instrument(skip(self, bytes), level = "debug")]
+    pub async fn create_manifest(
+        &self,
+        branch: &str,
+        platform: &str,
+        bytes: &[u8],
+    ) -> Result<UpdateVersion, StorageError> {
+        self.put_manifest_conditionally(branch, platform, bytes, PutMode::Create)
+            .await
+    }
+
+    /// Updates a manifest only when its remote version matches `version`.
+    ///
+    /// # Errors
+    /// Returns [`StorageError::Conflict`] when the manifest changed or was deleted since it was
+    /// downloaded, or [`StorageError::ConditionalWriteNotSupported`] when the backend cannot
+    /// perform conditional writes.
+    #[instrument(skip(self, bytes, version), level = "debug")]
+    pub async fn update_manifest(
+        &self,
+        branch: &str,
+        platform: &str,
+        bytes: &[u8],
+        version: UpdateVersion,
+    ) -> Result<UpdateVersion, StorageError> {
+        self.put_manifest_conditionally(branch, platform, bytes, PutMode::Update(version))
+            .await
+    }
+
+    async fn put_manifest_conditionally(
+        &self,
+        branch: &str,
+        platform: &str,
+        bytes: &[u8],
+        mode: PutMode,
+    ) -> Result<UpdateVersion, StorageError> {
+        let key = manifest_key(branch, platform);
+        let result = self
+            .store
+            .put_opts(
+                &key,
+                object_store::PutPayload::from(bytes.to_vec()),
+                PutOptions {
+                    mode,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|source| Self::map_conditional_manifest_error(source, &key))?;
+
+        debug!(branch = %branch, platform = %platform, "Successfully conditionally uploaded manifest to remote storage");
+        Ok(result.into())
+    }
+
+    fn map_conditional_manifest_error(source: object_store::Error, key: &ObjPath) -> StorageError {
+        match source {
+            object_store::Error::AlreadyExists { .. }
+            | object_store::Error::Precondition { .. } => StorageError::Conflict {
+                path: key.to_string(),
+            },
+            object_store::Error::NotSupported { .. }
+            | object_store::Error::NotImplemented { .. } => {
+                StorageError::ConditionalWriteNotSupported
+            }
+            source => StorageError::Store { source },
+        }
     }
 
     /// Lists all SHA256 blob hashes existing under the remote `blobs/sha256/` prefix.

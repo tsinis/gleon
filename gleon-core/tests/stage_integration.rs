@@ -2,7 +2,7 @@
 
 use gleon_core::cli::{Cli, Commands};
 use gleon_core::context::ResolvedContext;
-use gleon_core::manifest::ManifestIndex;
+use gleon_core::manifest::{ManifestIndexPointer, ManifestIndexRevision, TestManifestState};
 use gleon_core::ops::{StageError, check_status, init_workspace, stage_workspace};
 use std::fs;
 use std::path::Path;
@@ -88,7 +88,7 @@ screenshots:
     assert_eq!(stage_res.staged_test_cases.len(), 1);
     assert_eq!(stage_res.total_screenshots_staged, 1);
 
-    // 5. Verify manifest_index.json exists and is valid
+    // 5. Verify manifest_index.json points to a valid CAS revision
     let platform_key = ctx.platform.to_key().unwrap();
     let index_path = base_path
         .join(".gleon/branches/main")
@@ -96,8 +96,19 @@ screenshots:
         .join("manifest_index.json");
     assert!(index_path.is_file());
 
-    let index = ManifestIndex::load(&index_path).expect("manifest_index.json should be valid");
-    assert!(index.test_manifests.contains_key("billing"));
+    let pointer = ManifestIndexPointer::load(&index_path)
+        .expect("manifest_index.json should be a valid pointer");
+    let revision = ManifestIndexRevision::load(
+        base_path
+            .join(".gleon/blobs")
+            .join(pointer.revision_hash.scheme())
+            .join(pointer.revision_hash.value()),
+    )
+    .expect("pointed manifest index revision should be valid");
+    assert!(matches!(
+        revision.test_manifests.get("billing"),
+        Some(TestManifestState::Present(_))
+    ));
 
     // 6. After staging: status reports CLEAN!
     let status_after = check_status(&ctx, base_path).unwrap();
@@ -159,18 +170,28 @@ screenshots:
         "Filtered stage should only process matching screenshot paths"
     );
 
-    // 4. Load manifest from index and verify BOTH form1.png AND form2.png remain in manifest entries
+    // 4. Resolve the manifest through pointer -> revision and verify BOTH entries remain
     let platform_key = ctx.platform.to_key().unwrap();
     let index_path = base_path
         .join(".gleon/branches/main")
         .join(&platform_key)
         .join("manifest_index.json");
 
-    let index = ManifestIndex::load(&index_path).unwrap();
-    let manifest_hash = index
+    let pointer = ManifestIndexPointer::load(&index_path).unwrap();
+    let revision = ManifestIndexRevision::load(
+        base_path
+            .join(".gleon/blobs")
+            .join(pointer.revision_hash.scheme())
+            .join(pointer.revision_hash.value()),
+    )
+    .unwrap();
+    let TestManifestState::Present(manifest_hash) = revision
         .test_manifests
         .get("billing")
-        .expect("billing manifest must exist");
+        .expect("billing manifest must exist")
+    else {
+        panic!("billing manifest must be present");
+    };
 
     let manifest_path = base_path
         .join(".gleon/blobs")

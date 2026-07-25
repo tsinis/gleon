@@ -5,13 +5,13 @@ use crate::context::{ContextError, ResolvedContext};
 use crate::engine::phash::compute_phash;
 use crate::git::GitResolver;
 use crate::manifest::{
-    ImageHash, Manifest, ManifestEntry, ManifestError, ManifestIndex,
-    SUPPORTED_MANIFEST_SCHEMA_VERSION,
+    ImageHash, Manifest, ManifestEntry, ManifestError, ManifestIndexPointer, ManifestIndexRevision,
+    SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION, SUPPORTED_MANIFEST_SCHEMA_VERSION, TestManifestState,
 };
 use crate::masking::apply_masks;
 use crate::scanner::{FileScanner, ScannerError};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -94,14 +94,21 @@ pub fn stage_workspace(
 
     let index_path = branch_dir.join("manifest_index.json");
 
-    let manifest_index_opt = match ManifestIndex::load(&index_path) {
-        Ok(idx) => Some(idx),
+    let manifest_index_pointer = match ManifestIndexPointer::load(&index_path) {
+        Ok(pointer) => Some(pointer),
         Err(ManifestError::Io(crate::io::IoError::Io(e)))
             if e.kind() == std::io::ErrorKind::NotFound =>
         {
             None
         }
         Err(e) => return Err(StageError::Manifest(e)),
+    };
+    let manifest_index_revision = match &manifest_index_pointer {
+        Some(pointer) => Some(
+            ManifestIndexRevision::load(blobs_dir.join(pointer.revision_hash.value()))
+                .map_err(StageError::Manifest)?,
+        ),
+        None => None,
     };
 
     let config = context.config.as_ref().cloned().unwrap_or_default();
@@ -121,6 +128,7 @@ pub fn stage_workspace(
 
     let mut image_items = Vec::new();
     let mut existing_manifests = BTreeMap::new();
+    let mut existing_manifest_hashes = BTreeMap::new();
 
     for case in &test_cases {
         // If filter_paths is specified, skip test cases that don't match any path
@@ -135,19 +143,23 @@ pub fn stage_workspace(
             }
         }
 
-        let existing_manifest = match manifest_index_opt
+        let existing_manifest = match manifest_index_revision
             .as_ref()
-            .and_then(|idx| idx.test_manifests.get(&case.name))
+            .and_then(|revision| revision.test_manifests.get(&case.name))
         {
-            Some(hash) => {
+            Some(TestManifestState::Present(hash)) => {
                 let manifest_blob_path = blobs_dir.join(hash.value());
-                Some(Manifest::load(manifest_blob_path).map_err(StageError::Manifest)?)
+                Some((
+                    hash.clone(),
+                    Manifest::load(manifest_blob_path).map_err(StageError::Manifest)?,
+                ))
             }
-            None => None,
+            Some(TestManifestState::Deleted) | None => None,
         };
 
-        if let Some(m) = existing_manifest {
-            existing_manifests.insert(case.name.clone(), m.entries);
+        if let Some((hash, manifest)) = existing_manifest {
+            existing_manifest_hashes.insert(case.name.clone(), hash);
+            existing_manifests.insert(case.name.clone(), manifest.entries);
         }
 
         let rule = case.rule.clone();
@@ -166,68 +178,72 @@ pub fn stage_workspace(
 
     use rayon::prelude::*;
 
-    let processed_results: Result<Vec<_>, StageError> = image_items
-        .into_par_iter()
-        .map(|(case_name, rule, img)| {
-            let matched_zones = rule.matched_mask_zones(&img.relative_path);
+    let image_pool = crate::ops::image_processing_pool().map_err(StageError::Io)?;
+    let processed_results: Result<Vec<_>, StageError> = image_pool.install(|| {
+        image_items
+            .into_par_iter()
+            .map(|(case_name, rule, img)| {
+                let matched_zones = rule.matched_mask_zones(&img.relative_path);
 
-            let (png_bytes, width, height, rgba_img) = if !matched_zones.is_empty() {
-                let dynamic_img =
-                    image::open(&img.absolute_path).map_err(|e| StageError::ImageDecode {
-                        path: img.relative_path.clone(),
-                        reason: e.to_string(),
+                let (png_bytes, width, height, rgba_img) = if !matched_zones.is_empty() {
+                    let dynamic_img =
+                        image::open(&img.absolute_path).map_err(|e| StageError::ImageDecode {
+                            path: img.relative_path.clone(),
+                            reason: e.to_string(),
+                        })?;
+                    let mut rgba = dynamic_img.to_rgba8();
+                    apply_masks(&mut rgba, &matched_zones);
+                    let w = rgba.width();
+                    let h = rgba.height();
+
+                    let mut encoded = Vec::new();
+                    let mut cursor = Cursor::new(&mut encoded);
+                    rgba.write_to(&mut cursor, image::ImageFormat::Png)
+                        .map_err(|e| StageError::ImageEncode {
+                            path: img.relative_path.clone(),
+                            reason: e.to_string(),
+                        })?;
+                    (encoded, w, h, rgba)
+                } else {
+                    let raw_bytes = std::fs::read(&img.absolute_path).map_err(StageError::Io)?;
+                    let dynamic_img = image::load_from_memory(&raw_bytes).map_err(|e| {
+                        StageError::ImageDecode {
+                            path: img.relative_path.clone(),
+                            reason: e.to_string(),
+                        }
                     })?;
-                let mut rgba = dynamic_img.to_rgba8();
-                apply_masks(&mut rgba, &matched_zones);
-                let w = rgba.width();
-                let h = rgba.height();
+                    let w = dynamic_img.width();
+                    let h = dynamic_img.height();
+                    let rgba = dynamic_img.to_rgba8();
+                    (raw_bytes, w, h, rgba)
+                };
 
-                let mut encoded = Vec::new();
-                let mut cursor = Cursor::new(&mut encoded);
-                rgba.write_to(&mut cursor, image::ImageFormat::Png)
-                    .map_err(|e| StageError::ImageEncode {
-                        path: img.relative_path.clone(),
-                        reason: e.to_string(),
-                    })?;
-                (encoded, w, h, rgba)
-            } else {
-                let raw_bytes = std::fs::read(&img.absolute_path).map_err(StageError::Io)?;
-                let dynamic_img =
-                    image::load_from_memory(&raw_bytes).map_err(|e| StageError::ImageDecode {
-                        path: img.relative_path.clone(),
-                        reason: e.to_string(),
-                    })?;
-                let w = dynamic_img.width();
-                let h = dynamic_img.height();
-                let rgba = dynamic_img.to_rgba8();
-                (raw_bytes, w, h, rgba)
-            };
+                // Compute perceptual hash (pHash)
+                let phash_str = compute_phash(&rgba_img);
 
-            // Compute perceptual hash (pHash)
-            let phash_str = compute_phash(&rgba_img);
+                // Compute SHA-256 of PNG blob
+                let sha256_hex = hex::encode(Sha256::digest(&png_bytes));
 
-            // Compute SHA-256 of PNG blob
-            let sha256_hex = hex::encode(Sha256::digest(&png_bytes));
+                // Save image blob to .gleon/blobs/sha256/<sha256_hex>
+                let blob_path = blobs_dir.join(&sha256_hex);
+                if !blob_path.exists() {
+                    crate::io::save_file_atomically(&blob_path, &png_bytes)
+                        .map_err(StageError::from)?;
+                }
 
-            // Save image blob to .gleon/blobs/sha256/<sha256_hex>
-            let blob_path = blobs_dir.join(&sha256_hex);
-            if !blob_path.exists() {
-                crate::io::save_file_atomically(&blob_path, &png_bytes)
-                    .map_err(StageError::from)?;
-            }
+                let rel_path_str = FileScanner::normalize_path_str(&img.relative_path).into_owned();
 
-            let rel_path_str = FileScanner::normalize_path_str(&img.relative_path).into_owned();
-
-            Ok((
-                case_name,
-                rel_path_str,
-                sha256_hex,
-                phash_str,
-                width,
-                height,
-            ))
-        })
-        .collect();
+                Ok((
+                    case_name,
+                    rel_path_str,
+                    sha256_hex,
+                    phash_str,
+                    width,
+                    height,
+                ))
+            })
+            .collect()
+    });
 
     let processed_results = processed_results?;
 
@@ -270,6 +286,10 @@ pub fn stage_workspace(
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: env!("CARGO_PKG_VERSION").to_string(),
+            parent_hashes: existing_manifest_hashes
+                .remove(&case_name)
+                .into_iter()
+                .collect(),
             entries: manifest_entries,
         };
 
@@ -285,18 +305,61 @@ pub fn stage_workspace(
 
         test_manifest_map.insert(
             case_name.clone(),
-            ImageHash::new("sha256", &test_manifest_sha256).map_err(StageError::Manifest)?,
+            TestManifestState::Present(
+                ImageHash::new("sha256", &test_manifest_sha256).map_err(StageError::Manifest)?,
+            ),
         );
 
         staged_test_cases.push(case_name);
     }
 
-    // Update manifest_index.json atomically
-    ManifestIndex::update(&index_path, |index| {
-        for (test_name, manifest_hash) in test_manifest_map {
-            index.test_manifests.insert(test_name, manifest_hash);
+    let mut test_manifests = manifest_index_revision
+        .as_ref()
+        .map(|revision| revision.test_manifests.clone())
+        .unwrap_or_default();
+    test_manifests.extend(test_manifest_map);
+
+    // A filtered stage is intentionally partial, so it must not infer deletions
+    // for cases outside the requested paths. A full scan marks prior present
+    // cases that produced no images as deleted, while preserving existing tombstones.
+    if filter_paths.is_none() {
+        let scanned_test_cases: BTreeSet<_> = test_cases
+            .iter()
+            .filter(|case| !case.images.is_empty())
+            .map(|case| case.name.as_str())
+            .collect();
+        for (case_name, state) in &mut test_manifests {
+            if matches!(state, TestManifestState::Present(_))
+                && !scanned_test_cases.contains(case_name.as_str())
+            {
+                *state = TestManifestState::Deleted;
+            }
         }
-    })
+    }
+
+    let index_revision = ManifestIndexRevision {
+        schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
+        parent_hashes: manifest_index_pointer
+            .as_ref()
+            .map(|pointer| pointer.revision_hash.clone())
+            .into_iter()
+            .collect(),
+        test_manifests,
+    };
+    let revision_json = serde_json::to_vec_pretty(&index_revision)
+        .map_err(|e| ManifestError::Validation(e.to_string()))?;
+    let revision_sha256 = hex::encode(Sha256::digest(&revision_json));
+    let revision_blob_path = blobs_dir.join(&revision_sha256);
+    if !revision_blob_path.exists() {
+        crate::io::save_file_atomically(&revision_blob_path, &revision_json)
+            .map_err(StageError::from)?;
+    }
+
+    ManifestIndexPointer {
+        schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
+        revision_hash: ImageHash::new("sha256", revision_sha256).map_err(StageError::Manifest)?,
+    }
+    .save(&index_path)
     .map_err(StageError::Manifest)?;
 
     Ok(StageResult {

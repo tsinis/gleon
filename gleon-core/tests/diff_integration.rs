@@ -87,6 +87,10 @@ screenshots:
     assert_eq!(report_match.total_tests, 1);
     assert_eq!(report_match.failed_tests, 0);
 
+    let stale_diff = base_path.join(".gleon/runs/latest/diffs/stale.png");
+    fs::create_dir_all(stale_diff.parent().unwrap()).unwrap();
+    fs::write(&stale_diff, b"stale diff artifact").unwrap();
+
     // 5. Replace form.png with a modified PNG fixture (diff_16px_corners_100x100.png)
     let modified_png_bytes = fs::read(fixtures_dir.join("diff_16px_corners_100x100.png"))
         .expect("diff_16px_corners_100x100.png fixture must exist");
@@ -104,6 +108,7 @@ screenshots:
     assert!(runs_dir.join("report.html").is_file());
     assert!(runs_dir.join("report.md").is_file());
     assert!(runs_dir.join("junit.xml").is_file());
+    assert!(!stale_diff.exists());
 }
 
 #[test]
