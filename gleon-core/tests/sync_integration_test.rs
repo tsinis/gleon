@@ -685,6 +685,25 @@ async fn test_sync_orchestrator_push_uploads_revision_and_manifest_ancestors() {
         )))
         .unwrap(),
     );
+    // The parent revision and manifest are retained remotely but pruned locally.
+    adapter
+        .upload_blob(base_hash.value(), &blobs.join(base_hash.value()))
+        .await
+        .unwrap();
+    adapter
+        .upload_blob(
+            parent_manifest_hash.value(),
+            &blobs.join(parent_manifest_hash.value()),
+        )
+        .await
+        .unwrap();
+    adapter
+        .upload_blob(image_hash.value(), &blobs.join(image_hash.value()))
+        .await
+        .unwrap();
+    std::fs::remove_file(blobs.join(base_hash.value())).unwrap();
+    std::fs::remove_file(blobs.join(parent_manifest_hash.value())).unwrap();
+
     SyncOrchestrator::new(adapter.clone(), local_root.to_path_buf())
         .push("main", "mac", &SyncOptions::default())
         .await
@@ -789,7 +808,45 @@ async fn test_sync_orchestrator_pull_merges_unrelated_root_manifests_local_wins(
 
 #[tokio::test]
 #[cfg(not(miri))]
-async fn test_sync_orchestrator_push_missing_local_blob_fails() {
+async fn test_sync_orchestrator_push_is_noop_when_remote_matches_local_head() {
+    let local_dir = tempdir().unwrap();
+    let remote_dir = tempdir().unwrap();
+    let local_root = local_dir.path();
+    let remote_root = remote_dir.path();
+
+    let revision = ManifestIndexRevision {
+        schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
+        parent_hashes: Vec::new(),
+        test_manifests: std::collections::BTreeMap::new(),
+    };
+    let revision_hash = store_revision(&local_root.join(".gleon/blobs/sha256"), &revision);
+    save_local_pointer(local_root, revision_hash.clone());
+    save_remote_pointer(remote_root, revision_hash.clone());
+
+    let adapter = Arc::new(
+        ObjectStoreAdapter::from_config(&StorageConfig::new(format!(
+            "file://{}",
+            remote_root.display()
+        )))
+        .unwrap(),
+    );
+    SyncOrchestrator::new(adapter, local_root.to_path_buf())
+        .push("main", "mac", &SyncOptions::default())
+        .await
+        .unwrap();
+
+    assert!(
+        !remote_root
+            .join("blobs/sha256")
+            .join(revision_hash.value())
+            .exists(),
+        "matching pointers must not upload the local revision tree"
+    );
+}
+
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_sync_orchestrator_push_missing_local_blob_already_remote_succeeds() {
     let local_dir = tempdir().unwrap();
     let remote_dir = tempdir().unwrap();
 
@@ -864,15 +921,14 @@ async fn test_sync_orchestrator_push_missing_local_blob_fails() {
     )
     .unwrap();
 
-    // DO NOT write `blob_hash` to disk!
+    // DO NOT write `blob_hash` to the local workspace. It is already in remote CAS.
+    let remote_source = remote_dir.path().join("remote-image");
+    std::fs::write(&remote_source, b"remote image").unwrap();
+    adapter
+        .upload_blob(blob_hash, &remote_source)
+        .await
+        .unwrap();
 
-    let result = orchestrator.push("main", "mac", &options).await;
-    assert!(
-        result.is_err(),
-        "Push should fail because a locally referenced blob is missing from disk"
-    );
-    assert!(matches!(
-        adapter.download_manifest("main", "mac").await,
-        Err(gleon_core::storage::StorageError::BlobNotFound(_))
-    ));
+    orchestrator.push("main", "mac", &options).await.unwrap();
+    assert!(adapter.download_manifest("main", "mac").await.is_ok());
 }

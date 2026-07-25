@@ -113,9 +113,6 @@ pub fn run_diff(
     };
 
     let runs_root = gleon_dir.join("runs");
-    let runs_dir = crate::ops::create_run_directory(&runs_root)?;
-    let diffs_dir = runs_dir.join("diffs");
-    std::fs::create_dir_all(&diffs_dir)?;
 
     use rayon::prelude::*;
 
@@ -181,6 +178,10 @@ pub fn run_diff(
             sample_hashes: missing_blobs.into_iter().take(5).collect(),
         });
     }
+
+    let runs_dir = crate::ops::create_run_directory(&runs_root)?;
+    let diffs_dir = runs_dir.join("diffs");
+    std::fs::create_dir_all(&diffs_dir)?;
 
     let image_pool = crate::ops::image_processing_pool().map_err(DiffOpError::Io)?;
     let mut evaluated: Vec<_> = image_pool.install(|| {
@@ -536,6 +537,13 @@ screenshots:
                 sample_hashes,
             } if sample_hashes == vec!["sha256:0000000000000000000000000000000000000000000000000000000000000000"]
         ));
+        assert!(
+            fs::read_dir(base_path.join(".gleon/runs"))
+                .unwrap()
+                .next()
+                .is_none(),
+            "failed preflight must not allocate a run directory"
+        );
     }
 
     #[test]

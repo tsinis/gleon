@@ -166,6 +166,14 @@ impl SyncOrchestrator {
                 Err(error) => return Err(error),
             };
 
+            if remote
+                .as_ref()
+                .is_some_and(|(pointer, _)| pointer.revision_hash == local_pointer.revision_hash)
+            {
+                info!("Remote manifest pointer already matches local head. Nothing to push.");
+                return Ok(());
+            }
+
             let (final_pointer, final_revision) = match &remote {
                 Some((remote_pointer, _))
                     if remote_pointer.revision_hash != local_pointer.revision_hash =>
@@ -673,6 +681,7 @@ impl SyncOrchestrator {
             }
             blobs.insert(hash.value().to_string());
             for parent_hash in revision.parent_hashes {
+                self.ensure_blob_downloaded(&parent_hash, options).await?;
                 let parent = ManifestIndexRevision::load(self.blob_path(&parent_hash))
                     .map_err(Self::manifest_error)?;
                 revisions.push_back((parent_hash, parent));
@@ -693,6 +702,7 @@ impl SyncOrchestrator {
                 continue;
             }
             blobs.insert(hash.value().to_string());
+            self.ensure_blob_downloaded(&hash, options).await?;
             let manifest = self.load_manifest(&hash, "local")?;
             manifests.extend(manifest.parent_hashes);
             blobs.extend(
@@ -849,15 +859,6 @@ impl SyncOrchestrator {
 
         let stream = futures::stream::iter(blobs).map(|hash| async move {
             let src_path = self.workspace_root.join(".gleon/blobs/sha256").join(hash);
-            if !src_path.exists() {
-                return Err(StorageError::Io {
-                    source: std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        format!("Local blob missing for upload: {hash}"),
-                    ),
-                });
-            }
-
             self.upload_blob_if_missing(hash, &src_path, options).await
         });
 

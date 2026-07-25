@@ -213,7 +213,7 @@ impl ObjectStoreAdapter {
             .await
             .map_err(|source| StorageError::Store { source })?;
         let actual = hex::encode(Sha256::digest(&bytes));
-        if actual != sha256 {
+        if !actual.eq_ignore_ascii_case(sha256) {
             return Err(StorageError::BlobHashMismatch {
                 expected: sha256.to_string(),
                 actual,
@@ -373,6 +373,7 @@ impl ObjectStoreAdapter {
         mode: PutMode,
     ) -> Result<UpdateVersion, StorageError> {
         let key = manifest_key(branch, platform);
+        let is_update = matches!(mode, PutMode::Update(_));
         let result = self
             .store
             .put_opts(
@@ -384,16 +385,23 @@ impl ObjectStoreAdapter {
                 },
             )
             .await
-            .map_err(|source| Self::map_conditional_manifest_error(source, &key))?;
+            .map_err(|source| Self::map_conditional_manifest_error(source, &key, is_update))?;
 
         debug!(branch = %branch, platform = %platform, "Successfully conditionally uploaded manifest to remote storage");
         Ok(result.into())
     }
 
-    fn map_conditional_manifest_error(source: object_store::Error, key: &ObjPath) -> StorageError {
+    fn map_conditional_manifest_error(
+        source: object_store::Error,
+        key: &ObjPath,
+        is_update: bool,
+    ) -> StorageError {
         match source {
             object_store::Error::AlreadyExists { .. }
             | object_store::Error::Precondition { .. } => StorageError::Conflict {
+                path: key.to_string(),
+            },
+            object_store::Error::NotFound { .. } if is_update => StorageError::Conflict {
                 path: key.to_string(),
             },
             object_store::Error::NotSupported { .. }
@@ -422,5 +430,24 @@ impl ObjectStoreAdapter {
         }
 
         Ok(hashes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conditional_update_not_found_is_conflict() {
+        let error = ObjectStoreAdapter::map_conditional_manifest_error(
+            object_store::Error::NotFound {
+                path: "branches/main/mac/manifest_index.json".to_string(),
+                source: Box::new(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            },
+            &ObjPath::from("branches/main/mac/manifest_index.json"),
+            true,
+        );
+
+        assert!(matches!(error, StorageError::Conflict { .. }));
     }
 }

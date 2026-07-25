@@ -36,12 +36,19 @@ impl StageLock {
                 .create_new(true)
                 .open(&path)
             {
-                Ok(_) => return Ok(Self { path }),
+                Ok(mut file) => {
+                    use std::io::Write as _;
+                    writeln!(file, "pid={}", std::process::id())?;
+                    return Ok(Self { path });
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     if Instant::now() >= deadline {
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::TimedOut,
-                            "timed out waiting for another local stage operation",
+                            format!(
+                                "timed out waiting for another local stage operation; lock at {} may be stale. Verify no gleon stage process is running, then remove the lock and retry",
+                                path.display()
+                            ),
                         ));
                     }
                     std::thread::sleep(STAGE_LOCK_RETRY_INTERVAL);

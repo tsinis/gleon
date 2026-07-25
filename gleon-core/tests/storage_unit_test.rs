@@ -136,6 +136,28 @@ async fn test_adapter_download_io_errors() {
 }
 
 #[tokio::test]
+async fn test_adapter_accepts_uppercase_sha256_digest() {
+    let adapter = ObjectStoreAdapter::from_config(&StorageConfig::new("memory://")).unwrap();
+    let dir = tempdir().expect("tempdir creation");
+    let src_file = dir.path().join("remote_blob.bin");
+    let bytes = b"remote blob bytes";
+    std::fs::write(&src_file, bytes).expect("write remote blob");
+
+    let uppercase_hash = hex::encode_upper(Sha256::digest(bytes));
+    adapter
+        .upload_blob(&uppercase_hash, &src_file)
+        .await
+        .unwrap();
+
+    let dest_file = dir.path().join("downloaded_blob.bin");
+    adapter
+        .download_blob(&uppercase_hash, &dest_file)
+        .await
+        .expect("uppercase SHA-256 digest must verify");
+    assert_eq!(std::fs::read(dest_file).unwrap(), bytes);
+}
+
+#[tokio::test]
 async fn test_adapter_rejects_download_with_wrong_valid_hash() {
     let adapter = ObjectStoreAdapter::from_config(&StorageConfig::new("memory://")).unwrap();
     let dir = tempdir().expect("tempdir creation");
