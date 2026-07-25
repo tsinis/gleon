@@ -1,5 +1,5 @@
 use futures::StreamExt;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, error, info};
@@ -84,17 +84,39 @@ impl SyncOrchestrator {
                 Some((local_pointer, local_revision))
                     if local_pointer.revision_hash != remote_pointer.revision_hash =>
                 {
-                    let revision = self
-                        .merge_revisions_and_manifests(
-                            &remote_revision,
-                            &local_revision,
-                            &remote_pointer.revision_hash,
+                    if self
+                        .is_revision_ancestor(
                             &local_pointer.revision_hash,
+                            &remote_pointer.revision_hash,
+                            &remote_revision,
                             options,
                         )
-                        .await?;
-                    let pointer = self.persist_revision(&revision)?;
-                    (pointer, revision, true)
+                        .await?
+                    {
+                        (remote_pointer, remote_revision, false)
+                    } else if self
+                        .is_revision_ancestor(
+                            &remote_pointer.revision_hash,
+                            &local_pointer.revision_hash,
+                            &local_revision,
+                            options,
+                        )
+                        .await?
+                    {
+                        (local_pointer, local_revision, false)
+                    } else {
+                        let revision = self
+                            .merge_revisions_and_manifests(
+                                &remote_revision,
+                                &local_revision,
+                                &remote_pointer.revision_hash,
+                                &local_pointer.revision_hash,
+                                options,
+                            )
+                            .await?;
+                        let pointer = self.persist_revision(&revision)?;
+                        (pointer, revision, true)
+                    }
                 }
                 _ => (remote_pointer, remote_revision, false),
             };
@@ -133,9 +155,6 @@ impl SyncOrchestrator {
             return Ok(());
         };
 
-        self.upload_revision_tree(&local_pointer.revision_hash, &local_revision, options)
-            .await?;
-
         for attempt in 0..=options.retries {
             let remote = match self
                 .adapter
@@ -154,17 +173,46 @@ impl SyncOrchestrator {
                     let remote_revision = self
                         .resolve_remote_revision(remote_pointer, options)
                         .await?;
-                    let revision = self
-                        .merge_revisions_and_manifests(
-                            &remote_revision,
-                            &local_revision,
-                            &remote_pointer.revision_hash,
+                    if self
+                        .is_revision_ancestor(
                             &local_pointer.revision_hash,
+                            &remote_pointer.revision_hash,
+                            &remote_revision,
                             options,
                         )
-                        .await?;
-                    let pointer = self.persist_revision(&revision)?;
-                    (pointer, revision)
+                        .await?
+                    {
+                        // The remote head already contains the local head. Do not rewrite its
+                        // pointer; materialize it locally instead.
+                        self.download_revision_tree(&remote_revision, options)
+                            .await?;
+                        self.save_local_pointer(branch, platform, remote_pointer)?;
+                        info!("Push fast-forwarded local pointer to remote head.");
+                        return Ok(());
+                    }
+                    if self
+                        .is_revision_ancestor(
+                            &remote_pointer.revision_hash,
+                            &local_pointer.revision_hash,
+                            &local_revision,
+                            options,
+                        )
+                        .await?
+                    {
+                        (local_pointer.clone(), local_revision.clone())
+                    } else {
+                        let revision = self
+                            .merge_revisions_and_manifests(
+                                &remote_revision,
+                                &local_revision,
+                                &remote_pointer.revision_hash,
+                                &local_pointer.revision_hash,
+                                options,
+                            )
+                            .await?;
+                        let pointer = self.persist_revision(&revision)?;
+                        (pointer, revision)
+                    }
                 }
                 Some((remote_pointer, _)) => (remote_pointer.clone(), local_revision.clone()),
                 None => (local_pointer.clone(), local_revision.clone()),
@@ -315,6 +363,36 @@ impl SyncOrchestrator {
         ManifestIndexRevision::load(revision_path).map_err(Self::manifest_error)
     }
 
+    async fn is_revision_ancestor(
+        &self,
+        ancestor_hash: &ImageHash,
+        descendant_hash: &ImageHash,
+        descendant_revision: &ManifestIndexRevision,
+        options: &SyncOptions,
+    ) -> Result<bool, StorageError> {
+        if ancestor_hash == descendant_hash {
+            return Ok(true);
+        }
+
+        let mut pending = vec![(descendant_hash.clone(), descendant_revision.clone())];
+        let mut visited = BTreeSet::new();
+        while let Some((revision_hash, revision)) = pending.pop() {
+            if !visited.insert(revision_hash) {
+                continue;
+            }
+            for parent_hash in revision.parent_hashes {
+                if &parent_hash == ancestor_hash {
+                    return Ok(true);
+                }
+                self.ensure_blob_downloaded(&parent_hash, options).await?;
+                let parent_revision = ManifestIndexRevision::load(self.blob_path(&parent_hash))
+                    .map_err(Self::manifest_error)?;
+                pending.push((parent_hash, parent_revision));
+            }
+        }
+        Ok(false)
+    }
+
     async fn merge_revisions_and_manifests(
         &self,
         remote_revision: &ManifestIndexRevision,
@@ -344,12 +422,21 @@ impl SyncOrchestrator {
             let local_manifest = self.load_manifest(local_hash, test_name)?;
             self.ensure_blob_downloaded(remote_hash, options).await?;
             let remote_manifest = self.load_manifest(remote_hash, test_name)?;
-            let merged_manifest =
-                ManifestMerger::merge_manifests(&remote_manifest, &local_manifest).map_err(
-                    |error| StorageError::Io {
-                        source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
-                    },
-                )?;
+            let base_manifest = self
+                .resolve_manifest_lca(remote_hash, local_hash, test_name, options)
+                .await?;
+            let mut merged_manifest = ManifestMerger::merge_manifests_three_way(
+                &remote_manifest,
+                &local_manifest,
+                &base_manifest,
+            )
+            .map_err(|error| StorageError::Io {
+                source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+            })?;
+            let mut manifest_parent_hashes = BTreeSet::new();
+            manifest_parent_hashes.insert(remote_hash.clone());
+            manifest_parent_hashes.insert(local_hash.clone());
+            merged_manifest.parent_hashes = manifest_parent_hashes.into_iter().collect();
             let merged_hash = self.persist_manifest(&merged_manifest)?;
             self.upload_blob_if_missing(
                 merged_hash.value(),
@@ -363,6 +450,47 @@ impl SyncOrchestrator {
         }
 
         Ok(merged)
+    }
+
+    /// Finds a common manifest ancestor by walking both CAS parent DAGs.
+    async fn resolve_manifest_lca(
+        &self,
+        remote_hash: &ImageHash,
+        local_hash: &ImageHash,
+        test_name: &str,
+        options: &SyncOptions,
+    ) -> Result<Manifest, StorageError> {
+        let mut local_ancestors = BTreeSet::new();
+        let mut pending = VecDeque::from([local_hash.clone()]);
+        while let Some(hash) = pending.pop_front() {
+            if !local_ancestors.insert(hash.clone()) {
+                continue;
+            }
+            self.ensure_blob_downloaded(&hash, options).await?;
+            let manifest = self.load_manifest(&hash, test_name)?;
+            pending.extend(manifest.parent_hashes);
+        }
+
+        let mut pending = VecDeque::from([remote_hash.clone()]);
+        let mut visited = BTreeSet::new();
+        while let Some(hash) = pending.pop_front() {
+            if !visited.insert(hash.clone()) {
+                continue;
+            }
+            self.ensure_blob_downloaded(&hash, options).await?;
+            let manifest = self.load_manifest(&hash, test_name)?;
+            if local_ancestors.contains(&hash) {
+                return Ok(manifest);
+            }
+            pending.extend(manifest.parent_hashes);
+        }
+
+        Err(StorageError::Io {
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("No common manifest ancestor found for {test_name}"),
+            ),
+        })
     }
 
     fn load_manifest(&self, hash: &ImageHash, test_name: &str) -> Result<Manifest, StorageError> {
@@ -480,7 +608,7 @@ impl SyncOrchestrator {
         path: &Path,
         options: &SyncOptions,
     ) -> Result<(), StorageError> {
-        retry_with_backoff("upload", hash, options, || async {
+        retry_upload_with_backoff("upload", hash, options, || async {
             if self.adapter.blob_exists(hash).await? {
                 Ok(())
             } else {
@@ -488,6 +616,42 @@ impl SyncOrchestrator {
             }
         })
         .await
+    }
+}
+
+/// Retries a reachable upload without allowing `fail_fast = false` to hide a
+/// failure: advancing a pointer after such a failure would publish a broken tree.
+async fn retry_upload_with_backoff<F, Fut>(
+    action_name: &str,
+    target: &str,
+    options: &SyncOptions,
+    f: F,
+) -> Result<(), StorageError>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<(), StorageError>>,
+{
+    let mut retries = 0;
+    loop {
+        match f().await {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                if matches!(
+                    error,
+                    StorageError::BlobNotFound(_) | StorageError::InvalidUrl { .. }
+                ) || retries >= options.retries
+                {
+                    return Err(error);
+                }
+                retries += 1;
+                debug!(
+                    "Retrying {} for {} (attempt {})",
+                    action_name, target, retries
+                );
+                let backoff_ms = 50 * (1 << (retries - 1).min(6));
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+            }
+        }
     }
 }
 

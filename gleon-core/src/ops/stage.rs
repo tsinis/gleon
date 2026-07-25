@@ -14,7 +14,53 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use thiserror::Error;
+
+const STAGE_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
+const STAGE_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+
+/// An exclusive local lock for a branch/platform manifest pointer.
+struct StageLock {
+    path: PathBuf,
+}
+
+impl StageLock {
+    fn acquire(branch_dir: &Path) -> Result<Self, std::io::Error> {
+        let path = branch_dir.join(".stage.lock");
+        let deadline = Instant::now() + STAGE_LOCK_TIMEOUT;
+
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(_) => return Ok(Self { path }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if Instant::now() >= deadline {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "timed out waiting for another local stage operation",
+                        ));
+                    }
+                    std::thread::sleep(STAGE_LOCK_RETRY_INTERVAL);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+impl Drop for StageLock {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_file(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(path = ?self.path, "failed to remove stage lock: {error}");
+        }
+    }
+}
 
 /// Errors that can occur during staging.
 #[derive(Debug, Error)]
@@ -91,6 +137,7 @@ pub fn stage_workspace(
         .join(&context.branch)
         .join(&platform_key);
     std::fs::create_dir_all(&branch_dir).map_err(StageError::Io)?;
+    let _stage_lock = StageLock::acquire(&branch_dir).map_err(StageError::Io)?;
 
     let index_path = branch_dir.join("manifest_index.json");
 
@@ -129,6 +176,7 @@ pub fn stage_workspace(
     let mut image_items = Vec::new();
     let mut existing_manifests = BTreeMap::new();
     let mut existing_manifest_hashes = BTreeMap::new();
+    let mut scanned_paths_by_case = BTreeMap::<String, BTreeSet<String>>::new();
 
     for case in &test_cases {
         // If filter_paths is specified, skip test cases that don't match any path
@@ -160,6 +208,16 @@ pub fn stage_workspace(
         if let Some((hash, manifest)) = existing_manifest {
             existing_manifest_hashes.insert(case.name.clone(), hash);
             existing_manifests.insert(case.name.clone(), manifest.entries);
+        }
+
+        if filter_paths.is_none() {
+            scanned_paths_by_case.insert(
+                case.name.clone(),
+                case.images
+                    .iter()
+                    .map(|img| FileScanner::normalize_path_str(&img.relative_path).into_owned())
+                    .collect(),
+            );
         }
 
         let rule = case.rule.clone();
@@ -252,6 +310,8 @@ pub fn stage_workspace(
         case_entries.insert(case_name, entries);
     }
 
+    let mut changed_cases = BTreeSet::new();
+
     for (case_name, rel_path_str, sha256_hex, phash_str, width, height) in processed_results {
         let entries = case_entries.entry(case_name.clone()).or_default();
         let is_unchanged = entries
@@ -271,12 +331,26 @@ pub fn stage_workspace(
                 source_commit: commit_sha.clone(),
             };
             entries.insert(rel_path_str, entry);
+            changed_cases.insert(case_name);
             total_screenshots_staged += 1;
         }
     }
 
+    if filter_paths.is_none() {
+        for (case_name, scanned_paths) in &scanned_paths_by_case {
+            let Some(entries) = case_entries.get_mut(case_name) else {
+                continue;
+            };
+            let entry_count = entries.len();
+            entries.retain(|path, _| scanned_paths.contains(path));
+            if entries.len() != entry_count {
+                changed_cases.insert(case_name.clone());
+            }
+        }
+    }
+
     for (case_name, manifest_entries) in case_entries {
-        if manifest_entries.is_empty() {
+        if !changed_cases.contains(&case_name) || manifest_entries.is_empty() {
             continue;
         }
 
@@ -335,6 +409,16 @@ pub fn stage_workspace(
                 *state = TestManifestState::Deleted;
             }
         }
+    }
+
+    let baseline_test_manifests = manifest_index_revision
+        .as_ref()
+        .map(|revision| &revision.test_manifests);
+    if baseline_test_manifests.is_some_and(|baseline| baseline == &test_manifests) {
+        return Ok(StageResult {
+            staged_test_cases,
+            total_screenshots_staged,
+        });
     }
 
     let index_revision = ManifestIndexRevision {

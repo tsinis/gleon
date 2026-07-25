@@ -7,7 +7,6 @@ use crate::manifest::{
 };
 use crate::scanner::{FileScanner, ScannerError};
 use serde::Serialize;
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -150,18 +149,6 @@ pub fn check_status(
     let mut modified = Vec::new();
     let mut deleted = Vec::new();
 
-    let deleted_test_cases: BTreeSet<String> = manifest_index_revision
-        .as_ref()
-        .map(|revision| {
-            revision
-                .test_manifests
-                .iter()
-                .filter(|(_, state)| matches!(state, TestManifestState::Deleted))
-                .map(|(test_name, _)| test_name.clone())
-                .collect()
-        })
-        .unwrap_or_default();
-
     // Map present test manifests to their entries.
     let mut baseline_entries = std::collections::BTreeMap::<String, (u32, u32, String)>::new();
 
@@ -186,9 +173,6 @@ pub fn check_status(
     }
 
     for case in test_cases {
-        if deleted_test_cases.contains(&case.name) {
-            continue;
-        }
         for img in case.images {
             let rel_path = img.relative_path;
             let rel_path_str = FileScanner::normalize_path_str(&rel_path);

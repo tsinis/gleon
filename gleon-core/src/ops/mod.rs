@@ -7,6 +7,50 @@ pub mod status;
 
 const MAX_IMAGE_PROCESSING_THREADS: usize = 4;
 
+/// Creates an immutable directory for one diff execution.
+pub(crate) fn create_run_directory(
+    runs_root: &std::path::Path,
+) -> Result<std::path::PathBuf, std::io::Error> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    std::fs::create_dir_all(runs_root)?;
+    for _ in 0..100 {
+        let sequence = RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(std::io::Error::other)?
+            .as_nanos();
+        let run_dir = runs_root.join(format!("{timestamp}-{}-{sequence}", std::process::id()));
+        match std::fs::create_dir(&run_dir) {
+            Ok(()) => return Ok(run_dir),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "unable to allocate a unique run directory",
+    ))
+}
+
+/// Atomically records the completed run directory as the latest run.
+pub(crate) fn publish_latest_run(
+    runs_root: &std::path::Path,
+    run_dir: &std::path::Path,
+) -> Result<(), std::io::Error> {
+    let run_name = run_dir.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "run directory has no final path component",
+        )
+    })?;
+    crate::io::save_file_atomically(runs_root.join("latest"), run_name.as_encoded_bytes())
+        .map_err(std::io::Error::other)
+}
+
 fn image_processing_pool() -> Result<rayon::ThreadPool, std::io::Error> {
     let worker_count = std::thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)

@@ -51,7 +51,7 @@ pub fn init_workspace(
     let gleon_dir = base_dir.join(".gleon");
     let blobs_dir = gleon_dir.join("blobs").join("sha256");
     let branches_dir = gleon_dir.join("branches");
-    let runs_dir = gleon_dir.join("runs").join("latest");
+    let runs_dir = gleon_dir.join("runs");
 
     std::fs::create_dir_all(&blobs_dir)?;
     std::fs::create_dir_all(&branches_dir)?;
@@ -170,7 +170,8 @@ mod tests {
         .unwrap();
         assert!(revision.parent_hashes.is_empty());
         assert!(revision.test_manifests.is_empty());
-        assert!(base_path.join(".gleon/runs/latest").is_dir());
+        assert!(base_path.join(".gleon/runs").is_dir());
+        assert!(!base_path.join(".gleon/runs/latest").exists());
         assert!(base_path.join(".gleon/.gitignore").is_file());
         assert_eq!(
             std::fs::read_to_string(base_path.join(".gleon/.gitignore")).unwrap(),

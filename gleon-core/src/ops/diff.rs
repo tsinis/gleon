@@ -112,12 +112,8 @@ pub fn run_diff(
         None => None,
     };
 
-    let runs_dir = gleon_dir.join("runs").join("latest");
-    if let Err(error) = std::fs::remove_dir_all(&runs_dir)
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        return Err(DiffOpError::Io(error));
-    }
+    let runs_root = gleon_dir.join("runs");
+    let runs_dir = crate::ops::create_run_directory(&runs_root)?;
     let diffs_dir = runs_dir.join("diffs");
     std::fs::create_dir_all(&diffs_dir)?;
 
@@ -127,25 +123,10 @@ pub fn run_diff(
 
     let test_cases = FileScanner::scan_workspace(&config, base_dir)?;
 
-    let deleted_test_cases: BTreeSet<String> = manifest_index_revision
-        .as_ref()
-        .map(|revision| {
-            revision
-                .test_manifests
-                .iter()
-                .filter(|(_, state)| matches!(state, TestManifestState::Deleted))
-                .map(|(test_name, _)| test_name.clone())
-                .collect()
-        })
-        .unwrap_or_default();
-
     let mut case_names = Vec::new();
     let mut work_items = Vec::new();
 
     for case in test_cases {
-        if deleted_test_cases.contains(&case.name) {
-            continue;
-        }
         let case_idx = case_names.len();
         let case_name = std::sync::Arc::new(case.name);
         case_names.push(case_name.clone());
@@ -399,6 +380,8 @@ pub fn run_diff(
     let md_content = ReportGenerator::generate_markdown(&test_case_results);
     crate::io::save_file_atomically(runs_dir.join("report.md"), md_content.as_bytes())
         .map_err(std::io::Error::other)?;
+
+    crate::ops::publish_latest_run(&runs_root, &runs_dir)?;
 
     Ok(DiffReportResult {
         total_tests,

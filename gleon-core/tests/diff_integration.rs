@@ -87,7 +87,8 @@ screenshots:
     assert_eq!(report_match.total_tests, 1);
     assert_eq!(report_match.failed_tests, 0);
 
-    let stale_diff = base_path.join(".gleon/runs/latest/diffs/stale.png");
+    let first_run_dir = report_match.runs_dir.clone();
+    let stale_diff = first_run_dir.join("diffs/stale.png");
     fs::create_dir_all(stale_diff.parent().unwrap()).unwrap();
     fs::write(&stale_diff, b"stale diff artifact").unwrap();
 
@@ -103,12 +104,57 @@ screenshots:
     assert_eq!(report_mismatch.failed_tests, 1);
 
     // 7. Verify generated artifacts on disk
-    let runs_dir = base_path.join(".gleon/runs/latest");
+    let runs_dir = &report_mismatch.runs_dir;
+    assert_ne!(runs_dir, &first_run_dir);
     assert!(runs_dir.join("diffs/billing/0_form.png").is_file());
     assert!(runs_dir.join("report.html").is_file());
     assert!(runs_dir.join("report.md").is_file());
     assert!(runs_dir.join("junit.xml").is_file());
-    assert!(!stale_diff.exists());
+    assert!(
+        stale_diff.exists(),
+        "prior immutable run must not be cleared"
+    );
+    assert_eq!(
+        fs::read_to_string(base_path.join(".gleon/runs/latest")).unwrap(),
+        runs_dir.file_name().unwrap().to_string_lossy()
+    );
+}
+
+#[test]
+fn test_diff_restored_tombstoned_case_fails_as_no_baseline() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+    let init_context =
+        ResolvedContext::from_cli(&Cli::for_test(Commands::Init), base_path).unwrap();
+    init_workspace(&init_context, base_path).unwrap();
+
+    let fixture =
+        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/baseline_100x100.png"))
+            .unwrap();
+    let screenshot_dir = base_path.join("billing");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    let screenshot = screenshot_dir.join("form.png");
+    fs::write(&screenshot, &fixture).unwrap();
+    fs::write(
+        base_path.join("gleon.yaml"),
+        "required_version: \">=0.1.0\"\nscreenshots:\n  - include: \"billing/**/*.png\"\n",
+    )
+    .unwrap();
+    let context = ResolvedContext::from_cli(
+        &Cli::for_test(Commands::Diff { auto_pull: false }),
+        base_path,
+    )
+    .unwrap();
+
+    stage_workspace(&context, base_path, None).unwrap();
+    fs::remove_file(&screenshot).unwrap();
+    stage_workspace(&context, base_path, None).unwrap();
+    fs::write(&screenshot, fixture).unwrap();
+
+    let report = run_diff(&context, base_path).unwrap();
+    assert!(!report.passed);
+    assert_eq!(report.total_tests, 1);
+    assert_eq!(report.failed_tests, 1);
 }
 
 #[test]

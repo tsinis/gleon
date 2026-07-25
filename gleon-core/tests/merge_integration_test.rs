@@ -96,6 +96,80 @@ fn test_manifest_merge_local_wins() {
 }
 
 #[test]
+fn test_manifest_three_way_merge_preserves_local_deletion_and_remote_addition() {
+    let base = create_mock_manifest(
+        1,
+        vec![
+            (
+                "deleted-locally.png",
+                "1111111111111111111111111111111111111111111111111111111111111111",
+            ),
+            (
+                "unchanged.png",
+                "2222222222222222222222222222222222222222222222222222222222222222",
+            ),
+            (
+                "changed-by-both.png",
+                "3333333333333333333333333333333333333333333333333333333333333333",
+            ),
+        ],
+    );
+    let mut remote = base.clone();
+    remote.entries.insert(
+        "added-remotely.png".to_string(),
+        create_mock_manifest(
+            1,
+            vec![(
+                "entry.png",
+                "3333333333333333333333333333333333333333333333333333333333333333",
+            )],
+        )
+        .entries
+        .remove("entry.png")
+        .unwrap(),
+    );
+    remote.entries.insert(
+        "changed-by-both.png".to_string(),
+        create_mock_manifest(
+            1,
+            vec![(
+                "entry.png",
+                "4444444444444444444444444444444444444444444444444444444444444444",
+            )],
+        )
+        .entries
+        .remove("entry.png")
+        .unwrap(),
+    );
+    let mut local = base.clone();
+    local.entries.remove("deleted-locally.png");
+    local.entries.insert(
+        "changed-by-both.png".to_string(),
+        create_mock_manifest(
+            1,
+            vec![(
+                "entry.png",
+                "5555555555555555555555555555555555555555555555555555555555555555",
+            )],
+        )
+        .entries
+        .remove("entry.png")
+        .unwrap(),
+    );
+
+    let merged = ManifestMerger::merge_manifests_three_way(&remote, &local, &base)
+        .expect("sibling manifests must merge");
+
+    assert!(!merged.entries.contains_key("deleted-locally.png"));
+    assert!(merged.entries.contains_key("added-remotely.png"));
+    assert!(merged.entries.contains_key("unchanged.png"));
+    assert_eq!(
+        merged.entries["changed-by-both.png"].hash.value(),
+        "5555555555555555555555555555555555555555555555555555555555555555"
+    );
+}
+
+#[test]
 fn test_manifest_merge_empty() {
     let remote = create_mock_manifest(1, vec![]);
     let local = create_mock_manifest(1, vec![]);

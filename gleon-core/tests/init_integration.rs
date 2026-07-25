@@ -23,7 +23,7 @@ fn test_init_workspace_creates_real_structure_and_valid_config() {
     // Verify directory structure exists on disk
     assert!(base_path.join(".gleon/blobs/sha256").is_dir());
     assert!(base_path.join(".gleon/branches").is_dir());
-    assert!(base_path.join(".gleon/runs/latest").is_dir());
+    assert!(base_path.join(".gleon/runs").is_dir());
     assert!(config_path.is_file());
 
     // Verify created config is a valid GleonConfig that can be parsed

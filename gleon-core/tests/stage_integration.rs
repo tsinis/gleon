@@ -244,7 +244,133 @@ screenshots:
     let stage1 = stage_workspace(&ctx, base_path, None).unwrap();
     assert_eq!(stage1.total_screenshots_staged, 1);
 
-    // Second stage without modifying files: 0 screenshots staged (no-op!)
+    let platform_key = ctx.platform.to_key().unwrap();
+    let index_path = base_path
+        .join(".gleon/branches/main")
+        .join(platform_key)
+        .join("manifest_index.json");
+    let pointer_before = ManifestIndexPointer::load(&index_path).unwrap();
+
+    // Second stage without modifying files: 0 screenshots staged and no new revision.
     let stage2 = stage_workspace(&ctx, base_path, None).unwrap();
     assert_eq!(stage2.total_screenshots_staged, 0);
+    assert_eq!(
+        ManifestIndexPointer::load(&index_path).unwrap(),
+        pointer_before
+    );
+}
+
+#[test]
+fn test_concurrent_filtered_stages_do_not_lose_updates() {
+    use std::path::PathBuf;
+    use std::sync::{Arc, Barrier};
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+    let init_context =
+        ResolvedContext::from_cli(&Cli::for_test(Commands::Init), base_path).unwrap();
+    init_workspace(&init_context, base_path).unwrap();
+
+    let fixture =
+        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/200x100.png")).unwrap();
+    fs::create_dir_all(base_path.join("billing")).unwrap();
+    fs::create_dir_all(base_path.join("profile")).unwrap();
+    fs::write(base_path.join("billing/form.png"), &fixture).unwrap();
+    fs::write(base_path.join("profile/avatar.png"), fixture).unwrap();
+    fs::write(
+        base_path.join("gleon.yaml"),
+        "required_version: \">=0.1.0\"\nscreenshots:\n  - include: \"billing/**/*.png\"\n  - include: \"profile/**/*.png\"\n",
+    )
+    .unwrap();
+    let context = Arc::new(
+        ResolvedContext::from_cli(&Cli::for_test(Commands::Stage { paths: vec![] }), base_path)
+            .unwrap(),
+    );
+    let barrier = Arc::new(Barrier::new(2));
+
+    std::thread::scope(|scope| {
+        for filter in [
+            PathBuf::from("billing/form.png"),
+            PathBuf::from("profile/avatar.png"),
+        ] {
+            let context = Arc::clone(&context);
+            let barrier = Arc::clone(&barrier);
+            scope.spawn(move || {
+                barrier.wait();
+                stage_workspace(&context, base_path, Some(&[filter])).unwrap();
+            });
+        }
+    });
+
+    let pointer_path = base_path
+        .join(".gleon/branches/main")
+        .join(context.platform.to_key().unwrap())
+        .join("manifest_index.json");
+    let pointer = ManifestIndexPointer::load(pointer_path).unwrap();
+    let revision = ManifestIndexRevision::load(
+        base_path
+            .join(".gleon/blobs/sha256")
+            .join(pointer.revision_hash.value()),
+    )
+    .unwrap();
+    assert!(matches!(
+        revision.test_manifests.get("billing"),
+        Some(TestManifestState::Present(_))
+    ));
+    assert!(matches!(
+        revision.test_manifests.get("profile"),
+        Some(TestManifestState::Present(_))
+    ));
+}
+
+#[test]
+fn test_stage_full_scan_removes_unscanned_entries_within_existing_case() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+    let init_context =
+        ResolvedContext::from_cli(&Cli::for_test(Commands::Init), base_path).unwrap();
+    init_workspace(&init_context, base_path).unwrap();
+
+    let fixture =
+        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/200x100.png")).unwrap();
+    let screenshot_dir = base_path.join("billing");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    fs::write(screenshot_dir.join("form1.png"), &fixture).unwrap();
+    fs::write(screenshot_dir.join("form2.png"), &fixture).unwrap();
+    fs::write(
+        base_path.join("gleon.yaml"),
+        "required_version: \">=0.1.0\"\nscreenshots:\n  - include: \"billing/**/*.png\"\n",
+    )
+    .unwrap();
+    let context =
+        ResolvedContext::from_cli(&Cli::for_test(Commands::Stage { paths: vec![] }), base_path)
+            .unwrap();
+
+    stage_workspace(&context, base_path, None).unwrap();
+    fs::remove_file(screenshot_dir.join("form2.png")).unwrap();
+    stage_workspace(&context, base_path, None).unwrap();
+
+    let pointer_path = base_path
+        .join(".gleon/branches/main")
+        .join(context.platform.to_key().unwrap())
+        .join("manifest_index.json");
+    let pointer = ManifestIndexPointer::load(pointer_path).unwrap();
+    let revision = ManifestIndexRevision::load(
+        base_path
+            .join(".gleon/blobs/sha256")
+            .join(pointer.revision_hash.value()),
+    )
+    .unwrap();
+    let TestManifestState::Present(manifest_hash) = revision.test_manifests.get("billing").unwrap()
+    else {
+        panic!("billing should remain present");
+    };
+    let manifest = gleon_core::manifest::Manifest::load(
+        base_path
+            .join(".gleon/blobs/sha256")
+            .join(manifest_hash.value()),
+    )
+    .unwrap();
+    assert!(manifest.entries.contains_key("billing/form1.png"));
+    assert!(!manifest.entries.contains_key("billing/form2.png"));
 }

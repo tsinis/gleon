@@ -76,6 +76,65 @@ impl ManifestMerger {
         Ok(merged)
     }
 
+    /// Merges sibling manifests using `base` as their lowest common ancestor.
+    ///
+    /// For each entry, an unchanged local value adopts the remote value. Otherwise the local
+    /// value wins. This makes an absent local value a meaningful deletion while retaining a
+    /// remote-only addition that was absent in both the local manifest and `base`.
+    ///
+    /// # Errors
+    /// Returns [`ManifestMergeError`] when metadata is incompatible or the merged manifest is
+    /// invalid.
+    pub fn merge_manifests_three_way(
+        remote: &Manifest,
+        local: &Manifest,
+        base: &Manifest,
+    ) -> Result<Manifest, ManifestMergeError> {
+        if !remote.hash_algo.eq_ignore_ascii_case(&local.hash_algo)
+            || !remote.hash_algo.eq_ignore_ascii_case(&base.hash_algo)
+        {
+            return Err(ManifestMergeError::IncompatibleHashAlgorithm {
+                remote: remote.hash_algo.clone(),
+                local: local.hash_algo.clone(),
+            });
+        }
+        if remote.pixel_format != local.pixel_format || remote.pixel_format != base.pixel_format {
+            return Err(ManifestMergeError::IncompatiblePixelFormat {
+                remote: remote.pixel_format.clone(),
+                local: local.pixel_format.clone(),
+            });
+        }
+
+        let mut merged = remote.clone();
+        merged.version = remote.version.saturating_add(1);
+        merged.entries.clear();
+
+        let keys = base
+            .entries
+            .keys()
+            .chain(remote.entries.keys())
+            .chain(local.entries.keys())
+            .collect::<std::collections::BTreeSet<_>>();
+        for key in keys {
+            let base_entry = base.entries.get(key);
+            let local_entry = local.entries.get(key);
+            let remote_entry = remote.entries.get(key);
+            let selected = if local_entry == base_entry {
+                remote_entry
+            } else {
+                local_entry
+            };
+            if let Some(entry) = selected {
+                merged.entries.insert(key.clone(), entry.clone());
+            }
+        }
+
+        merged
+            .validate()
+            .map_err(|source| ManifestMergeError::InvalidManifest { source })?;
+        Ok(merged)
+    }
+
     /// Merges the `local` index revision into the `remote` index revision.
     ///
     /// Rules:

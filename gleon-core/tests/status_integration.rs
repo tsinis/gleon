@@ -113,6 +113,43 @@ fn test_status_from_nested_subdirectory() {
 }
 
 #[test]
+fn test_status_restored_tombstoned_case_is_added_without_baseline() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+    let init_context =
+        ResolvedContext::from_cli(&Cli::for_test(Commands::Init), base_path).unwrap();
+    init_workspace(&init_context, base_path).unwrap();
+
+    let fixture =
+        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/200x100.png")).unwrap();
+    let screenshot_dir = base_path.join("billing");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    let screenshot = screenshot_dir.join("form.png");
+    fs::write(&screenshot, &fixture).unwrap();
+    fs::write(
+        base_path.join("gleon.yaml"),
+        "required_version: \">=0.1.0\"\nscreenshots:\n  - include: \"billing/**/*.png\"\n",
+    )
+    .unwrap();
+    let context =
+        ResolvedContext::from_cli(&Cli::for_test(Commands::Status { json: false }), base_path)
+            .unwrap();
+
+    stage_workspace(&context, base_path, None).unwrap();
+    fs::remove_file(&screenshot).unwrap();
+    stage_workspace(&context, base_path, None).unwrap();
+    fs::write(&screenshot, fixture).unwrap();
+
+    let report = check_status(&context, base_path).unwrap();
+    assert_eq!(
+        report.added,
+        vec![Path::new("billing/form.png").to_path_buf()]
+    );
+    assert!(report.modified.is_empty());
+    assert!(report.deleted.is_empty());
+}
+
+#[test]
 fn test_status_with_mask_rules_is_clean_after_staging() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
