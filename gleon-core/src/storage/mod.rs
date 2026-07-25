@@ -49,6 +49,15 @@ pub enum StorageError {
         source: tempfile::PersistError,
     },
 
+    /// Downloaded blob contents did not match the requested SHA-256 hash.
+    #[error("Downloaded blob SHA-256 mismatch: expected {expected}, got {actual}")]
+    BlobHashMismatch {
+        /// SHA-256 hash requested from remote storage.
+        expected: String,
+        /// SHA-256 hash calculated from the downloaded bytes.
+        actual: String,
+    },
+
     /// A conditional manifest write could not be applied because the remote object changed.
     #[error("Conditional manifest write conflicted for remote object: {path}")]
     Conflict {

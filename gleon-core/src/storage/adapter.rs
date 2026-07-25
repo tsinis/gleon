@@ -11,6 +11,7 @@ use object_store::path::Path as ObjPath;
 use object_store::{
     ObjectStore, ObjectStoreExt, PutMode, PutOptions, UpdateVersion, parse_url_opts,
 };
+use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 use tracing::{debug, instrument};
 
@@ -192,6 +193,7 @@ impl ObjectStoreAdapter {
     ///
     /// # Errors
     /// Returns [`StorageError::BlobNotFound`] if the hash does not exist on remote storage,
+    /// [`StorageError::BlobHashMismatch`] if the downloaded content has a different SHA-256,
     /// or [`StorageError::Io`] / [`StorageError::PersistFailed`] if atomic write fails.
     #[instrument(skip(self, dest_path), level = "debug")]
     pub async fn download_blob(&self, sha256: &str, dest_path: &Path) -> Result<(), StorageError> {
@@ -210,6 +212,13 @@ impl ObjectStoreAdapter {
             .bytes()
             .await
             .map_err(|source| StorageError::Store { source })?;
+        let actual = hex::encode(Sha256::digest(&bytes));
+        if actual != sha256 {
+            return Err(StorageError::BlobHashMismatch {
+                expected: sha256.to_string(),
+                actual,
+            });
+        }
 
         let dest_path_buf = dest_path.to_path_buf();
         tokio::task::spawn_blocking(move || -> Result<(), StorageError> {

@@ -3,6 +3,7 @@
 #![cfg(not(miri))]
 
 use gleon_core::storage::{ObjectStoreAdapter, StorageConfig, StorageError};
+use sha2::{Digest, Sha256};
 use tempfile::tempdir;
 
 #[test]
@@ -28,7 +29,7 @@ async fn test_memory_store_blob_and_manifest_lifecycle() {
     let src_file = dir.path().join("sample_blob.png");
     std::fs::write(&src_file, b"png_file_bytes").expect("write src file");
 
-    let blob_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    let blob_hash = "a003b78c7c74b0182ca8e4dc7be1e6f6f0fd1f3e4f811baa40bba60785df72fd";
 
     // 1. Upload Blob
     adapter
@@ -118,7 +119,7 @@ async fn test_adapter_download_io_errors() {
     let src_file = dir.path().join("sample_blob.png");
     std::fs::write(&src_file, b"png_file_bytes").expect("write src file");
 
-    let blob_hash = "1111111111111111111111111111111111111111111111111111111111111111";
+    let blob_hash = "a003b78c7c74b0182ca8e4dc7be1e6f6f0fd1f3e4f811baa40bba60785df72fd";
     adapter.upload_blob(blob_hash, &src_file).await.unwrap();
 
     let file_as_dir = dir.path().join("regular_file.txt");
@@ -131,6 +132,38 @@ async fn test_adapter_download_io_errors() {
         matches!(err, Err(StorageError::Io { .. })),
         "Expected Io error: {:?}",
         err
+    );
+}
+
+#[tokio::test]
+async fn test_adapter_rejects_download_with_wrong_valid_hash() {
+    let adapter = ObjectStoreAdapter::from_config(&StorageConfig::new("memory://")).unwrap();
+    let dir = tempdir().expect("tempdir creation");
+    let src_file = dir.path().join("remote_blob.png");
+    let remote_bytes = b"remote blob bytes";
+    std::fs::write(&src_file, remote_bytes).expect("write remote blob");
+
+    let expected_hash = hex::encode(Sha256::digest(b"different blob bytes"));
+    let actual_hash = hex::encode(Sha256::digest(remote_bytes));
+    adapter
+        .upload_blob(&expected_hash, &src_file)
+        .await
+        .unwrap();
+
+    let dest_file = dir.path().join("downloaded_blob.png");
+    let error = adapter
+        .download_blob(&expected_hash, &dest_file)
+        .await
+        .expect_err("wrong content hash must be rejected");
+
+    assert!(matches!(
+        error,
+        StorageError::BlobHashMismatch { expected, actual }
+            if expected == expected_hash && actual == actual_hash
+    ));
+    assert!(
+        !dest_file.exists(),
+        "mismatched content must not be persisted"
     );
 }
 

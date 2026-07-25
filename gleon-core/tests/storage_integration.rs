@@ -6,6 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use gleon_core::storage::{ObjectStoreAdapter, StorageConfig};
+use sha2::{Digest, Sha256};
 use tempfile::tempdir;
 
 fn fixture_path(filename: &str) -> PathBuf {
@@ -28,11 +29,12 @@ async fn test_file_scheme_storage_integration() {
     let real_png = fixture_path("baseline_100x100.png");
     assert!(real_png.exists(), "baseline PNG fixture must exist");
 
-    let sha256_hash = "a1b2c3d4e5f67890123456789abcdef0123456789abcdef0123456789abcdef0";
+    let original_bytes = fs::read(&real_png).expect("read original png");
+    let sha256_hash = hex::encode(Sha256::digest(&original_bytes));
 
     // 1. Upload real PNG blob to file:// store
     adapter
-        .upload_blob(sha256_hash, &real_png)
+        .upload_blob(&sha256_hash, &real_png)
         .await
         .expect("upload real PNG blob ok");
 
@@ -41,7 +43,7 @@ async fn test_file_scheme_storage_integration() {
         .path()
         .join("blobs")
         .join("sha256")
-        .join(sha256_hash);
+        .join(&sha256_hash);
     assert!(expected_remote_path.exists());
 
     // 2. Download blob to local client workspace
@@ -49,11 +51,10 @@ async fn test_file_scheme_storage_integration() {
     let downloaded_path = local_dest_dir.path().join("downloaded.png");
 
     adapter
-        .download_blob(sha256_hash, &downloaded_path)
+        .download_blob(&sha256_hash, &downloaded_path)
         .await
         .expect("download blob ok");
 
-    let original_bytes = fs::read(&real_png).expect("read original png");
     let downloaded_bytes = fs::read(&downloaded_path).expect("read downloaded png");
     assert_eq!(original_bytes, downloaded_bytes);
 

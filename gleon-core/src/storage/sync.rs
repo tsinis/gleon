@@ -401,7 +401,45 @@ impl SyncOrchestrator {
         local_revision_hash: &ImageHash,
         options: &SyncOptions,
     ) -> Result<ManifestIndexRevision, StorageError> {
-        let mut merged = ManifestMerger::merge_index_revisions(remote_revision, local_revision);
+        let index_base = self
+            .resolve_revision_lca(
+                remote_revision_hash,
+                remote_revision,
+                local_revision_hash,
+                local_revision,
+                options,
+            )
+            .await?;
+        let mut merged = if let Some(base) = index_base {
+            let mut merged = remote_revision.clone();
+            let test_names = remote_revision
+                .test_manifests
+                .keys()
+                .chain(local_revision.test_manifests.keys())
+                .chain(base.test_manifests.keys())
+                .collect::<BTreeSet<_>>();
+            for test_name in test_names {
+                let local_state = local_revision.test_manifests.get(test_name);
+                let selected = if local_state == base.test_manifests.get(test_name) {
+                    remote_revision.test_manifests.get(test_name)
+                } else {
+                    local_state
+                };
+                match selected {
+                    Some(state) => {
+                        merged
+                            .test_manifests
+                            .insert(test_name.clone(), state.clone());
+                    }
+                    None => {
+                        merged.test_manifests.remove(test_name);
+                    }
+                }
+            }
+            merged
+        } else {
+            ManifestMerger::merge_index_revisions(remote_revision, local_revision)
+        };
         let mut parent_hashes = BTreeSet::new();
         parent_hashes.insert(remote_revision_hash.clone());
         parent_hashes.insert(local_revision_hash.clone());
@@ -425,11 +463,14 @@ impl SyncOrchestrator {
             let base_manifest = self
                 .resolve_manifest_lca(remote_hash, local_hash, test_name, options)
                 .await?;
-            let mut merged_manifest = ManifestMerger::merge_manifests_three_way(
-                &remote_manifest,
-                &local_manifest,
-                &base_manifest,
-            )
+            let mut merged_manifest = match base_manifest {
+                Some(base) => ManifestMerger::merge_manifests_three_way(
+                    &remote_manifest,
+                    &local_manifest,
+                    &base,
+                ),
+                None => ManifestMerger::merge_manifests(&remote_manifest, &local_manifest),
+            }
             .map_err(|error| StorageError::Io {
                 source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
             })?;
@@ -452,6 +493,48 @@ impl SyncOrchestrator {
         Ok(merged)
     }
 
+    /// Finds a common index revision ancestor by walking both CAS parent DAGs.
+    async fn resolve_revision_lca(
+        &self,
+        remote_hash: &ImageHash,
+        remote_revision: &ManifestIndexRevision,
+        local_hash: &ImageHash,
+        local_revision: &ManifestIndexRevision,
+        options: &SyncOptions,
+    ) -> Result<Option<ManifestIndexRevision>, StorageError> {
+        let mut local_ancestors = BTreeSet::new();
+        let mut pending = VecDeque::from([(local_hash.clone(), local_revision.clone())]);
+        while let Some((hash, revision)) = pending.pop_front() {
+            if !local_ancestors.insert(hash.clone()) {
+                continue;
+            }
+            for parent_hash in revision.parent_hashes {
+                self.ensure_blob_downloaded(&parent_hash, options).await?;
+                let parent = ManifestIndexRevision::load(self.blob_path(&parent_hash))
+                    .map_err(Self::manifest_error)?;
+                pending.push_back((parent_hash, parent));
+            }
+        }
+
+        let mut pending = VecDeque::from([(remote_hash.clone(), remote_revision.clone())]);
+        let mut visited = BTreeSet::new();
+        while let Some((hash, revision)) = pending.pop_front() {
+            if !visited.insert(hash.clone()) {
+                continue;
+            }
+            if local_ancestors.contains(&hash) {
+                return Ok(Some(revision));
+            }
+            for parent_hash in revision.parent_hashes {
+                self.ensure_blob_downloaded(&parent_hash, options).await?;
+                let parent = ManifestIndexRevision::load(self.blob_path(&parent_hash))
+                    .map_err(Self::manifest_error)?;
+                pending.push_back((parent_hash, parent));
+            }
+        }
+        Ok(None)
+    }
+
     /// Finds a common manifest ancestor by walking both CAS parent DAGs.
     async fn resolve_manifest_lca(
         &self,
@@ -459,7 +542,7 @@ impl SyncOrchestrator {
         local_hash: &ImageHash,
         test_name: &str,
         options: &SyncOptions,
-    ) -> Result<Manifest, StorageError> {
+    ) -> Result<Option<Manifest>, StorageError> {
         let mut local_ancestors = BTreeSet::new();
         let mut pending = VecDeque::from([local_hash.clone()]);
         while let Some(hash) = pending.pop_front() {
@@ -480,17 +563,12 @@ impl SyncOrchestrator {
             self.ensure_blob_downloaded(&hash, options).await?;
             let manifest = self.load_manifest(&hash, test_name)?;
             if local_ancestors.contains(&hash) {
-                return Ok(manifest);
+                return Ok(Some(manifest));
             }
             pending.extend(manifest.parent_hashes);
         }
 
-        Err(StorageError::Io {
-            source: std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("No common manifest ancestor found for {test_name}"),
-            ),
-        })
+        Ok(None)
     }
 
     fn load_manifest(&self, hash: &ImageHash, test_name: &str) -> Result<Manifest, StorageError> {
@@ -584,13 +662,39 @@ impl SyncOrchestrator {
         options: &SyncOptions,
     ) -> Result<(), StorageError> {
         let mut blobs = BTreeSet::new();
-        blobs.insert(revision_hash.value().to_string());
-        for state in revision.test_manifests.values() {
-            let TestManifestState::Present(manifest_hash) = state else {
+        let mut revisions = VecDeque::from([(revision_hash.clone(), revision.clone())]);
+        let mut visited_revisions = BTreeSet::new();
+        let mut manifests = VecDeque::new();
+        let mut visited_manifests = BTreeSet::new();
+
+        while let Some((hash, revision)) = revisions.pop_front() {
+            if !visited_revisions.insert(hash.clone()) {
                 continue;
-            };
-            blobs.insert(manifest_hash.value().to_string());
-            let manifest = self.load_manifest(manifest_hash, "local")?;
+            }
+            blobs.insert(hash.value().to_string());
+            for parent_hash in revision.parent_hashes {
+                let parent = ManifestIndexRevision::load(self.blob_path(&parent_hash))
+                    .map_err(Self::manifest_error)?;
+                revisions.push_back((parent_hash, parent));
+            }
+            manifests.extend(
+                revision
+                    .test_manifests
+                    .values()
+                    .filter_map(|state| match state {
+                        TestManifestState::Present(hash) => Some(hash.clone()),
+                        TestManifestState::Deleted => None,
+                    }),
+            );
+        }
+
+        while let Some(hash) = manifests.pop_front() {
+            if !visited_manifests.insert(hash.clone()) {
+                continue;
+            }
+            blobs.insert(hash.value().to_string());
+            let manifest = self.load_manifest(&hash, "local")?;
+            manifests.extend(manifest.parent_hashes);
             blobs.extend(
                 manifest
                     .entries
@@ -598,6 +702,7 @@ impl SyncOrchestrator {
                     .map(|entry| entry.hash.value().to_string()),
             );
         }
+
         self.upload_blobs_concurrently(&blobs.into_iter().collect::<Vec<_>>(), options)
             .await
     }
