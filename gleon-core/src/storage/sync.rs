@@ -258,7 +258,9 @@ impl SyncOrchestrator {
             }
         }
 
-        unreachable!("the bounded OCC loop always returns on its final attempt")
+        Err(StorageError::Conflict {
+            path: format!("branches/{branch}/{platform}/manifest_index.json"),
+        })
     }
 
     fn pointer_path(&self, branch: &str, platform: &str) -> PathBuf {
@@ -648,14 +650,8 @@ impl SyncOrchestrator {
                 manifest
                     .entries
                     .values()
-                    .map(|entry| entry.hash.value().to_string())
-                    .filter(|hash| {
-                        !self
-                            .workspace_root
-                            .join(".gleon/blobs/sha256")
-                            .join(hash)
-                            .exists()
-                    }),
+                    .filter(|entry| !self.blob_path(&entry.hash).exists())
+                    .map(|entry| entry.hash.value().to_string()),
             );
         }
         self.download_blobs_concurrently(&missing_images.into_iter().collect::<Vec<_>>(), options)
@@ -828,7 +824,11 @@ impl SyncOrchestrator {
         info!("Downloading {} missing blobs", blobs.len());
 
         let stream = futures::stream::iter(blobs).map(|hash| async move {
-            let dest_path = self.workspace_root.join(".gleon/blobs/sha256").join(hash);
+            let image_hash = hash.parse::<ImageHash>().unwrap_or_else(|_| {
+                ImageHash::new("sha256", hash)
+                    .unwrap_or_else(|_| ImageHash::new("sha256", "0".repeat(64)).unwrap())
+            });
+            let dest_path = self.blob_path(&image_hash);
             retry_with_backoff("download", hash, options, || {
                 self.adapter.download_blob(hash, &dest_path)
             })
@@ -858,7 +858,11 @@ impl SyncOrchestrator {
         info!("Uploading {} blob(s)", blobs.len());
 
         let stream = futures::stream::iter(blobs).map(|hash| async move {
-            let src_path = self.workspace_root.join(".gleon/blobs/sha256").join(hash);
+            let image_hash = hash.parse::<ImageHash>().unwrap_or_else(|_| {
+                ImageHash::new("sha256", hash)
+                    .unwrap_or_else(|_| ImageHash::new("sha256", "0".repeat(64)).unwrap())
+            });
+            let src_path = self.blob_path(&image_hash);
             self.upload_blob_if_missing(hash, &src_path, options).await
         });
 

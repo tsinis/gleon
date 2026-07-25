@@ -183,6 +183,7 @@ pub fn stage_workspace(
     let mut image_items = Vec::new();
     let mut existing_manifests = BTreeMap::new();
     let mut existing_manifest_hashes = BTreeMap::new();
+    let mut previous_manifest_versions = BTreeMap::new();
     let mut scanned_paths_by_case = BTreeMap::<String, BTreeSet<String>>::new();
 
     for case in &test_cases {
@@ -213,6 +214,7 @@ pub fn stage_workspace(
         };
 
         if let Some((hash, manifest)) = existing_manifest {
+            previous_manifest_versions.insert(case.name.clone(), manifest.version);
             existing_manifest_hashes.insert(case.name.clone(), hash);
             existing_manifests.insert(case.name.clone(), manifest.entries);
         }
@@ -361,9 +363,13 @@ pub fn stage_workspace(
             continue;
         }
 
+        let previous_version = previous_manifest_versions
+            .get(&case_name)
+            .copied()
+            .unwrap_or(0);
         let test_manifest = Manifest {
             schema_version: SUPPORTED_MANIFEST_SCHEMA_VERSION,
-            version: 1,
+            version: previous_version + 1,
             hash_algo: "sha256".to_string(),
             pixel_format: "rgba".to_string(),
             generator_version: env!("CARGO_PKG_VERSION").to_string(),

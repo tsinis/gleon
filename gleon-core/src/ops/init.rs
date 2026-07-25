@@ -69,30 +69,37 @@ pub fn init_workspace(
     }
 
     // Scaffold a root manifest-index revision and its mutable pointer for the current branch.
-    if let Ok(platform_key) = context.platform.to_key() {
-        let branch_dir = branches_dir.join(&context.branch).join(&platform_key);
-        let pointer_path = branch_dir.join("manifest_index.json");
-        std::fs::create_dir_all(&branch_dir)?;
+    match context.platform.to_key() {
+        Ok(platform_key) => {
+            let branch_dir = branches_dir.join(&context.branch).join(&platform_key);
+            let pointer_path = branch_dir.join("manifest_index.json");
+            std::fs::create_dir_all(&branch_dir)?;
 
-        if !pointer_path.exists() {
-            let revision = ManifestIndexRevision {
-                schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
-                parent_hashes: Vec::new(),
-                test_manifests: BTreeMap::new(),
-            };
-            let revision_json = serde_json::to_vec_pretty(&revision)
-                .map_err(|e| crate::manifest::ManifestError::Validation(e.to_string()))?;
-            let revision_hash = hex::encode(Sha256::digest(&revision_json));
-            let revision_path = blobs_dir.join(&revision_hash);
-            if !revision_path.exists() {
-                crate::io::save_file_atomically(&revision_path, &revision_json)?;
-            }
+            if !pointer_path.exists() {
+                let revision = ManifestIndexRevision {
+                    schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
+                    parent_hashes: Vec::new(),
+                    test_manifests: BTreeMap::new(),
+                };
+                let revision_json = serde_json::to_vec_pretty(&revision)
+                    .map_err(|e| crate::manifest::ManifestError::Validation(e.to_string()))?;
+                let revision_hash = hex::encode(Sha256::digest(&revision_json));
+                let revision_path = blobs_dir.join(&revision_hash);
+                if !revision_path.exists() {
+                    crate::io::save_file_atomically(&revision_path, &revision_json)?;
+                }
 
-            ManifestIndexPointer {
-                schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
-                revision_hash: ImageHash::new("sha256", revision_hash)?,
+                ManifestIndexPointer {
+                    schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
+                    revision_hash: ImageHash::new("sha256", revision_hash)?,
+                }
+                .save(&pointer_path)?;
             }
-            .save(&pointer_path)?;
+        }
+        Err(err) => {
+            tracing::warn!(
+                "Skipping branch pointer scaffolding: failed to resolve platform key: {err}"
+            );
         }
     }
 
