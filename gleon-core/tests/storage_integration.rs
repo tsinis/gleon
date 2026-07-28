@@ -56,21 +56,6 @@ async fn test_file_scheme_storage_integration() {
     let original_bytes = fs::read(&real_png).expect("read original png");
     let downloaded_bytes = fs::read(&downloaded_path).expect("read downloaded png");
     assert_eq!(original_bytes, downloaded_bytes);
-
-    // 3. Upload & Download manifest index
-    let manifest_fixture = fixture_path("default_manifest_index.json");
-    let manifest_bytes = fs::read(&manifest_fixture).expect("read manifest index fixture");
-
-    adapter
-        .upload_manifest("main", "macos-arm64", &manifest_bytes)
-        .await
-        .expect("upload manifest ok");
-
-    let downloaded_manifest = adapter
-        .download_manifest("main", "macos-arm64")
-        .await
-        .expect("download manifest ok");
-    assert_eq!(manifest_bytes, downloaded_manifest);
 }
 
 #[tokio::test]

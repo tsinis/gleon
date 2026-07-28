@@ -2,7 +2,7 @@
 
 use crate::config::ConfigError;
 use crate::context::{ContextError, ResolvedContext};
-use crate::manifest::{Manifest, ManifestError, ManifestIndex};
+use crate::manifest::ManifestError;
 use crate::scanner::{FileScanner, ScannerError};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -105,26 +105,10 @@ pub fn check_status(
         return Err(StatusError::NotInitialized);
     }
 
-    let platform_key = context
+    let _platform_key = context
         .platform
         .to_key()
         .map_err(|e| StatusError::Context(ContextError::Platform(e)))?;
-
-    let index_path = gleon_dir
-        .join("branches")
-        .join(&context.branch)
-        .join(&platform_key)
-        .join("manifest_index.json");
-
-    let manifest_index = match ManifestIndex::load(&index_path) {
-        Ok(idx) => Some(idx),
-        Err(ManifestError::Io(crate::io::IoError::Io(e)))
-            if e.kind() == std::io::ErrorKind::NotFound =>
-        {
-            None
-        }
-        Err(e) => return Err(StatusError::Manifest(e)),
-    };
 
     let config = context.config.as_ref().cloned().unwrap_or_default();
 
@@ -137,23 +121,6 @@ pub fn check_status(
 
     // Map test manifests to their entries
     let mut baseline_entries = std::collections::BTreeMap::<String, (u32, u32, String)>::new();
-
-    if let Some(ref index) = manifest_index {
-        for manifest_hash in index.test_manifests.values() {
-            let manifest_blob_path = gleon_dir
-                .join("blobs")
-                .join(manifest_hash.scheme())
-                .join(manifest_hash.value());
-
-            let manifest = Manifest::load(&manifest_blob_path)?;
-            for (rel_path, entry) in manifest.entries {
-                baseline_entries.insert(
-                    rel_path,
-                    (entry.width, entry.height, entry.hash.value().to_string()),
-                );
-            }
-        }
-    }
 
     for case in test_cases {
         for img in case.images {

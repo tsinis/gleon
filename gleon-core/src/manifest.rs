@@ -183,15 +183,6 @@ pub struct ManifestEntry {
 }
 
 pub const SUPPORTED_MANIFEST_SCHEMA_VERSION: u64 = 1;
-pub const SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION: u64 = 1;
-
-/// The index mapping test paths to their respective manifest hashes.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ManifestIndex {
-    pub schema_version: u64,
-    pub test_manifests: BTreeMap<String, ImageHash>,
-}
 
 impl Manifest {
     /// Validates that entry schemes match the manifest hash algorithm,
@@ -284,61 +275,6 @@ impl Manifest {
         )
         .map(|_| {
             tracing::debug!("Manifest updated successfully to {:?}", path);
-        })
-    }
-}
-
-impl ManifestIndex {
-    /// Validates that the schema version is supported.
-    pub fn validate(&self) -> Result<(), ManifestError> {
-        if self.schema_version != SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION {
-            return Err(ManifestError::Validation(format!(
-                "Unsupported manifest index schema version: expected {}, got {}",
-                SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION, self.schema_version
-            )));
-        }
-        Ok(())
-    }
-
-    /// Load a manifest index from a JSON file.
-    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ManifestError> {
-        let path = path.as_ref();
-        tracing::debug!("Loading manifest index from {:?}", path);
-        let index: Self = load_json(path)?;
-        index.validate()?;
-        Ok(index)
-    }
-
-    /// Save a manifest index to a JSON file atomically.
-    pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), ManifestError> {
-        let path = path.as_ref();
-        tracing::info!("Saving manifest index to {:?}", path);
-        self.validate()?;
-        save_json_atomically(path, self)?;
-        tracing::debug!("Manifest index saved successfully to {:?}", path);
-        Ok(())
-    }
-
-    /// Load, modify, and save a manifest index atomically under an exclusive file lock.
-    pub fn update<P: AsRef<Path>, F: FnOnce(&mut Self)>(
-        path: P,
-        f: F,
-    ) -> Result<(), ManifestError> {
-        let path = path.as_ref();
-        tracing::info!("Updating manifest index atomically at {:?}", path);
-        update_json_atomically(
-            path,
-            || Self {
-                schema_version: SUPPORTED_MANIFEST_INDEX_SCHEMA_VERSION,
-                test_manifests: BTreeMap::new(),
-            },
-            |index: &mut Self| {
-                f(index);
-                index.validate()
-            },
-        )
-        .map(|_| {
-            tracing::debug!("Manifest index updated successfully at {:?}", path);
         })
     }
 }
@@ -444,34 +380,6 @@ mod tests {
         let expected_json = std::fs::read_to_string(fixture_path).unwrap();
 
         assert_eq!(generated_json.trim(), expected_json.trim());
-    }
-
-    #[test]
-    fn test_manifest_index_serialization() {
-        use tempfile::tempdir;
-
-        let dir = tempdir().unwrap();
-        let file_path = dir.path().join("manifest_index.json");
-
-        let mut test_manifests = BTreeMap::new();
-        test_manifests.insert(
-            "tests/ui/login".to_string(),
-            ImageHash::new(
-                "sha256",
-                "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-            )
-            .unwrap(),
-        );
-
-        let index = ManifestIndex {
-            schema_version: 1,
-            test_manifests,
-        };
-
-        index.save(&file_path).unwrap();
-
-        let loaded_index = ManifestIndex::load(&file_path).unwrap();
-        assert_eq!(index, loaded_index);
     }
 
     #[test]
@@ -791,29 +699,6 @@ mod tests {
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ManifestError::Validation(_)));
-    }
-
-    #[test]
-    fn test_manifest_index_validation_failures() {
-        use tempfile::tempdir;
-
-        let dir = tempdir().unwrap();
-        let file_path = dir.path().join("invalid_index.json");
-
-        let index_bad_version = ManifestIndex {
-            schema_version: 2,
-            test_manifests: BTreeMap::new(),
-        };
-        assert!(index_bad_version.save(&file_path).is_err());
-
-        let bad_json = r#"{
-            "schemaVersion": 1,
-            "testManifests": {
-                "tests/ui/login": "not-prefixed-hash-value"
-            }
-        }"#;
-        std::fs::write(&file_path, bad_json).unwrap();
-        assert!(ManifestIndex::load(&file_path).is_err());
     }
 
     #[test]

@@ -12,7 +12,7 @@ use object_store::{ObjectStore, ObjectStoreExt, parse_url_opts};
 use tempfile::NamedTempFile;
 use tracing::{debug, instrument};
 
-use super::{StorageError, blob_key, manifest_key};
+use super::{StorageError, blob_key};
 
 /// Configuration for storage initialization and authentication credentials.
 #[derive(Clone, PartialEq, Eq)]
@@ -234,57 +234,6 @@ impl ObjectStoreAdapter {
 
         debug!(sha256 = %sha256, path = %dest_path.display(), "Successfully downloaded blob from remote storage");
         Ok(())
-    }
-
-    /// Uploads a manifest index JSON buffer to `branches/<branch>/<platform>/manifest_index.json`.
-    ///
-    /// # Errors
-    /// Returns [`StorageError`] if upload to remote storage fails.
-    #[instrument(skip(self, bytes), level = "debug")]
-    pub async fn upload_manifest(
-        &self,
-        branch: &str,
-        platform: &str,
-        bytes: &[u8],
-    ) -> Result<(), StorageError> {
-        let key = manifest_key(branch, platform);
-        self.store
-            .put(&key, object_store::PutPayload::from(bytes.to_vec()))
-            .await
-            .map_err(|source| StorageError::Store { source })?;
-        debug!(branch = %branch, platform = %platform, "Successfully uploaded manifest to remote storage");
-        Ok(())
-    }
-
-    /// Downloads a manifest index JSON buffer from `branches/<branch>/<platform>/manifest_index.json`.
-    ///
-    /// # Errors
-    /// Returns [`StorageError::BlobNotFound`] if manifest does not exist on remote storage,
-    /// or [`StorageError::Store`] on download failure.
-    #[instrument(skip(self), level = "debug")]
-    pub async fn download_manifest(
-        &self,
-        branch: &str,
-        platform: &str,
-    ) -> Result<Vec<u8>, StorageError> {
-        let key = manifest_key(branch, platform);
-        let get_result = self.store.get(&key).await;
-        let get_output = match get_result {
-            Ok(output) => output,
-            Err(object_store::Error::NotFound { .. }) => {
-                return Err(StorageError::BlobNotFound(format!(
-                    "{branch}/{platform}/manifest_index.json"
-                )));
-            }
-            Err(err) => return Err(StorageError::Store { source: err }),
-        };
-
-        let bytes = get_output
-            .bytes()
-            .await
-            .map_err(|source| StorageError::Store { source })?;
-        debug!(branch = %branch, platform = %platform, "Successfully downloaded manifest from remote storage");
-        Ok(bytes.to_vec())
     }
 
     /// Lists all SHA256 blob hashes existing under the remote `blobs/sha256/` prefix.

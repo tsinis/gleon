@@ -35,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn get_storage_config() -> Option<gleon_core::storage::StorageConfig> {
     let url = std::env::var("GLEON_STORAGE_URL").ok()?;
     if url.is_empty() {
@@ -74,80 +75,6 @@ fn get_storage_config() -> Option<gleon_core::storage::StorageConfig> {
     }
 
     Some(storage_cfg)
-}
-
-fn create_spinner(
-    msg: &str,
-    concurrency: usize,
-) -> (
-    indicatif::ProgressBar,
-    gleon_core::storage::sync::SyncOptions,
-) {
-    let spinner = indicatif::ProgressBar::new_spinner();
-    spinner.set_style(
-        indicatif::ProgressStyle::default_spinner()
-            .template("{spinner:.green} {msg}")
-            .expect("Valid spinner template"),
-    );
-    spinner.set_message(msg.to_string());
-
-    let mut options = gleon_core::storage::sync::SyncOptions {
-        concurrency,
-        ..Default::default()
-    };
-    let sp = spinner.clone();
-    options.on_progress = Some(std::sync::Arc::new(move || {
-        sp.tick();
-    }));
-
-    (spinner, options)
-}
-
-enum SyncDirection {
-    Pull,
-    Push,
-}
-
-async fn run_sync(
-    ctx: &gleon_core::context::ResolvedContext,
-    direction: SyncDirection,
-    progress_msg: &str,
-    done_msg: &str,
-    skip_msg: &str,
-    fail_on_skip: bool,
-) -> anyhow::Result<()> {
-    let Some(storage_cfg) = get_storage_config() else {
-        if fail_on_skip {
-            anyhow::bail!("{skip_msg}");
-        } else {
-            println!("{skip_msg}");
-            return Ok(());
-        }
-    };
-    let adapter = std::sync::Arc::new(
-        gleon_core::storage::adapter::ObjectStoreAdapter::from_config(&storage_cfg)?,
-    );
-    let concurrency = adapter.concurrency();
-    let orchestrator =
-        gleon_core::storage::sync::SyncOrchestrator::new(adapter, ctx.base_dir.clone());
-    let platform_key = ctx.platform.to_key()?;
-    let (spinner, options) = create_spinner(progress_msg, concurrency);
-    let result = match direction {
-        SyncDirection::Pull => {
-            orchestrator
-                .pull(&ctx.branch, &platform_key, &options)
-                .await
-        }
-        SyncDirection::Push => {
-            orchestrator
-                .push(&ctx.branch, &platform_key, &options)
-                .await
-        }
-    };
-    spinner.finish_and_clear();
-    result?;
-    println!("{done_msg}");
-    Ok(())
 }
 
 async fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<i32> {
@@ -190,20 +117,8 @@ async fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<i32> {
                 );
             }
         }
-        Commands::Diff { auto_pull } => {
+        Commands::Diff { auto_pull: _ } => {
             let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)?;
-
-            if *auto_pull {
-                run_sync(
-                    &ctx,
-                    SyncDirection::Pull,
-                    "Auto-pulling latest baselines...",
-                    "Auto-pull complete.",
-                    "No storage configured via GLEON_STORAGE_URL. Skipping auto-pull.",
-                    false, // Do not fail on skip for auto-pull
-                )
-                .await?;
-            }
 
             let report = gleon_core::ops::run_diff(&ctx, &ctx.base_dir)?;
             println!(
@@ -221,28 +136,10 @@ async fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<i32> {
             println!("Subcommand test is not fully implemented yet");
         }
         Commands::Pull => {
-            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)?;
-            run_sync(
-                &ctx,
-                SyncDirection::Pull,
-                "Pulling latest baselines...",
-                "Pull complete.",
-                "No storage configured via GLEON_STORAGE_URL. Nothing to pull.",
-                true, // Fail if explicitly pulling without storage
-            )
-            .await?;
+            println!("Blob pull will be updated in Phase 3.5.");
         }
         Commands::Push => {
-            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)?;
-            run_sync(
-                &ctx,
-                SyncDirection::Push,
-                "Pushing baselines...",
-                "Push complete.",
-                "No storage configured via GLEON_STORAGE_URL. Nothing to push.",
-                true, // Fail if explicitly pushing without storage
-            )
-            .await?;
+            println!("Blob push will be updated in Phase 3.5.");
         }
         Commands::Merge { target_branch } => {
             println!(

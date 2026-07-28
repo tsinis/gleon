@@ -60,28 +60,7 @@ async fn test_memory_store_blob_and_manifest_lifecycle() {
 
     assert!(matches!(not_found, Err(StorageError::BlobNotFound(_))));
 
-    // 5. Upload & Download Manifest
-    let manifest_content = b"{\"schema_version\":1,\"entries\":{}}";
-    adapter
-        .upload_manifest("feature-1", "macos-arm64", manifest_content)
-        .await
-        .expect("upload manifest ok");
-
-    let downloaded_manifest = adapter
-        .download_manifest("feature-1", "macos-arm64")
-        .await
-        .expect("download manifest ok");
-
-    assert_eq!(downloaded_manifest, manifest_content);
-
-    // 6. Download non-existent manifest -> BlobNotFound
-    let manifest_not_found = adapter.download_manifest("main", "linux-x64").await;
-    assert!(matches!(
-        manifest_not_found,
-        Err(StorageError::BlobNotFound(_))
-    ));
-
-    // 7. Check blob_exists
+    // 5. Check blob_exists
     assert!(
         adapter
             .blob_exists(blob_hash)
