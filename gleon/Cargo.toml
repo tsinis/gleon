@@ -9,7 +9,6 @@ license.workspace = true
 anyhow = { workspace = true }
 clap = { workspace = true }
 gleon-core = { path = "../gleon-core" }
-indicatif = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -21,4 +20,4 @@ tempfile = { workspace = true }
 url = { workspace = true }
 
 [package.metadata.cargo-udeps.ignore]
-normal = ["gleon-core", "indicatif"]
+normal = ["gleon-core"]

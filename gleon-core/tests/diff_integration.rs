@@ -155,8 +155,13 @@ screenshots:
     // Stage baseline
     stage_workspace(&ctx, base_path, None).expect("stage_workspace should succeed");
 
-    // Run diff -> should succeed
-    let report = run_diff(&ctx, base_path).expect("run_diff should succeed");
+    // Explicitly verify backslash-to-forward-slash path key normalization
+    let backslash_path = Path::new("billing\\form.png");
+    let normalized = gleon_core::scanner::FileScanner::normalize_path_str(backslash_path);
+    assert_eq!(normalized, "billing/form.png");
+
+    // Run diff -> should handle backslash manifest keys cross-platform!
+    let report = run_diff(&ctx, base_path).expect("run_diff should handle backslash manifest keys");
     assert!(report.passed);
     assert_eq!(report.total_tests, 1);
     assert_eq!(report.failed_tests, 0);

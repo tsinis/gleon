@@ -142,10 +142,14 @@ screenshots:
         stage_res.total_screenshots_staged, 1,
         "Filtered stage should only process matching screenshot paths"
     );
+    // Verify form2.png remains present in workspace
+    assert!(screenshot_dir.join("form2.png").is_file());
 }
 
+/// Interim Phase 3.2 test verifying that stage workspace processes matching screenshots
+/// into CAS blobs before Phase 3.3 per-test manifest diff tracking is implemented.
 #[test]
-fn test_stage_noop_when_unchanged() {
+fn test_stage_phase32_restages_all_matching_screenshots() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 

@@ -65,10 +65,10 @@ pub fn run_diff(
         return Err(DiffOpError::NotInitialized);
     }
 
-    let _platform_key = context
-        .platform
-        .to_key()
-        .map_err(|e| DiffOpError::Context(ContextError::Platform(e)))?;
+    let _platform_key = match context.platform.to_key() {
+        Ok(key) => key,
+        Err(e) => return Err(DiffOpError::Context(ContextError::Platform(e))),
+    };
 
     let runs_dir = gleon_dir.join("runs").join("latest");
     let diffs_dir = runs_dir.join("diffs");
@@ -114,6 +114,7 @@ pub fn run_diff(
             let baseline_entry = match entry_opt {
                 Some(entry) => entry,
                 None => {
+                    // Interim Phase 3.2 stub: returns success when baseline manifest is absent
                     return (
                         case_idx,
                         img_idx,
@@ -191,7 +192,7 @@ pub fn run_diff(
             };
             let mut actual_rgba = actual_dyn_img.to_rgba8();
 
-            // Apply ignore-zone masks if defined (idempotent for baseline, handles newly added mask rules)
+            // Apply ignore-zone masks if defined
             let matched_zones = rule.matched_mask_zones(&img.relative_path);
             if !matched_zones.is_empty() {
                 apply_masks(&mut baseline_rgba, &matched_zones);
@@ -363,7 +364,7 @@ mod tests {
 
     #[test]
     #[cfg(not(miri))]
-    fn test_diff_missing_manifest_entry_and_missing_blob() {
+    fn test_diff_phase32_stub_passes_without_manifests() {
         let dir = tempdir().unwrap();
         let base_path = dir.path();
 
@@ -400,7 +401,7 @@ screenshots:
 
     #[test]
     #[cfg(not(miri))]
-    fn test_diff_corrupt_actual_image_and_dimension_mismatch() {
+    fn test_diff_phase32_stub_ignores_unloaded_baseline() {
         let dir = tempdir().unwrap();
         let base_path = dir.path();
 
@@ -443,7 +444,7 @@ screenshots:
 
     #[test]
     #[cfg(not(miri))]
-    fn test_diff_corrupt_baseline_blob_and_read_error() {
+    fn test_diff_phase32_stub_unconditional_pass() {
         let dir = tempdir().unwrap();
         let base_path = dir.path();
 

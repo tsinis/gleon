@@ -105,10 +105,10 @@ pub fn check_status(
         return Err(StatusError::NotInitialized);
     }
 
-    let _platform_key = context
-        .platform
-        .to_key()
-        .map_err(|e| StatusError::Context(ContextError::Platform(e)))?;
+    let _platform_key = match context.platform.to_key() {
+        Ok(key) => key,
+        Err(e) => return Err(StatusError::Context(ContextError::Platform(e))),
+    };
 
     let config = context.config.as_ref().cloned().unwrap_or_default();
 

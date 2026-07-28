@@ -80,7 +80,10 @@ pub fn stage_workspace(
         return Err(StageError::NotInitialized);
     }
 
-    let _platform_key = context.platform.to_key().map_err(ContextError::Platform)?;
+    let _platform_key = match context.platform.to_key() {
+        Ok(key) => key,
+        Err(e) => return Err(StageError::Context(ContextError::Platform(e))),
+    };
 
     let blobs_dir = gleon_dir.join("blobs").join("sha256");
     std::fs::create_dir_all(&blobs_dir).map_err(StageError::Io)?;
