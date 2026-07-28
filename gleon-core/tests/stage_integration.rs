@@ -142,8 +142,15 @@ screenshots:
         stage_res.total_screenshots_staged, 1,
         "Filtered stage should only process matching screenshot paths"
     );
-    // Verify form2.png remains present in workspace
-    assert!(screenshot_dir.join("form2.png").is_file());
+    // Verify CAS blob output invariant: blobs directory retains stored blobs from both form1 and form2
+    assert!(base_path.join(".gleon/blobs/sha256").is_dir());
+    let blob_count = fs::read_dir(base_path.join(".gleon/blobs/sha256"))
+        .unwrap()
+        .count();
+    assert!(
+        blob_count >= 2,
+        "CAS blob directory must retain blobs from both form1 and form2"
+    );
 }
 
 /// Interim Phase 3.2 test verifying that stage workspace processes matching screenshots

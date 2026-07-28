@@ -644,6 +644,13 @@ exclude:
     }
 
     #[test]
+    fn test_normalize_path_str_backslash() {
+        let backslash_path = Path::new("billing\\form.png");
+        let normalized = FileScanner::normalize_path_str(backslash_path);
+        assert_eq!(normalized, "billing/form.png");
+    }
+
+    #[test]
     fn test_scan_workspace_error() {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_path = temp_dir.path();
