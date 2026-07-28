@@ -156,7 +156,7 @@ screenshots:
 /// Interim Phase 3.2 test verifying that stage workspace processes matching screenshots
 /// into CAS blobs before Phase 3.3 per-test manifest diff tracking is implemented.
 #[test]
-fn test_stage_phase32_restages_all_matching_screenshots() {
+fn test_stage_phase32_re_stages_all_matching_screenshots() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
