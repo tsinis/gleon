@@ -59,10 +59,14 @@ impl SingleTestManifest {
         }
 
         if self.hash.value().len() != 64
-            || !self.hash.value().chars().all(|c| c.is_ascii_hexdigit())
+            || !self
+                .hash
+                .value()
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
         {
             return Err(ManifestError::Validation(format!(
-                "Invalid sha256 hash value: expected 64 hex characters, got '{}'",
+                "Invalid sha256 hash value: expected 64 lowercase hex characters, got '{}'",
                 self.hash.value()
             )));
         }
@@ -75,10 +79,14 @@ impl SingleTestManifest {
         }
 
         if self.phash.value().len() != 16
-            || !self.phash.value().chars().all(|c| c.is_ascii_hexdigit())
+            || !self
+                .phash
+                .value()
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
         {
             return Err(ManifestError::Validation(format!(
-                "Invalid dhash value: expected 16 hex characters, got '{}'",
+                "Invalid dhash value: expected 16 lowercase hex characters, got '{}'",
                 self.phash.value()
             )));
         }
@@ -146,5 +154,9 @@ mod tests {
 
         let invalid_phash_val = ImageHash::new("dhash", "short").unwrap();
         assert!(SingleTestManifest::new(valid_hash, invalid_phash_val, 100, 100).is_err());
+
+        let uppercase_hash = ImageHash::new("sha256", "A".repeat(64)).unwrap();
+        let valid_phash = ImageHash::new("dhash", "0000000000000000").unwrap();
+        assert!(SingleTestManifest::new(uppercase_hash, valid_phash, 100, 100).is_err());
     }
 }

@@ -166,6 +166,8 @@ impl WorkspaceIndex {
         test_name: &str,
     ) -> Result<Option<SingleTestManifest>, ManifestError> {
         let normalized = normalize_test_name(test_name);
+        validate_test_path(normalized.as_ref())?;
+
         let manifest_dir = manifest_dir.as_ref();
         let target_path = manifest_dir.join(format!("{}.json", normalized));
 
@@ -224,6 +226,9 @@ mod tests {
             .remove_test(&manifest_dir, "auth/login_screen")
             .unwrap();
         assert_eq!(removed_again, None);
+
+        // Test remove_test with invalid path (parent traversal / absolute)
+        assert!(index.remove_test(&manifest_dir, "../invalid").is_err());
     }
 
     #[test]

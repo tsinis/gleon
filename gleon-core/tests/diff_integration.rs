@@ -247,6 +247,8 @@ screenshots:
 
     let report_missing_blob = run_diff(&ctx, base_path).unwrap();
     assert!(!report_missing_blob.passed);
+    let md_missing = fs::read_to_string(report_missing_blob.runs_dir.join("report.md")).unwrap();
+    assert!(md_missing.contains("Missing Baseline"));
 
     // 2. Write corrupt baseline blob file back
     for entry in fs::read_dir(base_path.join(".gleon/manifests")).unwrap() {
@@ -267,9 +269,15 @@ screenshots:
 
     let report_corrupt_blob = run_diff(&ctx, base_path).unwrap();
     assert!(!report_corrupt_blob.passed);
+    let md_corrupt_blob =
+        fs::read_to_string(report_corrupt_blob.runs_dir.join("report.md")).unwrap();
+    assert!(md_corrupt_blob.to_lowercase().contains("decode"));
 
     // 3. Write corrupt actual screenshot file
     fs::write(&screenshot_file, b"not a png").unwrap();
     let report_corrupt_actual = run_diff(&ctx, base_path).unwrap();
     assert!(!report_corrupt_actual.passed);
+    let md_corrupt_actual =
+        fs::read_to_string(report_corrupt_actual.runs_dir.join("report.md")).unwrap();
+    assert!(md_corrupt_actual.to_lowercase().contains("decode"));
 }
