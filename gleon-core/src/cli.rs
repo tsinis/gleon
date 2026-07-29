@@ -117,6 +117,25 @@ pub enum Commands {
         /// Automatically pull the latest remote baselines before diffing
         #[arg(long = "auto-pull")]
         auto_pull: bool,
+        /// Interactively resolve Git merge conflicts in baseline manifests
+        #[arg(long = "resolve")]
+        resolve: bool,
+    },
+    /// Lint baseline JSON manifests for schema validity and Git conflict markers
+    #[command(alias = "lint")]
+    LintManifests {
+        /// Optional platform filter (e.g. macos-aarch64)
+        #[arg(short, long)]
+        platform: Option<String>,
+    },
+    /// Interactively resolve Git merge conflicts in baseline manifests
+    Resolve {
+        /// Optional specific test path filter
+        #[arg(value_name = "TEST")]
+        test_path: Option<String>,
+        /// Download missing baseline blobs from remote storage during resolution
+        #[arg(long)]
+        fetch: bool,
     },
     /// Execute tests and run diff comparison
     Test,
@@ -164,8 +183,47 @@ mod tests {
         let args = ["gleon", "--branch", "another-branch", "diff"];
         let cli = Cli::try_parse_from(args)?;
         assert_eq!(cli.branch, Some("another-branch".to_string()));
-        assert_eq!(cli.command, Commands::Diff { auto_pull: false });
+        assert_eq!(
+            cli.command,
+            Commands::Diff {
+                auto_pull: false,
+                resolve: false
+            }
+        );
         assert_eq!(cli.target_branch, "main"); // Default value
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_lint_and_resolve_commands() -> Result<(), clap::Error> {
+        let args_lint = ["gleon", "lint-manifests", "--platform", "linux-x86_64"];
+        let cli_lint = Cli::try_parse_from(args_lint)?;
+        assert_eq!(
+            cli_lint.command,
+            Commands::LintManifests {
+                platform: Some("linux-x86_64".to_string())
+            }
+        );
+
+        let args_resolve = ["gleon", "resolve", "--fetch", "auth/login"];
+        let cli_resolve = Cli::try_parse_from(args_resolve)?;
+        assert_eq!(
+            cli_resolve.command,
+            Commands::Resolve {
+                test_path: Some("auth/login".to_string()),
+                fetch: true,
+            }
+        );
+
+        let args_diff_resolve = ["gleon", "diff", "--resolve"];
+        let cli_diff_resolve = Cli::try_parse_from(args_diff_resolve)?;
+        assert_eq!(
+            cli_diff_resolve.command,
+            Commands::Diff {
+                auto_pull: false,
+                resolve: true,
+            }
+        );
         Ok(())
     }
 

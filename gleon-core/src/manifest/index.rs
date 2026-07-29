@@ -65,13 +65,6 @@ impl WorkspaceIndex {
     /// If the directory does not exist on disk, returns an empty index.
     pub fn load<P: AsRef<Path>>(manifest_dir: P) -> Result<Self, ManifestError> {
         let manifest_dir = manifest_dir.as_ref();
-        if !manifest_dir.exists() {
-            tracing::debug!(
-                "Manifest directory {:?} does not exist, returning empty index",
-                manifest_dir
-            );
-            return Ok(Self::new());
-        }
 
         let mut entries = BTreeMap::new();
         let walker = WalkBuilder::new(manifest_dir)
@@ -82,12 +75,21 @@ impl WorkspaceIndex {
             let entry = match entry_res {
                 Ok(e) => e,
                 Err(err) => {
-                    tracing::warn!("Skipping unreadable manifest entry: {}", err);
-                    continue;
+                    let err_msg = err.to_string();
+                    if let Some(io_err) = err.into_io_error() {
+                        if io_err.kind() == std::io::ErrorKind::NotFound {
+                            return Ok(Self::new());
+                        }
+                        return Err(ManifestError::StdIo(io_err));
+                    }
+                    return Err(ManifestError::Validation(format!(
+                        "Manifest walker error: {}",
+                        err_msg
+                    )));
                 }
             };
             let path = entry.path();
-            if !path.is_file() {
+            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
                 continue;
             }
             if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
@@ -101,19 +103,25 @@ impl WorkspaceIndex {
 
             // Remove .json extension
             let without_ext = rel_path.with_extension("");
-            let rel_str = normalize_test_name(&without_ext.to_string_lossy()).into_owned();
+            let rel_str = without_ext.to_str().ok_or_else(|| {
+                ManifestError::Validation(format!(
+                    "Non UTF-8 path encountered in manifest directory: {:?}",
+                    without_ext
+                ))
+            })?;
+            let normalized = normalize_test_name(rel_str);
 
-            validate_test_path(&rel_str)?;
+            validate_test_path(normalized.as_ref())?;
 
-            if entries.contains_key(&rel_str) {
+            if entries.contains_key(normalized.as_ref()) {
                 return Err(ManifestError::Validation(format!(
                     "Duplicate test case key collision in manifest index: '{}'",
-                    rel_str
+                    normalized
                 )));
             }
 
             let manifest = SingleTestManifest::load(path)?;
-            entries.insert(rel_str, manifest);
+            entries.insert(normalized.into_owned(), manifest);
         }
 
         Ok(Self { entries })

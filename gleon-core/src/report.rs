@@ -29,6 +29,10 @@ pub enum ReportError {
         source: minijinja::Error,
     },
 
+    /// Error deserializing JSON.
+    #[error("JSON parse error: {0}")]
+    JsonParse(#[from] serde_json::Error),
+
     /// IO error.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -38,7 +42,7 @@ impl From<crate::io::IoError> for ReportError {
     fn from(err: crate::io::IoError) -> Self {
         match err {
             crate::io::IoError::Io(e) => ReportError::Io(e),
-            crate::io::IoError::JsonParse(e) => ReportError::Io(std::io::Error::other(e)),
+            crate::io::IoError::JsonParse(e) => ReportError::JsonParse(e),
         }
     }
 }

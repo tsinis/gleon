@@ -50,6 +50,10 @@ pub enum StageError {
         source: image::ImageError,
     },
 
+    /// Error parsing JSON.
+    #[error("JSON parse error: {0}")]
+    JsonParse(#[from] serde_json::Error),
+
     /// IO error.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -59,7 +63,7 @@ impl From<crate::io::IoError> for StageError {
     fn from(err: crate::io::IoError) -> Self {
         match err {
             crate::io::IoError::Io(e) => StageError::Io(e),
-            crate::io::IoError::JsonParse(e) => StageError::Io(std::io::Error::other(e)),
+            crate::io::IoError::JsonParse(e) => StageError::JsonParse(e),
         }
     }
 }
@@ -106,7 +110,15 @@ pub fn stage_workspace(
 
     use rayon::prelude::*;
 
-    let processed_results: Result<Vec<_>, StageError> = test_cases
+    struct StagedItem {
+        case_name: String,
+        sha256_hex: String,
+        phash_str: String,
+        width: u32,
+        height: u32,
+    }
+
+    let processed_results: Result<Vec<StagedItem>, StageError> = test_cases
         .into_par_iter()
         .filter(|case| {
             if let Some(filters) = filter_paths {
@@ -162,7 +174,13 @@ pub fn stage_workspace(
             let blob_path = blobs_dir.join(&sha256_hex);
             crate::io::save_file_atomically(&blob_path, &png_bytes).map_err(StageError::from)?;
 
-            Ok((case.name, sha256_hex, phash_str, width, height))
+            Ok(StagedItem {
+                case_name: case.name,
+                sha256_hex,
+                phash_str,
+                width,
+                height,
+            })
         })
         .collect();
 
@@ -172,7 +190,7 @@ pub fn stage_workspace(
     if filter_paths.is_none() {
         let scanned_names: std::collections::HashSet<_> = processed_results
             .iter()
-            .map(|(name, ..)| name.as_str())
+            .map(|item| item.case_name.as_str())
             .collect();
         let existing_names: Vec<_> = workspace_index.entries().keys().cloned().collect();
         for existing in existing_names {
@@ -184,25 +202,26 @@ pub fn stage_workspace(
         }
     }
 
-    for (case_name, sha256_hex, phash_str, width, height) in processed_results {
-        let hash = ImageHash::new("sha256", &sha256_hex).map_err(StageError::Manifest)?;
-        let phash = phash_str
+    for item in processed_results {
+        let hash = ImageHash::new("sha256", &item.sha256_hex).map_err(StageError::Manifest)?;
+        let phash = item
+            .phash_str
             .parse::<ImageHash>()
             .map_err(StageError::Manifest)?;
 
-        let new_manifest =
-            SingleTestManifest::new(hash, phash, width, height).map_err(StageError::Manifest)?;
+        let new_manifest = SingleTestManifest::new(hash, phash, item.width, item.height)
+            .map_err(StageError::Manifest)?;
 
         let is_unchanged = workspace_index
-            .get(&case_name)
+            .get(&item.case_name)
             .is_some_and(|existing| existing == &new_manifest);
 
         if !is_unchanged {
             workspace_index
-                .save_test(&manifests_dir, &case_name, &new_manifest)
+                .save_test(&manifests_dir, &item.case_name, &new_manifest)
                 .map_err(StageError::Manifest)?;
             total_screenshots_staged += 1;
-            staged_test_cases.push(case_name);
+            staged_test_cases.push(item.case_name);
         }
     }
 

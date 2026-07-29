@@ -77,14 +77,16 @@ fn get_storage_config() -> Option<gleon_core::storage::StorageConfig> {
     Some(storage_cfg)
 }
 
+mod commands;
+
 async fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<i32> {
     match &cli.command {
         Commands::Init => {
             let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)?;
             let res = gleon_core::ops::init_workspace(&ctx, &ctx.base_dir)?;
-            println!("Initialized gleon workspace at {}", res.gleon_dir.display());
+            info!("Initialized gleon workspace at {}", res.gleon_dir.display());
             if let Some(ref config_path) = res.config_created {
-                println!(
+                info!(
                     "Created default configuration file at {}",
                     config_path.display()
                 );
@@ -108,47 +110,65 @@ async fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<i32> {
             };
             let res = gleon_core::ops::stage_workspace(&ctx, &ctx.base_dir, filter)?;
             if res.total_screenshots_staged == 0 {
-                println!("Already up to date.");
+                info!("Already up to date.");
             } else {
-                println!(
+                info!(
                     "Staged {} screenshot(s) across {} test case(s).",
                     res.total_screenshots_staged,
                     res.staged_test_cases.len()
                 );
             }
         }
-        Commands::Diff { auto_pull: _ } => {
+        Commands::Diff {
+            auto_pull: _,
+            resolve,
+        } => {
             let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)?;
 
+            if *resolve {
+                let storage_cfg = get_storage_config();
+                return commands::resolve::run_resolve(&ctx, None, false, storage_cfg).await;
+            }
+
             let report = gleon_core::ops::run_diff(&ctx, &ctx.base_dir)?;
-            println!(
+            info!(
                 "Ran {} test(s). Passed: {}, Failed: {}.",
                 report.total_tests,
                 report.total_tests.saturating_sub(report.failed_tests),
                 report.failed_tests
             );
-            println!("Report generated at {}", report.runs_dir.display());
+            info!("Report generated at {}", report.runs_dir.display());
             if !report.passed {
                 return Ok(1);
             }
         }
+        Commands::LintManifests { platform } => {
+            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)?;
+            return commands::lint::run_lint(&ctx, platform.as_deref());
+        }
+        Commands::Resolve { test_path, fetch } => {
+            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)?;
+            let storage_cfg = get_storage_config();
+            return commands::resolve::run_resolve(&ctx, test_path.as_deref(), *fetch, storage_cfg)
+                .await;
+        }
         Commands::Test => {
-            println!("Subcommand test is not fully implemented yet");
+            info!("Subcommand test is not fully implemented yet");
         }
         Commands::Pull => {
-            println!("Blob pull will be updated in Phase 3.5.");
+            info!("Blob pull will be updated in Phase 3.5.");
         }
         Commands::Push => {
-            println!("Blob push will be updated in Phase 3.5.");
+            info!("Blob push will be updated in Phase 3.5.");
         }
         Commands::Merge { target_branch } => {
-            println!(
+            info!(
                 "Subcommand merge for branch '{}' is not fully implemented yet",
                 target_branch
             );
         }
         Commands::Gc => {
-            println!("Subcommand gc is not fully implemented yet");
+            info!("Subcommand gc is not fully implemented yet");
         }
     }
     Ok(0)

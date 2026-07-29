@@ -1,8 +1,10 @@
 //! Manifest definitions for gleon.
 
+pub mod conflict;
 pub mod index;
 pub mod single;
 
+pub use conflict::{ConflictManifest, ConflictParseError, parse_conflict_manifest};
 pub use index::{WorkspaceIndex, validate_test_path};
 pub use single::{SUPPORTED_SINGLE_MANIFEST_SCHEMA_VERSION, SingleTestManifest};
 
