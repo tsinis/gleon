@@ -304,3 +304,34 @@ screenshots:
     assert_eq!(stage_res.total_screenshots_staged, 1);
     assert_eq!(stage_res.staged_test_cases, vec!["billing/form1"]);
 }
+
+#[test]
+fn test_stage_corrupt_screenshot_returns_error() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+
+    let screenshot_dir = base_path.join("billing");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    fs::write(screenshot_dir.join("corrupt.png"), b"not a valid png").unwrap();
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+
+    let cli = Cli::for_test(Commands::Stage { paths: vec![] });
+    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    let result = stage_workspace(&ctx, base_path, None);
+    assert!(result.is_err());
+    assert!(matches!(
+        result,
+        Err(gleon_core::ops::StageError::ImageDecode { .. })
+    ));
+}

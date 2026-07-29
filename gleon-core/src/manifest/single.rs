@@ -159,4 +159,13 @@ mod tests {
         let valid_phash = ImageHash::new("dhash", "0000000000000000").unwrap();
         assert!(SingleTestManifest::new(uppercase_hash, valid_phash, 100, 100).is_err());
     }
+
+    #[test]
+    fn test_unsupported_schema_version() {
+        let hash = ImageHash::new("sha256", "a".repeat(64)).unwrap();
+        let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
+        let mut manifest = SingleTestManifest::new(hash, phash, 100, 100).unwrap();
+        manifest.schema_version = 99;
+        assert!(manifest.validate().is_err());
+    }
 }

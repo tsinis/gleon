@@ -232,6 +232,25 @@ mod tests {
     }
 
     #[test]
+    fn test_workspace_index_load_filters_and_validation() {
+        let temp = tempdir().unwrap();
+        let manifest_dir = temp.path().join("macos-aarch64");
+        std::fs::create_dir_all(&manifest_dir).unwrap();
+
+        // 1. Subdirectory inside manifest_dir (should be skipped)
+        std::fs::create_dir_all(manifest_dir.join("subfolder")).unwrap();
+
+        // 2. Non-JSON file (should be skipped)
+        std::fs::write(manifest_dir.join("notes.txt"), "hello").unwrap();
+
+        // 3. Invalid test path file (e.g. contains invalid chars)
+        std::fs::write(manifest_dir.join("bad!name.json"), "{}").unwrap();
+
+        let index = WorkspaceIndex::load(&manifest_dir);
+        assert!(index.is_err());
+    }
+
+    #[test]
     fn test_workspace_index_into_entries_and_validation() {
         let hash = ImageHash::new("sha256", "a".repeat(64)).unwrap();
         let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
