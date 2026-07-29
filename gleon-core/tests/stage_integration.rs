@@ -3,7 +3,7 @@
 use gleon_core::cli::{Cli, Commands};
 use gleon_core::context::ResolvedContext;
 use gleon_core::ops::{StageError, check_status, init_workspace, stage_workspace};
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 use std::fs;
 use std::path::Path;
 
@@ -54,7 +54,7 @@ fn test_stage_real_fixture_updates_index_and_makes_workspace_clean() {
     let screenshot_dir = base_path.join("billing");
     fs::create_dir_all(&screenshot_dir).unwrap();
     let screenshot_file = screenshot_dir.join("form.png");
-    fs::write(&screenshot_file, real_png_bytes).unwrap();
+    fs::write(&screenshot_file, &real_png_bytes).unwrap();
 
     let config_yaml = r#"
 required_version: ">=0.1.0"
