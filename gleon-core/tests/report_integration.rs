@@ -151,7 +151,7 @@ fn test_report_generation_with_real_images_and_durability() {
         "<failure message=\"Dimension mismatch (Baseline: 1920x1080, Actual: 1920x1200)\""
     ));
     assert!(xml.contains("<failure message=\"Decode error: PNG header corrupted or incomplete\""));
-    assert!(xml.contains("<failure message=\"Decode error: Baseline missing\""));
+    assert!(xml.contains("<failure message=\"Baseline missing: Baseline missing\""));
 
     let xml_path = report_dir.join("junit.xml");
     fs::write(&xml_path, &xml).expect("Failed to write XML report");

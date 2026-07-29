@@ -67,6 +67,22 @@ impl SingleTestManifest {
             )));
         }
 
+        if self.phash.scheme() != "dhash" {
+            return Err(ManifestError::Validation(format!(
+                "Expected phash scheme 'dhash', got '{}'",
+                self.phash.scheme()
+            )));
+        }
+
+        if self.phash.value().len() != 16
+            || !self.phash.value().chars().all(|c| c.is_ascii_hexdigit())
+        {
+            return Err(ManifestError::Validation(format!(
+                "Invalid dhash value: expected 16 hex characters, got '{}'",
+                self.phash.value()
+            )));
+        }
+
         if self.width == 0 || self.height == 0 {
             return Err(ManifestError::Validation(format!(
                 "Invalid image dimensions: {}x{}",
@@ -121,5 +137,14 @@ mod tests {
         let hash = ImageHash::new("md5", "abc").unwrap();
         let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
         assert!(SingleTestManifest::new(hash, phash, 100, 100).is_err());
+
+        let valid_hash = ImageHash::new("sha256", "a".repeat(64)).unwrap();
+        let invalid_phash_scheme = ImageHash::new("sha256", "0000000000000000").unwrap();
+        assert!(
+            SingleTestManifest::new(valid_hash.clone(), invalid_phash_scheme, 100, 100).is_err()
+        );
+
+        let invalid_phash_val = ImageHash::new("dhash", "short").unwrap();
+        assert!(SingleTestManifest::new(valid_hash, invalid_phash_val, 100, 100).is_err());
     }
 }

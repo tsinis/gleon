@@ -78,7 +78,14 @@ impl WorkspaceIndex {
             .standard_filters(false)
             .build();
 
-        for entry in walker.flatten() {
+        for entry_res in walker {
+            let entry = match entry_res {
+                Ok(e) => e,
+                Err(err) => {
+                    tracing::warn!("Skipping unreadable manifest entry: {}", err);
+                    continue;
+                }
+            };
             let path = entry.path();
             if !path.is_file() {
                 continue;
@@ -162,8 +169,10 @@ impl WorkspaceIndex {
         let manifest_dir = manifest_dir.as_ref();
         let target_path = manifest_dir.join(format!("{}.json", normalized));
 
-        if target_path.exists() {
-            fs::remove_file(&target_path)?;
+        match fs::remove_file(&target_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(ManifestError::StdIo(e)),
         }
         Ok(self.entries.remove(normalized.as_ref()))
     }
@@ -202,5 +211,47 @@ mod tests {
 
         let loaded = WorkspaceIndex::load(&manifest_dir).unwrap();
         assert_eq!(index, loaded);
+
+        // Test remove_test
+        let removed = index
+            .remove_test(&manifest_dir, "auth/login_screen")
+            .unwrap();
+        assert_eq!(removed, Some(single));
+        assert!(index.entries().is_empty());
+
+        // Test remove_test on non-existent file (should be Ok(None))
+        let removed_again = index
+            .remove_test(&manifest_dir, "auth/login_screen")
+            .unwrap();
+        assert_eq!(removed_again, None);
+    }
+
+    #[test]
+    fn test_workspace_index_into_entries_and_validation() {
+        let hash = ImageHash::new("sha256", "a".repeat(64)).unwrap();
+        let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
+        let single = SingleTestManifest::new(hash, phash, 100, 200).unwrap();
+
+        let mut index = WorkspaceIndex::new();
+        index.insert("billing/form".to_string(), single.clone());
+        assert_eq!(index.remove("billing/form"), Some(single));
+
+        assert!(validate_test_path("").is_err());
+        assert!(validate_test_path("invalid/../path").is_err());
+        assert!(validate_test_path("invalid/path!").is_err());
+
+        let mut index2 = WorkspaceIndex::new();
+        index2.insert(
+            "test".to_string(),
+            SingleTestManifest::new(
+                ImageHash::new("sha256", "b".repeat(64)).unwrap(),
+                ImageHash::new("dhash", "1111111111111111").unwrap(),
+                10,
+                10,
+            )
+            .unwrap(),
+        );
+        let map = index2.into_entries();
+        assert_eq!(map.len(), 1);
     }
 }

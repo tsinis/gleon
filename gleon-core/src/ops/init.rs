@@ -109,6 +109,9 @@ mod tests {
         let res = init_workspace(&ctx, base_dir).unwrap();
         assert!(res.gleon_dir.exists());
         assert!(res.gleon_dir.join(".gitignore").exists());
+        let expected_config = base_dir.join("gleon.yaml");
+        assert_eq!(res.config_created, Some(expected_config.clone()));
+        assert!(expected_config.exists());
 
         let gitignore = std::fs::read_to_string(res.gleon_dir.join(".gitignore")).unwrap();
         assert!(gitignore.contains("blobs/"));

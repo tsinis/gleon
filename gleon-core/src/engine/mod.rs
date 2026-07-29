@@ -207,7 +207,7 @@ mod tests {
     fn test_execute_pixel_comparison_u64_diff_count() {
         let img1 = ImageBuffer::from_pixel(2, 2, Rgba([255, 0, 0, 255]));
         let mut img2 = ImageBuffer::from_pixel(2, 2, Rgba([255, 0, 0, 255]));
-        (&mut *img2)[0..4].copy_from_slice(&[0, 255, 0, 255]);
+        img2.put_pixel(0, 0, Rgba([0, 255, 0, 255]));
 
         let config = DiffConfig {
             threshold: 0.0,
@@ -230,8 +230,7 @@ mod tests {
         let img1 = ImageBuffer::from_pixel(100, 100, Rgba([255, 0, 0, 255]));
         let mut img2 = ImageBuffer::from_pixel(100, 100, Rgba([255, 0, 0, 255]));
         // Make a small change
-        let offset = (50 * 100 + 50) * 4;
-        (&mut *img2)[offset..offset + 4].copy_from_slice(&[0, 255, 0, 255]);
+        img2.put_pixel(50, 50, Rgba([0, 255, 0, 255]));
 
         let config = DiffConfig {
             min_similarity: 0.95,

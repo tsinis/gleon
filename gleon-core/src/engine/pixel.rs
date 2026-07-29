@@ -85,8 +85,7 @@ mod tests {
     fn test_compare_pixels_mismatch() {
         let img1 = ImageBuffer::from_pixel(10, 10, Rgba([255, 0, 0, 255]));
         let mut img2 = ImageBuffer::from_pixel(10, 10, Rgba([255, 0, 0, 255]));
-        let offset = (5 * 10 + 5) * 4;
-        (&mut *img2)[offset..offset + 4].copy_from_slice(&[0, 255, 0, 255]);
+        img2.put_pixel(5, 5, Rgba([0, 255, 0, 255]));
 
         let (diff_count, diff_img) = compare_pixels(&img1, &img2);
         assert_eq!(diff_count, 1);

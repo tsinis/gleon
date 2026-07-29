@@ -247,6 +247,23 @@ impl<'a> Serialize for XmlDecodeErrorView<'a> {
     }
 }
 
+struct XmlMissingBaselineView<'a>(&'a str);
+
+impl<'a> std::fmt::Display for XmlMissingBaselineView<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Baseline missing: {}", self.0)
+    }
+}
+
+impl<'a> Serialize for XmlMissingBaselineView<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
 struct XmlDimensionMismatchView((u32, u32), (u32, u32));
 
 impl std::fmt::Display for XmlDimensionMismatchView {
@@ -501,7 +518,7 @@ impl<'a> Serialize for XmlTestImageResultView<'a> {
             }
             TestImageResult::MissingBaseline { reason, .. } => {
                 state.serialize_field("status", "MissingBaseline")?;
-                state.serialize_field("failure_message", &Some(XmlDecodeErrorView(reason)))?;
+                state.serialize_field("failure_message", &Some(XmlMissingBaselineView(reason)))?;
             }
             TestImageResult::DimensionMismatch {
                 baseline_size,

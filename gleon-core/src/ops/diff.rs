@@ -71,16 +71,17 @@ pub fn run_diff(
     };
 
     let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
-    let workspace_index = WorkspaceIndex::load(&manifests_dir)?;
+    let workspace_index = WorkspaceIndex::load(&manifests_dir).map_err(DiffOpError::Manifest)?;
 
     let runs_dir = gleon_dir.join("runs").join("latest");
     let diffs_dir = runs_dir.join("diffs");
-    std::fs::create_dir_all(&diffs_dir)?;
+    std::fs::create_dir_all(&diffs_dir).map_err(DiffOpError::Io)?;
 
     use rayon::prelude::*;
 
     let config = context.config.as_ref().cloned().unwrap_or_default();
-    let test_cases = FileScanner::scan_workspace(&config, base_dir)?;
+    let test_cases =
+        FileScanner::scan_workspace(&config, base_dir).map_err(DiffOpError::Scanner)?;
 
     let case_results: Vec<TestCaseResult> = test_cases
         .into_par_iter()
@@ -232,7 +233,7 @@ pub fn run_diff(
     let passed = failed_tests == 0;
 
     // Generate HTML and JUnit XML reports
-    ReportGenerator::generate_all(&runs_dir, &case_results)?;
+    ReportGenerator::generate_all(&runs_dir, &case_results).map_err(DiffOpError::Report)?;
 
     Ok(DiffReportResult {
         total_tests,

@@ -47,7 +47,7 @@ impl Default for ResolvedContext {
             config: None,
             platform: PlatformInfo {
                 os: "unknown".to_string(),
-                arch: Some("unknown".to_string()),
+                arch: None,
                 renderer: None,
                 labels: std::collections::BTreeMap::new(),
             },
@@ -386,5 +386,14 @@ mod tests {
 
         assert!(result.is_err());
         assert!(matches!(result, Err(ContextError::Config(_))));
+    }
+
+    #[test]
+    fn test_resolved_context_default() {
+        let ctx = ResolvedContext::default();
+        assert_eq!(ctx.platform.os, "unknown");
+        assert_eq!(ctx.platform.arch, None);
+        assert_eq!(ctx.platform.renderer, None);
+        assert_eq!(ctx.branch, "main");
     }
 }

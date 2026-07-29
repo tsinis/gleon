@@ -161,8 +161,8 @@ pub fn validate_test_name(name: &str) -> Result<(), String> {
 pub struct FileScanner;
 
 impl FileScanner {
-    /// Scans screenshots inside `base_dir` using include and exclude glob patterns,
-    /// groups them into TestCases by relative parent directory.
+    /// Scans screenshots inside `base_dir` using include and exclude glob patterns.
+    /// Each discovered screenshot produces its own `TestCase`.
     /// The provided `rule` is attached to each resulting `TestCase` to carry mode/threshold/mask config.
     pub fn scan_files(
         include_globs: &[GlobPattern],
@@ -199,13 +199,21 @@ impl FileScanner {
                 Self::parse_entry(&entry, base_dir, &include_set, &exclude_set)?
             {
                 let test_name_owned = test_name.into_owned();
-                temp_cases.insert(
-                    test_name_owned,
-                    TestImage {
-                        relative_path: rel_path,
-                        absolute_path: abs_path,
-                    },
-                );
+                match temp_cases.entry(test_name_owned.clone()) {
+                    std::collections::btree_map::Entry::Vacant(e) => {
+                        e.insert(TestImage {
+                            relative_path: rel_path,
+                            absolute_path: abs_path,
+                        });
+                    }
+                    std::collections::btree_map::Entry::Occupied(_) => {
+                        tracing::warn!(
+                            "Duplicate test name '{}' detected for relative path {:?}. Skipping duplicate.",
+                            test_name_owned,
+                            rel_path
+                        );
+                    }
+                }
             }
         }
 
@@ -289,23 +297,30 @@ impl FileScanner {
                 let test_name_str = Self::normalize_path_str(&path_without_ext).into_owned();
                 let test_name_ref = test_name_str.as_str();
 
-                if let std::collections::btree_map::Entry::Vacant(e) =
-                    temp_cases.entry(test_name_ref.to_string())
-                {
-                    if let Err(reason) = validate_test_name(test_name_ref) {
-                        return Err(ScannerError::InvalidTestName {
+                match temp_cases.entry(test_name_ref.to_string()) {
+                    std::collections::btree_map::Entry::Vacant(e) => {
+                        if let Err(reason) = validate_test_name(test_name_ref) {
+                            return Err(ScannerError::InvalidTestName {
+                                name: test_name_ref.to_string(),
+                                reason,
+                            });
+                        }
+                        e.insert(TestCase {
                             name: test_name_ref.to_string(),
-                            reason,
+                            image: TestImage {
+                                relative_path: rel_path.to_path_buf(),
+                                absolute_path: path.to_path_buf(),
+                            },
+                            rule: rule_arc.clone(),
                         });
                     }
-                    e.insert(TestCase {
-                        name: test_name_ref.to_string(),
-                        image: TestImage {
-                            relative_path: rel_path.to_path_buf(),
-                            absolute_path: path.to_path_buf(),
-                        },
-                        rule: rule_arc.clone(),
-                    });
+                    std::collections::btree_map::Entry::Occupied(_) => {
+                        tracing::warn!(
+                            "Duplicate test name '{}' detected for relative path {:?}. Skipping duplicate.",
+                            test_name_ref,
+                            rel_path
+                        );
+                    }
                 }
             }
         }
@@ -487,7 +502,7 @@ mod tests {
         )
         .unwrap();
 
-        // We expect two test cases: "billing/stripe" and "settings"
+        // We expect two test cases: "billing/stripe/form" and "settings/corrupt"
         assert_eq!(cases.len(), 2);
 
         // First test case: billing/stripe

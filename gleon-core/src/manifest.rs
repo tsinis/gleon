@@ -18,7 +18,7 @@ pub enum ManifestError {
 
     /// Standard I/O error.
     #[error("I/O error: {0}")]
-    StdIo(#[from] std::io::Error),
+    StdIo(#[source] std::io::Error),
 
     /// Validation error in manifest schema or entry content.
     #[error("Validation error: {0}")]

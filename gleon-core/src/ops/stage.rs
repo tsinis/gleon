@@ -99,7 +99,7 @@ pub fn stage_workspace(
     // Scan workspace screenshots
     let test_cases = FileScanner::scan_workspace(&config, base_dir).map_err(StageError::Scanner)?;
 
-    let mut workspace_index = WorkspaceIndex::load(&manifests_dir)?;
+    let mut workspace_index = WorkspaceIndex::load(&manifests_dir).map_err(StageError::Manifest)?;
 
     let mut staged_test_cases = Vec::new();
     let mut total_screenshots_staged = 0;
@@ -113,7 +113,6 @@ pub fn stage_workspace(
                 filters.iter().any(|f| {
                     case.image.absolute_path.starts_with(f)
                         || case.image.relative_path.starts_with(f)
-                        || f.starts_with(&case.image.relative_path)
                 })
             } else {
                 true
@@ -178,7 +177,9 @@ pub fn stage_workspace(
         let existing_names: Vec<_> = workspace_index.entries().keys().cloned().collect();
         for existing in existing_names {
             if !scanned_names.contains(existing.as_str()) {
-                workspace_index.remove_test(&manifests_dir, &existing)?;
+                workspace_index
+                    .remove_test(&manifests_dir, &existing)
+                    .map_err(StageError::Manifest)?;
             }
         }
     }
@@ -189,14 +190,17 @@ pub fn stage_workspace(
             .parse::<ImageHash>()
             .map_err(StageError::Manifest)?;
 
-        let new_manifest = SingleTestManifest::new(hash, phash, width, height)?;
+        let new_manifest =
+            SingleTestManifest::new(hash, phash, width, height).map_err(StageError::Manifest)?;
 
         let is_unchanged = workspace_index
             .get(&case_name)
             .is_some_and(|existing| existing == &new_manifest);
 
         if !is_unchanged {
-            workspace_index.save_test(&manifests_dir, &case_name, &new_manifest)?;
+            workspace_index
+                .save_test(&manifests_dir, &case_name, &new_manifest)
+                .map_err(StageError::Manifest)?;
             total_screenshots_staged += 1;
             staged_test_cases.push(case_name);
         }

@@ -55,7 +55,7 @@
     
     <testcase name="missing_base.png" classname="billing_dashboard_6">
       
-      <failure message="Decode error: Baseline missing">Decode error: Baseline missing</failure>
+      <failure message="Baseline missing: Baseline missing">Baseline missing: Baseline missing</failure>
       
     </testcase>
     

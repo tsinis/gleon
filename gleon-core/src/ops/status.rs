@@ -33,6 +33,10 @@ pub enum StatusError {
     #[error("Manifest error: {0}")]
     Manifest(#[from] ManifestError),
 
+    /// Image processing error.
+    #[error("Image error: {0}")]
+    Image(#[from] image::ImageError),
+
     /// IO error.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -137,14 +141,14 @@ pub fn check_status(
                     Some(manifest) => {
                         let matched_zones = case.rule.matched_mask_zones(&rel_path);
                         let png_bytes = if !matched_zones.is_empty() {
-                            let dynamic_img = image::open(&img.absolute_path)
-                                .map_err(|e| StatusError::Io(std::io::Error::other(e)))?;
+                            let dynamic_img =
+                                image::open(&img.absolute_path).map_err(StatusError::Image)?;
                             let mut rgba = dynamic_img.to_rgba8();
                             crate::masking::apply_masks(&mut rgba, &matched_zones);
                             let mut encoded = Vec::new();
                             let mut cursor = std::io::Cursor::new(&mut encoded);
                             rgba.write_to(&mut cursor, image::ImageFormat::Png)
-                                .map_err(|e| StatusError::Io(std::io::Error::other(e)))?;
+                                .map_err(StatusError::Image)?;
                             encoded
                         } else {
                             std::fs::read(&img.absolute_path)?
@@ -232,6 +236,13 @@ mod tests {
 
         let err6 = StatusError::Io(std::io::Error::other("io test"));
         assert!(err6.to_string().contains("IO error"));
+
+        let img_err = image::ImageError::Limits(image::error::LimitError::from_kind(
+            image::error::LimitErrorKind::DimensionError,
+        ));
+        let err7 = StatusError::Image(img_err);
+        assert!(err7.to_string().contains("Image error"));
+        assert!(std::error::Error::source(&err7).is_some());
     }
 
     #[test]
@@ -244,7 +255,17 @@ mod tests {
         assert!(!report.is_clean());
         let text = report.format_text();
         assert!(text.contains("Added:"));
+        assert!(text.contains("a.png"));
         assert!(text.contains("Modified:"));
+        assert!(text.contains("b.png"));
         assert!(text.contains("Deleted:"));
+        assert!(text.contains("c.png"));
+
+        let clean = StatusReport::default();
+        assert!(clean.is_clean());
+        assert!(clean.format_text().contains("Nothing to report"));
+
+        let json = report.format_json().unwrap();
+        assert!(json.contains("a.png"));
     }
 }
