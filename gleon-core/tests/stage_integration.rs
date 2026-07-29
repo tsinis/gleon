@@ -96,6 +96,23 @@ screenshots:
         "Expected blob file {:?} does not exist",
         expected_blob_path
     );
+
+    // 6. Verify per-test manifest JSON file was written
+    let platform_key = ctx.platform.to_key().unwrap();
+    let expected_manifest_file = base_path
+        .join(".gleon/manifests")
+        .join(platform_key)
+        .join("billing")
+        .join("form.json");
+    assert!(
+        expected_manifest_file.is_file(),
+        "Expected per-test manifest {:?} does not exist",
+        expected_manifest_file
+    );
+
+    // 7. After staging: status is clean
+    let status_after = check_status(&ctx, base_path).unwrap();
+    assert!(status_after.is_clean());
 }
 
 #[test]
@@ -160,10 +177,8 @@ screenshots:
     );
 }
 
-/// Interim Phase 3.2 test verifying that stage workspace processes matching screenshots
-/// into CAS blobs before Phase 3.3 per-test manifest diff tracking is implemented.
 #[test]
-fn test_stage_phase32_re_stages_all_matching_screenshots() {
+fn test_stage_idempotent_unchanged_screenshots() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
@@ -195,7 +210,128 @@ screenshots:
     let stage1 = stage_workspace(&ctx, base_path, None).unwrap();
     assert_eq!(stage1.total_screenshots_staged, 1);
 
-    // Second stage in Phase 3.2 re-processes image and saves blob
+    // Second stage on unchanged file: 0 screenshots staged
     let stage2 = stage_workspace(&ctx, base_path, None).unwrap();
-    assert_eq!(stage2.total_screenshots_staged, 1);
+    assert_eq!(stage2.total_screenshots_staged, 0);
+}
+
+#[test]
+fn test_stage_orphan_manifest_cleanup() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let real_png_bytes =
+        fs::read(fixtures_dir.join("200x100.png")).expect("200x100.png fixture must exist");
+
+    let screenshot_dir = base_path.join("billing");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    fs::write(screenshot_dir.join("form1.png"), &real_png_bytes).unwrap();
+    fs::write(screenshot_dir.join("form2.png"), &real_png_bytes).unwrap();
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+
+    let cli = Cli::for_test(Commands::Stage { paths: vec![] });
+    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    // Initial stage: form1 and form2
+    stage_workspace(&ctx, base_path, None).expect("initial stage should succeed");
+
+    let platform_key = ctx.platform.to_key().unwrap();
+    let manifest2 = base_path
+        .join(".gleon/manifests")
+        .join(&platform_key)
+        .join("billing")
+        .join("form2.json");
+    assert!(manifest2.is_file());
+
+    // Delete form2.png from disk
+    fs::remove_file(screenshot_dir.join("form2.png")).unwrap();
+
+    // Restage full workspace: form2.json should be removed as an orphan manifest
+    stage_workspace(&ctx, base_path, None).expect("second stage should succeed");
+    assert!(
+        !manifest2.exists(),
+        "Orphan manifest form2.json should be deleted"
+    );
+}
+
+#[test]
+fn test_stage_absolute_path_filter() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let real_png_bytes =
+        fs::read(fixtures_dir.join("200x100.png")).expect("200x100.png fixture must exist");
+
+    let screenshot_dir = base_path.join("billing");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    let form1_abs = screenshot_dir.join("form1.png");
+    fs::write(&form1_abs, &real_png_bytes).unwrap();
+    fs::write(screenshot_dir.join("form2.png"), &real_png_bytes).unwrap();
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+
+    let cli = Cli::for_test(Commands::Stage { paths: vec![] });
+    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    // Stage using absolute path filter for form1.png
+    let filter = vec![form1_abs];
+    let stage_res = stage_workspace(&ctx, base_path, Some(&filter)).unwrap();
+    assert_eq!(stage_res.total_screenshots_staged, 1);
+    assert_eq!(stage_res.staged_test_cases, vec!["billing/form1"]);
+}
+
+#[test]
+fn test_stage_corrupt_screenshot_returns_error() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+
+    let screenshot_dir = base_path.join("billing");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    fs::write(screenshot_dir.join("corrupt.png"), b"not a valid png").unwrap();
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+
+    let cli = Cli::for_test(Commands::Stage { paths: vec![] });
+    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    let result = stage_workspace(&ctx, base_path, None);
+    assert!(result.is_err());
+    assert!(matches!(
+        result,
+        Err(gleon_core::ops::StageError::ImageDecode { .. })
+    ));
 }

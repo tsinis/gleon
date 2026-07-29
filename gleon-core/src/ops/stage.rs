@@ -3,14 +3,10 @@
 use crate::config::ConfigError;
 use crate::context::{ContextError, ResolvedContext};
 use crate::engine::phash::compute_phash;
-use crate::git::GitResolver;
-use crate::manifest::{
-    ImageHash, Manifest, ManifestEntry, ManifestError, SUPPORTED_MANIFEST_SCHEMA_VERSION,
-};
+use crate::manifest::{ImageHash, ManifestError, SingleTestManifest, WorkspaceIndex};
 use crate::masking::apply_masks;
 use crate::scanner::{FileScanner, ScannerError};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -39,12 +35,20 @@ pub enum StageError {
     Manifest(#[from] ManifestError),
 
     /// Error decoding image file.
-    #[error("Image decode error for '{path}': {reason}")]
-    ImageDecode { path: PathBuf, reason: String },
+    #[error("Image decode error for '{path}'")]
+    ImageDecode {
+        path: PathBuf,
+        #[source]
+        source: image::ImageError,
+    },
 
     /// Error encoding image file.
-    #[error("Image encode error for '{path}': {reason}")]
-    ImageEncode { path: PathBuf, reason: String },
+    #[error("Image encode error for '{path}'")]
+    ImageEncode {
+        path: PathBuf,
+        #[source]
+        source: image::ImageError,
+    },
 
     /// IO error.
     #[error("IO error: {0}")]
@@ -80,78 +84,50 @@ pub fn stage_workspace(
         return Err(StageError::NotInitialized);
     }
 
-    let _platform_key = match context.platform.to_key() {
+    let platform_key = match context.platform.to_key() {
         Ok(key) => key,
         Err(e) => return Err(StageError::Context(ContextError::Platform(e))),
     };
 
     let blobs_dir = gleon_dir.join("blobs").join("sha256");
+    let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
     std::fs::create_dir_all(&blobs_dir).map_err(StageError::Io)?;
+    std::fs::create_dir_all(&manifests_dir).map_err(StageError::Io)?;
 
     let config = context.config.as_ref().cloned().unwrap_or_default();
 
     // Scan workspace screenshots
     let test_cases = FileScanner::scan_workspace(&config, base_dir).map_err(StageError::Scanner)?;
 
-    let commit_author =
-        GitResolver::get_commit_author(base_dir, "HEAD").unwrap_or_else(|_| "unknown".to_string());
-    let commit_sha =
-        GitResolver::get_head_commit_sha(base_dir).unwrap_or_else(|_| "uncommitted".to_string());
+    let mut workspace_index = WorkspaceIndex::load(&manifests_dir).map_err(StageError::Manifest)?;
 
     let mut staged_test_cases = Vec::new();
     let mut total_screenshots_staged = 0;
 
-    let mut test_manifest_map = BTreeMap::new();
-
-    let mut image_items = Vec::new();
-    let mut existing_manifests = BTreeMap::new();
-
-    for case in &test_cases {
-        // If filter_paths is specified, skip test cases that don't match any path
-        if let Some(filters) = filter_paths {
-            let matched = case.images.iter().any(|img| {
-                filters
-                    .iter()
-                    .any(|f| img.relative_path.starts_with(f) || f.starts_with(&img.relative_path))
-            });
-            if !matched {
-                continue;
-            }
-        }
-
-        let existing_manifest: Option<Manifest> = None;
-
-        if let Some(m) = existing_manifest {
-            existing_manifests.insert(case.name.clone(), m.entries);
-        }
-
-        let rule = case.rule.clone();
-        for img in &case.images {
-            if let Some(filters) = filter_paths {
-                let matches_filter = filters
-                    .iter()
-                    .any(|f| img.relative_path.starts_with(f) || f.starts_with(&img.relative_path));
-                if !matches_filter {
-                    continue;
-                }
-            }
-            image_items.push((case.name.clone(), rule.clone(), img.clone()));
-        }
-    }
-
     use rayon::prelude::*;
 
-    let processed_results: Result<Vec<_>, StageError> = image_items
+    let processed_results: Result<Vec<_>, StageError> = test_cases
         .into_par_iter()
-        .map(|(case_name, rule, img)| {
-            let matched_zones = rule.matched_mask_zones(&img.relative_path);
+        .filter(|case| {
+            if let Some(filters) = filter_paths {
+                filters.iter().any(|f| {
+                    case.image.absolute_path.starts_with(f)
+                        || case.image.relative_path.starts_with(f)
+                })
+            } else {
+                true
+            }
+        })
+        .map(|case| {
+            let matched_zones = case.rule.matched_mask_zones(&case.image.relative_path);
 
             let (png_bytes, width, height, rgba_img) = if !matched_zones.is_empty() {
-                let dynamic_img =
-                    image::open(&img.absolute_path).map_err(|e| StageError::ImageDecode {
-                        path: img.relative_path.clone(),
-                        reason: e.to_string(),
-                    })?;
+                let dynamic_img = image::open(&case.image.absolute_path).map_err(|source| {
+                    StageError::ImageDecode {
+                        path: case.image.relative_path.clone(),
+                        source,
+                    }
+                })?;
                 let mut rgba = dynamic_img.to_rgba8();
                 apply_masks(&mut rgba, &matched_zones);
                 let w = rgba.width();
@@ -160,110 +136,74 @@ pub fn stage_workspace(
                 let mut encoded = Vec::new();
                 let mut cursor = Cursor::new(&mut encoded);
                 rgba.write_to(&mut cursor, image::ImageFormat::Png)
-                    .map_err(|e| StageError::ImageEncode {
-                        path: img.relative_path.clone(),
-                        reason: e.to_string(),
+                    .map_err(|source| StageError::ImageEncode {
+                        path: case.image.relative_path.clone(),
+                        source,
                     })?;
                 (encoded, w, h, rgba)
             } else {
-                let raw_bytes = std::fs::read(&img.absolute_path).map_err(StageError::Io)?;
-                let dynamic_img =
-                    image::load_from_memory(&raw_bytes).map_err(|e| StageError::ImageDecode {
-                        path: img.relative_path.clone(),
-                        reason: e.to_string(),
-                    })?;
+                let raw_bytes = std::fs::read(&case.image.absolute_path).map_err(StageError::Io)?;
+                let dynamic_img = image::load_from_memory(&raw_bytes).map_err(|source| {
+                    StageError::ImageDecode {
+                        path: case.image.relative_path.clone(),
+                        source,
+                    }
+                })?;
                 let w = dynamic_img.width();
                 let h = dynamic_img.height();
                 let rgba = dynamic_img.to_rgba8();
                 (raw_bytes, w, h, rgba)
             };
 
-            // Compute perceptual hash (pHash)
             let phash_str = compute_phash(&rgba_img);
-
-            // Compute SHA-256 of PNG blob
             let sha256_hex = hex::encode(Sha256::digest(&png_bytes));
 
-            // Save image blob to .gleon/blobs/sha256/<sha256_hex>
+            // Save blob to .gleon/blobs/sha256/<sha256_hex>
             let blob_path = blobs_dir.join(&sha256_hex);
-            if !blob_path.exists() {
-                crate::io::save_file_atomically(&blob_path, &png_bytes)
-                    .map_err(StageError::from)?;
-            }
+            crate::io::save_file_atomically(&blob_path, &png_bytes).map_err(StageError::from)?;
 
-            let rel_path_str = FileScanner::normalize_path_str(&img.relative_path).into_owned();
-
-            Ok((
-                case_name,
-                rel_path_str,
-                sha256_hex,
-                phash_str,
-                width,
-                height,
-            ))
+            Ok((case.name, sha256_hex, phash_str, width, height))
         })
         .collect();
 
     let processed_results = processed_results?;
 
-    let mut case_entries: BTreeMap<String, BTreeMap<String, ManifestEntry>> = BTreeMap::new();
-    for (case_name, entries) in existing_manifests {
-        case_entries.insert(case_name, entries);
+    // Clean up orphan manifests when performing a full workspace stage (no path filters)
+    if filter_paths.is_none() {
+        let scanned_names: std::collections::HashSet<_> = processed_results
+            .iter()
+            .map(|(name, ..)| name.as_str())
+            .collect();
+        let existing_names: Vec<_> = workspace_index.entries().keys().cloned().collect();
+        for existing in existing_names {
+            if !scanned_names.contains(existing.as_str()) {
+                workspace_index
+                    .remove_test(&manifests_dir, &existing)
+                    .map_err(StageError::Manifest)?;
+            }
+        }
     }
 
-    for (case_name, rel_path_str, sha256_hex, phash_str, width, height) in processed_results {
-        let entries = case_entries.entry(case_name.clone()).or_default();
-        let is_unchanged = entries
-            .get(&rel_path_str)
-            .is_some_and(|existing| existing.hash.value() == sha256_hex);
+    for (case_name, sha256_hex, phash_str, width, height) in processed_results {
+        let hash = ImageHash::new("sha256", &sha256_hex).map_err(StageError::Manifest)?;
+        let phash = phash_str
+            .parse::<ImageHash>()
+            .map_err(StageError::Manifest)?;
+
+        let new_manifest =
+            SingleTestManifest::new(hash, phash, width, height).map_err(StageError::Manifest)?;
+
+        let is_unchanged = workspace_index
+            .get(&case_name)
+            .is_some_and(|existing| existing == &new_manifest);
 
         if !is_unchanged {
-            let entry = ManifestEntry {
-                hash: ImageHash::new("sha256", &sha256_hex).map_err(StageError::Manifest)?,
-                phash: phash_str
-                    .parse::<ImageHash>()
-                    .map_err(StageError::Manifest)?,
-                width,
-                height,
-                created_at: chrono::Utc::now(),
-                created_by: commit_author.clone(),
-                source_commit: commit_sha.clone(),
-            };
-            entries.insert(rel_path_str, entry);
+            workspace_index
+                .save_test(&manifests_dir, &case_name, &new_manifest)
+                .map_err(StageError::Manifest)?;
             total_screenshots_staged += 1;
+            staged_test_cases.push(case_name);
         }
-    }
-
-    for (case_name, manifest_entries) in case_entries {
-        if manifest_entries.is_empty() {
-            continue;
-        }
-
-        let test_manifest = Manifest {
-            schema_version: SUPPORTED_MANIFEST_SCHEMA_VERSION,
-            version: 1,
-            hash_algo: "sha256".to_string(),
-            pixel_format: "rgba".to_string(),
-            generator_version: env!("CARGO_PKG_VERSION").to_string(),
-            entries: manifest_entries,
-        };
-
-        // Serialize test manifest to JSON bytes to compute its content-addressed blob hash
-        let manifest_json = serde_json::to_vec_pretty(&test_manifest)
-            .map_err(|e| ManifestError::Validation(e.to_string()))?;
-        let test_manifest_sha256 = hex::encode(Sha256::digest(&manifest_json));
-
-        // Save test manifest blob to .gleon/blobs/sha256/<test_manifest_sha256>
-        let test_manifest_blob_path = blobs_dir.join(&test_manifest_sha256);
-        crate::io::save_file_atomically(&test_manifest_blob_path, &manifest_json)
-            .map_err(StageError::from)?;
-
-        test_manifest_map.insert(
-            case_name.clone(),
-            ImageHash::new("sha256", &test_manifest_sha256).map_err(StageError::Manifest)?,
-        );
-
-        staged_test_cases.push(case_name);
     }
 
     Ok(StageResult {
@@ -298,17 +238,25 @@ mod tests {
         let err5 = StageError::Manifest(ManifestError::Validation("bad manifest".to_string()));
         assert!(err5.to_string().contains("Manifest error"));
 
+        let img_err = image::ImageError::Limits(image::error::LimitError::from_kind(
+            image::error::LimitErrorKind::DimensionError,
+        ));
         let err6 = StageError::ImageDecode {
             path: PathBuf::from("a.png"),
-            reason: "corrupt".to_string(),
+            source: img_err,
         };
         assert!(err6.to_string().contains("Image decode error"));
+        assert!(std::error::Error::source(&err6).is_some());
 
+        let img_err2 = image::ImageError::Limits(image::error::LimitError::from_kind(
+            image::error::LimitErrorKind::DimensionError,
+        ));
         let err7 = StageError::ImageEncode {
             path: PathBuf::from("b.png"),
-            reason: "write error".to_string(),
+            source: img_err2,
         };
         assert!(err7.to_string().contains("Image encode error"));
+        assert!(std::error::Error::source(&err7).is_some());
 
         let err8 = StageError::Io(std::io::Error::other("io test"));
         assert!(err8.to_string().contains("IO error"));

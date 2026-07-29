@@ -151,7 +151,99 @@ screenshots:
     // Stage screenshot
     stage_workspace(&ctx, base_path, None).expect("stage_workspace should succeed");
 
-    // Check status post-staging in Phase 3.2 (scanned screenshot returned as added)
+    // Check status post-staging in Phase 3.3: status is clean
     let report = check_status(&ctx, base_path).expect("check_status should succeed");
-    assert_eq!(report.added.len(), 1);
+    assert!(report.is_clean());
+}
+
+#[test]
+fn test_status_reports_modified() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let real_png_bytes =
+        fs::read(fixtures_dir.join("200x100.png")).expect("200x100.png fixture must exist");
+
+    let screenshot_dir = base_path.join("billing");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    let screenshot_file = screenshot_dir.join("form.png");
+    fs::write(&screenshot_file, &real_png_bytes).unwrap();
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+
+    let cli = Cli::for_test(Commands::Status { json: false });
+    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    // Stage the baseline
+    stage_workspace(&ctx, base_path, None).expect("stage_workspace should succeed");
+
+    // Modify the screenshot
+    let modified_png_bytes = fs::read(fixtures_dir.join("baseline_100x100.png"))
+        .expect("baseline_100x100.png fixture must exist");
+    fs::write(&screenshot_file, &modified_png_bytes).unwrap();
+
+    let report = check_status(&ctx, base_path).expect("check_status should succeed");
+
+    assert!(!report.is_clean());
+    assert!(report.added.is_empty());
+    assert!(report.deleted.is_empty());
+    assert_eq!(report.modified.len(), 1);
+    assert_eq!(report.modified[0], Path::new("billing/form.png"));
+}
+
+#[test]
+fn test_status_reports_deleted() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let real_png_bytes =
+        fs::read(fixtures_dir.join("200x100.png")).expect("200x100.png fixture must exist");
+
+    let screenshot_dir = base_path.join("billing");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    let screenshot_file = screenshot_dir.join("form.png");
+    fs::write(&screenshot_file, &real_png_bytes).unwrap();
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+
+    let cli = Cli::for_test(Commands::Status { json: false });
+    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    // Stage the baseline
+    stage_workspace(&ctx, base_path, None).expect("stage_workspace should succeed");
+
+    // Delete the screenshot
+    fs::remove_file(&screenshot_file).unwrap();
+
+    let report = check_status(&ctx, base_path).expect("check_status should succeed");
+
+    assert!(!report.is_clean());
+    assert!(report.added.is_empty());
+    assert!(report.modified.is_empty());
+    assert_eq!(report.deleted.len(), 1);
+    assert_eq!(report.deleted[0], Path::new("billing/form.png"));
 }

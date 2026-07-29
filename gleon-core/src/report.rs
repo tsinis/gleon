@@ -28,6 +28,19 @@ pub enum ReportError {
         #[source]
         source: minijinja::Error,
     },
+
+    /// IO error.
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+impl From<crate::io::IoError> for ReportError {
+    fn from(err: crate::io::IoError) -> Self {
+        match err {
+            crate::io::IoError::Io(e) => ReportError::Io(e),
+            crate::io::IoError::JsonParse(e) => ReportError::Io(std::io::Error::other(e)),
+        }
+    }
 }
 
 /// Computes a relative path from `base` to `target`.
@@ -234,6 +247,23 @@ impl<'a> Serialize for XmlDecodeErrorView<'a> {
     }
 }
 
+struct XmlMissingBaselineView<'a>(&'a str);
+
+impl<'a> std::fmt::Display for XmlMissingBaselineView<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Baseline missing: {}", self.0)
+    }
+}
+
+impl<'a> Serialize for XmlMissingBaselineView<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
 struct XmlDimensionMismatchView((u32, u32), (u32, u32));
 
 impl std::fmt::Display for XmlDimensionMismatchView {
@@ -314,6 +344,26 @@ impl<'a> Serialize for HtmlFailureView<'a> {
                 )?;
                 state.serialize_field("type", "DecodeError")?;
                 state.serialize_field("error", error)?;
+                state.serialize_field("actual_path", &None::<String>)?;
+                state.serialize_field("baseline_path", &None::<String>)?;
+                state.serialize_field("diff_path", &None::<String>)?;
+                state.serialize_field("diff_count", &None::<u64>)?;
+                state.serialize_field("actual_size", &None::<String>)?;
+                state.serialize_field("baseline_size", &None::<String>)?;
+            }
+            TestImageResult::MissingBaseline {
+                relative_path,
+                reason,
+            } => {
+                state.serialize_field(
+                    "image",
+                    &FormattedPath {
+                        path: relative_path,
+                        report_dir: None,
+                    },
+                )?;
+                state.serialize_field("type", "MissingBaseline")?;
+                state.serialize_field("error", reason)?;
                 state.serialize_field("actual_path", &None::<String>)?;
                 state.serialize_field("baseline_path", &None::<String>)?;
                 state.serialize_field("diff_path", &None::<String>)?;
@@ -427,14 +477,13 @@ impl<'a> Serialize for HtmlReportFailuresView<'a> {
     {
         let mut seq = serializer.serialize_seq(None)?;
         for tc in self.test_cases {
-            for res in &tc.results {
-                if !matches!(res, TestImageResult::Success { .. }) {
-                    seq.serialize_element(&HtmlFailureView {
-                        tc_name: &tc.name,
-                        res,
-                        report_dir: self.report_dir,
-                    })?;
-                }
+            let res = &tc.result;
+            if !matches!(res, TestImageResult::Success { .. }) {
+                seq.serialize_element(&HtmlFailureView {
+                    tc_name: &tc.name,
+                    res,
+                    report_dir: self.report_dir,
+                })?;
             }
         }
         seq.end()
@@ -467,6 +516,10 @@ impl<'a> Serialize for XmlTestImageResultView<'a> {
                 state.serialize_field("status", "DecodeError")?;
                 state.serialize_field("failure_message", &Some(XmlDecodeErrorView(error)))?;
             }
+            TestImageResult::MissingBaseline { reason, .. } => {
+                state.serialize_field("status", "MissingBaseline")?;
+                state.serialize_field("failure_message", &Some(XmlMissingBaselineView(reason)))?;
+            }
             TestImageResult::DimensionMismatch {
                 baseline_size,
                 actual_size,
@@ -498,28 +551,26 @@ impl<'a> Serialize for XmlTestCaseView<'a> {
         let mut state = serializer.serialize_struct("XmlTestCase", 3)?;
         state.serialize_field("name", &self.0.name)?;
 
-        struct ResultsSeq<'a>(&'a [TestImageResult]);
+        // For JUnit compatibility, we serialize the single result as a 1-element list
+        struct ResultsSeq<'a>(&'a TestImageResult);
         impl<'a> Serialize for ResultsSeq<'a> {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
                 S: Serializer,
             {
-                let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
-                for res in self.0 {
-                    seq.serialize_element(&XmlTestImageResultView(res))?;
-                }
+                let mut seq = serializer.serialize_seq(Some(1))?;
+                seq.serialize_element(&XmlTestImageResultView(self.0))?;
                 seq.end()
             }
         }
 
-        state.serialize_field("results", &ResultsSeq(&self.0.results))?;
+        state.serialize_field("results", &ResultsSeq(&self.0.result))?;
 
-        let failures = self
-            .0
-            .results
-            .iter()
-            .filter(|r| !matches!(r, TestImageResult::Success { .. }))
-            .count();
+        let failures = if matches!(self.0.result, TestImageResult::Success { .. }) {
+            0
+        } else {
+            1
+        };
         state.serialize_field("failures", &failures)?;
 
         state.end()
@@ -549,17 +600,11 @@ impl ReportGenerator {
         test_cases: &[TestCaseResult],
         report_dir: Option<&std::path::Path>,
     ) -> Result<Option<String>, ReportError> {
-        let mut total_tests = 0;
-        let mut failed_tests = 0;
-
-        for tc in test_cases {
-            for res in &tc.results {
-                total_tests += 1;
-                if !matches!(res, TestImageResult::Success { .. }) {
-                    failed_tests += 1;
-                }
-            }
-        }
+        let total_tests = test_cases.len();
+        let failed_tests = test_cases
+            .iter()
+            .filter(|tc| !matches!(tc.result, TestImageResult::Success { .. }))
+            .count();
 
         if failed_tests == 0 {
             return Ok(None);
@@ -581,17 +626,11 @@ impl ReportGenerator {
 
     /// Generates raw junit.xml file bytes mapping failures and decode/dimension errors to <failure> nodes.
     pub fn generate_junit_xml(test_cases: &[TestCaseResult]) -> Result<String, ReportError> {
-        let mut total_tests = 0;
-        let mut failed_tests = 0;
-
-        for tc in test_cases {
-            for res in &tc.results {
-                total_tests += 1;
-                if !matches!(res, TestImageResult::Success { .. }) {
-                    failed_tests += 1;
-                }
-            }
-        }
+        let total_tests = test_cases.len();
+        let failed_tests = test_cases
+            .iter()
+            .filter(|tc| !matches!(tc.result, TestImageResult::Success { .. }))
+            .count();
 
         let tmpl = JINJA_ENV.get_template("junit.xml").unwrap();
 
@@ -616,46 +655,70 @@ impl ReportGenerator {
         let mut table = String::from("| Test Case | Screenshot | Status |\n|---|---|---|\n");
 
         for tc in test_cases {
-            for res in &tc.results {
-                total += 1;
-                let status = match res {
-                    TestImageResult::Success { .. } => "✅ Pass",
-                    TestImageResult::DecodeError { .. } => {
-                        failed += 1;
-                        "❌ Decode Error"
-                    }
-                    TestImageResult::DimensionMismatch { .. } => {
-                        failed += 1;
-                        "❌ Dimension Mismatch"
-                    }
-                    TestImageResult::Mismatch { .. } => {
-                        failed += 1;
-                        "❌ Mismatch"
-                    }
-                };
-
-                let sanitize_cell = |s: &str| -> String {
-                    s.replace('\\', "\\\\")
-                        .replace('|', "\\|")
-                        .replace('\n', " ")
-                        .replace('\r', "")
-                };
-                let safe_name = sanitize_cell(&tc.name);
-                let path_str = FormattedPath {
-                    path: res.relative_path(),
-                    report_dir: None,
+            total += 1;
+            let res = &tc.result;
+            let status = match res {
+                TestImageResult::Success { .. } => "✅ Pass",
+                TestImageResult::DecodeError { .. } => {
+                    failed += 1;
+                    "❌ Decode Error"
                 }
-                .to_string();
-                let safe_path = sanitize_cell(&path_str);
-                writeln!(table, "| {} | {} | {} |", safe_name, safe_path, status)
-                    .expect("fmt::Write on String is infallible");
+                TestImageResult::MissingBaseline { .. } => {
+                    failed += 1;
+                    "❌ Missing Baseline"
+                }
+                TestImageResult::DimensionMismatch { .. } => {
+                    failed += 1;
+                    "❌ Dimension Mismatch"
+                }
+                TestImageResult::Mismatch { .. } => {
+                    failed += 1;
+                    "❌ Mismatch"
+                }
+            };
+
+            let sanitize_cell = |s: &str| -> String {
+                s.replace('\\', "\\\\")
+                    .replace('|', "\\|")
+                    .replace('\n', " ")
+                    .replace('\r', "")
+            };
+            let safe_name = sanitize_cell(&tc.name);
+            let path_str = FormattedPath {
+                path: res.relative_path(),
+                report_dir: None,
             }
+            .to_string();
+            let safe_path = sanitize_cell(&path_str);
+            writeln!(table, "| {} | {} | {} |", safe_name, safe_path, status)
+                .expect("fmt::Write on String is infallible");
         }
 
         format!(
             "# Gleon Visual Regression Summary\n\n**Total Tests:** {}\n**Failed:** {}\n\n{}",
             total, failed, table
         )
+    }
+
+    /// Generates markdown, JUnit XML, and HTML report files inside `runs_dir`.
+    pub fn generate_all(
+        runs_dir: &std::path::Path,
+        test_cases: &[TestCaseResult],
+    ) -> Result<(), ReportError> {
+        let md = Self::generate_markdown(test_cases);
+        let md_path = runs_dir.join("report.md");
+        crate::io::save_file_atomically(&md_path, md.as_bytes())?;
+
+        let xml = Self::generate_junit_xml(test_cases)?;
+        let xml_path = runs_dir.join("junit.xml");
+        crate::io::save_file_atomically(&xml_path, xml.as_bytes())?;
+
+        if let Some(html) = Self::generate_html(test_cases, Some(runs_dir))? {
+            let html_path = runs_dir.join("report.html");
+            crate::io::save_file_atomically(&html_path, html.as_bytes())?;
+        }
+
+        Ok(())
     }
 }
 
@@ -684,9 +747,9 @@ mod tests {
     fn test_generate_html_skips_on_success() {
         let tc = TestCaseResult {
             name: "billing".to_string(),
-            results: vec![TestImageResult::Success {
+            result: TestImageResult::Success {
                 relative_path: PathBuf::from("form.png"),
-            }],
+            },
         };
         assert!(
             ReportGenerator::generate_html(&[tc], None)
@@ -699,13 +762,13 @@ mod tests {
     fn test_generate_html_on_failure() {
         let tc = TestCaseResult {
             name: "billing".to_string(),
-            results: vec![TestImageResult::Mismatch {
+            result: TestImageResult::Mismatch {
                 relative_path: PathBuf::from("form.png"),
                 detail: MismatchDetail::Pixel { diff_count: 5 },
                 diff_path: PathBuf::from(".gleon/diffs/diff.png"),
                 baseline_path: PathBuf::from("baseline.png"),
                 actual_path: PathBuf::from(".gleon/actual/actual.png"),
-            }],
+            },
         };
         let report_dir = PathBuf::from(".gleon/reports");
         let html = ReportGenerator::generate_html(&[tc], Some(&report_dir))
@@ -717,26 +780,27 @@ mod tests {
 
     #[test]
     fn test_generate_junit_xml() {
-        let tc = TestCaseResult {
+        let tc1 = TestCaseResult {
             name: "billing".to_string(),
-            results: vec![
-                TestImageResult::Mismatch {
-                    relative_path: PathBuf::from("form.png"),
-                    detail: MismatchDetail::Pixel { diff_count: 5 },
-                    diff_path: PathBuf::from("diff.png"),
-                    baseline_path: PathBuf::from("baseline.png"),
-                    actual_path: PathBuf::from("actual.png"),
-                },
-                TestImageResult::Mismatch {
-                    relative_path: PathBuf::from("ssim_form.png"),
-                    detail: MismatchDetail::Ssim { ssim_score: 0.9412 },
-                    diff_path: PathBuf::from("diff.png"),
-                    baseline_path: PathBuf::from("baseline.png"),
-                    actual_path: PathBuf::from("actual.png"),
-                },
-            ],
+            result: TestImageResult::Mismatch {
+                relative_path: PathBuf::from("form.png"),
+                detail: MismatchDetail::Pixel { diff_count: 5 },
+                diff_path: PathBuf::from("diff.png"),
+                baseline_path: PathBuf::from("baseline.png"),
+                actual_path: PathBuf::from("actual.png"),
+            },
         };
-        let xml = ReportGenerator::generate_junit_xml(&[tc]).expect("Render should succeed");
+        let tc2 = TestCaseResult {
+            name: "billing".to_string(),
+            result: TestImageResult::Mismatch {
+                relative_path: PathBuf::from("ssim_form.png"),
+                detail: MismatchDetail::Ssim { ssim_score: 0.9412 },
+                diff_path: PathBuf::from("diff.png"),
+                baseline_path: PathBuf::from("baseline.png"),
+                actual_path: PathBuf::from("actual.png"),
+            },
+        };
+        let xml = ReportGenerator::generate_junit_xml(&[tc1, tc2]).expect("Render should succeed");
         assert!(xml.contains("<failure message=\"Visual mismatch detected (5 pixels)\">Visual mismatch detected (5 pixels)</failure>"));
         assert!(xml.contains("<failure message=\"Visual mismatch detected (SSIM score: 0.9412)\">Visual mismatch detected (SSIM score: 0.9412)</failure>"));
         assert!(xml.contains("classname=\"billing\""));
@@ -747,10 +811,10 @@ mod tests {
     fn test_generate_markdown() {
         let tc = TestCaseResult {
             name: "billing".to_string(),
-            results: vec![TestImageResult::DecodeError {
+            result: TestImageResult::DecodeError {
                 relative_path: PathBuf::from("corrupt.png"),
-                error: "Bad header".to_string(),
-            }],
+                error: "bad data".to_string(),
+            },
         };
         let md = ReportGenerator::generate_markdown(&[tc]);
         assert!(md.contains("# Gleon Visual Regression Summary"));
@@ -762,10 +826,10 @@ mod tests {
     fn test_generate_markdown_sanitization() {
         let tc = TestCaseResult {
             name: "billing \\| feature\nline".to_string(),
-            results: vec![TestImageResult::DecodeError {
+            result: TestImageResult::DecodeError {
                 relative_path: PathBuf::from("corrupt | file.png"),
                 error: "Bad header".to_string(),
-            }],
+            },
         };
         let md = ReportGenerator::generate_markdown(&[tc]);
         assert!(md.contains("billing \\\\\\| feature line"));

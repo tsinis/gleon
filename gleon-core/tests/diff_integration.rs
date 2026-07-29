@@ -92,9 +92,10 @@ screenshots:
         .expect("diff_16px_corners_100x100.png fixture must exist");
     fs::write(&screenshot_file, &modified_png_bytes).unwrap();
 
-    // 6. Run diff against modified image in Phase 3.2
+    // 6. Run diff against modified image -> should report failure
     let report_mismatch = run_diff(&ctx, base_path).expect("run_diff should succeed");
-    assert!(report_mismatch.passed);
+    assert!(!report_mismatch.passed);
+    assert_eq!(report_mismatch.failed_tests, 1);
 
     // 7. Verify generated report artifacts on disk
     let runs_dir = base_path.join(".gleon/runs/latest");
@@ -165,4 +166,122 @@ screenshots:
     assert!(report.passed);
     assert_eq!(report.total_tests, 1);
     assert_eq!(report.failed_tests, 0);
+}
+
+#[test]
+fn test_diff_missing_baseline_returns_missing_baseline() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let baseline_png_bytes = fs::read(fixtures_dir.join("200x100.png")).unwrap();
+
+    let screenshot_dir = base_path.join("billing");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    fs::write(screenshot_dir.join("unstaged.png"), &baseline_png_bytes).unwrap();
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+
+    let cli = Cli::for_test(Commands::Diff { auto_pull: false });
+    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    // Do NOT stage unstaged.png
+    let report = run_diff(&ctx, base_path).expect("run_diff should run");
+    assert!(!report.passed);
+    assert_eq!(report.total_tests, 1);
+    assert_eq!(report.failed_tests, 1);
+
+    let md = fs::read_to_string(report.runs_dir.join("report.md")).unwrap();
+    assert!(md.contains("Missing Baseline"));
+}
+
+#[test]
+fn test_diff_missing_blob_file_and_corrupt_images() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let baseline_png_bytes = fs::read(fixtures_dir.join("baseline_100x100.png")).unwrap();
+
+    let screenshot_dir = base_path.join("billing");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    let screenshot_file = screenshot_dir.join("form.png");
+    fs::write(&screenshot_file, &baseline_png_bytes).unwrap();
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+
+    let cli = Cli::for_test(Commands::Diff { auto_pull: false });
+    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    // Stage baseline
+    stage_workspace(&ctx, base_path, None).expect("stage_workspace should succeed");
+
+    // 1. Remove blob file manually from .gleon/blobs/sha256
+    let blobs_dir = base_path.join(".gleon/blobs/sha256");
+    for entry in fs::read_dir(&blobs_dir).unwrap() {
+        let path = entry.unwrap().path();
+        let _ = fs::remove_file(path);
+    }
+
+    let report_missing_blob = run_diff(&ctx, base_path).unwrap();
+    assert!(!report_missing_blob.passed);
+    let md_missing = fs::read_to_string(report_missing_blob.runs_dir.join("report.md")).unwrap();
+    assert!(md_missing.contains("Missing Baseline"));
+
+    // 2. Write corrupt baseline blob file back
+    let mut blob_digest = String::new();
+    for entry in fs::read_dir(base_path.join(".gleon/manifests")).unwrap() {
+        // Find platform dir
+        let p_dir = entry.unwrap().path();
+        if p_dir.is_dir() {
+            let manifest_path = p_dir.join("billing/form.json");
+            if manifest_path.is_file() {
+                let manifest_json = fs::read_to_string(&manifest_path).unwrap();
+                if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&manifest_json) {
+                    let hash_str = manifest["hash"].as_str().unwrap();
+                    blob_digest = hash_str.split_once(':').unwrap().1.to_string();
+                    fs::write(blobs_dir.join(&blob_digest), b"not a png").unwrap();
+                }
+            }
+        }
+    }
+
+    let report_corrupt_blob = run_diff(&ctx, base_path).unwrap();
+    assert!(!report_corrupt_blob.passed);
+    let md_corrupt_blob =
+        fs::read_to_string(report_corrupt_blob.runs_dir.join("report.md")).unwrap();
+    assert!(md_corrupt_blob.to_lowercase().contains("decode"));
+
+    // Restore valid baseline blob so run_diff decodes the baseline and tests corrupt actual screenshot
+    fs::write(blobs_dir.join(&blob_digest), &baseline_png_bytes).unwrap();
+
+    // 3. Write corrupt actual screenshot file
+    fs::write(&screenshot_file, b"not a png").unwrap();
+    let report_corrupt_actual = run_diff(&ctx, base_path).unwrap();
+    assert!(!report_corrupt_actual.passed);
+    let md_corrupt_actual =
+        fs::read_to_string(report_corrupt_actual.runs_dir.join("report.md")).unwrap();
+    assert!(md_corrupt_actual.to_lowercase().contains("decode"));
 }

@@ -41,6 +41,23 @@ pub struct ResolvedContext {
     pub base_dir: std::path::PathBuf,
 }
 
+impl Default for ResolvedContext {
+    fn default() -> Self {
+        Self {
+            config: None,
+            platform: PlatformInfo {
+                os: "unknown".to_string(),
+                arch: None,
+                renderer: None,
+                labels: std::collections::BTreeMap::new(),
+            },
+            branch: "main".to_string(),
+            target_branch: "main".to_string(),
+            base_dir: std::path::PathBuf::from("."),
+        }
+    }
+}
+
 impl ResolvedContext {
     pub fn from_cli(cli: &Cli, base_dir: &std::path::Path) -> Result<Self, ContextError> {
         let env = PlatformEnv::from_env();
@@ -369,5 +386,14 @@ mod tests {
 
         assert!(result.is_err());
         assert!(matches!(result, Err(ContextError::Config(_))));
+    }
+
+    #[test]
+    fn test_resolved_context_default() {
+        let ctx = ResolvedContext::default();
+        assert_eq!(ctx.platform.os, "unknown");
+        assert_eq!(ctx.platform.arch, None);
+        assert_eq!(ctx.platform.renderer, None);
+        assert_eq!(ctx.branch, "main");
     }
 }
