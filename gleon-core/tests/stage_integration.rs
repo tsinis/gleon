@@ -3,6 +3,7 @@
 use gleon_core::cli::{Cli, Commands};
 use gleon_core::context::ResolvedContext;
 use gleon_core::ops::{StageError, check_status, init_workspace, stage_workspace};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
 
@@ -87,8 +88,14 @@ screenshots:
     assert_eq!(stage_res.staged_test_cases.len(), 1);
     assert_eq!(stage_res.total_screenshots_staged, 1);
 
-    // 5. Verify blob saved under .gleon/blobs/sha256/
-    assert!(base_path.join(".gleon/blobs/sha256").is_dir());
+    // 5. Verify exact expected SHA-256 blob file exists under .gleon/blobs/sha256/
+    let sha256_hex = hex::encode(sha2::Sha256::digest(&real_png_bytes));
+    let expected_blob_path = base_path.join(".gleon/blobs/sha256").join(&sha256_hex);
+    assert!(
+        expected_blob_path.is_file(),
+        "Expected blob file {:?} does not exist",
+        expected_blob_path
+    );
 }
 
 #[test]
