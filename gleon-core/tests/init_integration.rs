@@ -22,6 +22,7 @@ fn test_init_workspace_creates_real_structure_and_valid_config() {
 
     // Verify directory structure exists on disk
     assert!(base_path.join(".gleon/blobs/sha256").is_dir());
+    assert!(base_path.join(".gleon/manifests").is_dir());
     assert!(base_path.join(".gleon/runs/latest").is_dir());
     assert!(config_path.is_file());
 
@@ -81,4 +82,10 @@ fn test_init_workspace_honors_cli_overrides() {
 
     let platform_key = ctx.platform.to_key().unwrap();
     assert_eq!(platform_key, "9:custom-os-11:custom-arch-5:theme=4:dark");
+    assert!(
+        base_path
+            .join(".gleon/manifests")
+            .join(&platform_key)
+            .is_dir()
+    );
 }

@@ -37,13 +37,13 @@ pub struct TestImage {
     pub absolute_path: PathBuf,
 }
 
-/// A grouping of screenshots under a single test case directory.
+/// A single visual regression test case corresponding to one screenshot.
 #[derive(Debug, Clone)]
 pub struct TestCase {
-    /// The test name (relative parent directory path, e.g. "billing/stripe")
+    /// The test name (relative path without extension, e.g. "billing/stripe/form")
     pub name: String,
-    /// The screenshots belonging to this test case
-    pub images: Vec<TestImage>,
+    /// The screenshot belonging to this test case
+    pub image: TestImage,
     /// The configuration rule that matched this test case
     pub rule: std::sync::Arc<crate::config::ScreenshotRule>,
 }
@@ -91,6 +91,13 @@ pub enum TestImageResult {
         /// Path to the actual image on disk.
         actual_path: PathBuf,
     },
+    /// The baseline snapshot or blob is missing.
+    MissingBaseline {
+        /// Relative path of the screenshot file.
+        relative_path: PathBuf,
+        /// Reason/details for the missing baseline.
+        reason: String,
+    },
 }
 
 impl TestImageResult {
@@ -99,6 +106,7 @@ impl TestImageResult {
         match self {
             Self::Success { relative_path } => relative_path,
             Self::DecodeError { relative_path, .. } => relative_path,
+            Self::MissingBaseline { relative_path, .. } => relative_path,
             Self::DimensionMismatch { relative_path, .. } => relative_path,
             Self::Mismatch { relative_path, .. } => relative_path,
         }
@@ -110,8 +118,15 @@ impl TestImageResult {
 pub struct TestCaseResult {
     /// The test case name.
     pub name: String,
-    /// Results of all screenshots within the test case.
-    pub results: Vec<TestImageResult>,
+    /// Result of the single screenshot within the test case.
+    pub result: TestImageResult,
+}
+
+impl TestCaseResult {
+    /// Returns true if the screenshot result succeeded.
+    pub fn passed(&self) -> bool {
+        matches!(self.result, TestImageResult::Success { .. })
+    }
 }
 
 /// Validates that all segments of a test name contain only allowed characters `[a-z0-9_.-]`.
@@ -169,7 +184,7 @@ impl FileScanner {
 
         let walker = Self::build_walker(base_dir, &exclude_set);
 
-        let mut temp_cases = std::collections::BTreeMap::<String, Vec<TestImage>>::new();
+        let mut temp_cases = std::collections::BTreeMap::<String, TestImage>::new();
 
         for entry_res in walker {
             let entry = match entry_res {
@@ -183,30 +198,25 @@ impl FileScanner {
             if let Some((test_name, rel_path, abs_path)) =
                 Self::parse_entry(&entry, base_dir, &include_set, &exclude_set)?
             {
-                let test_name_ref = test_name.as_ref();
-                let images = if let Some(images) = temp_cases.get_mut(test_name_ref) {
-                    images
-                } else {
-                    temp_cases.entry(test_name.into_owned()).or_default()
-                };
-                images.push(TestImage {
-                    relative_path: rel_path,
-                    absolute_path: abs_path,
-                });
+                let test_name_owned = test_name.into_owned();
+                temp_cases.insert(
+                    test_name_owned,
+                    TestImage {
+                        relative_path: rel_path,
+                        absolute_path: abs_path,
+                    },
+                );
             }
         }
 
         let cases = temp_cases
             .into_iter()
-            .map(|(name, mut images)| {
-                images.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-                TestCase {
-                    name,
-                    images,
-                    rule: rule.clone(),
-                }
+            .map(|(name, image)| TestCase {
+                name,
+                image,
+                rule: rule.clone(),
             })
-            .collect();
+            .collect::<Vec<_>>();
 
         Ok(cases)
     }
@@ -233,9 +243,7 @@ impl FileScanner {
 
         let walker = Self::build_walker(base_dir, &exclude_set);
 
-        let mut temp_cases =
-            std::collections::BTreeMap::<String, std::collections::BTreeMap<usize, TestCase>>::new(
-            );
+        let mut temp_cases = std::collections::BTreeMap::<String, TestCase>::new();
 
         for entry_res in walker {
             let entry = match entry_res {
@@ -276,51 +284,33 @@ impl FileScanner {
                 .enumerate()
                 .find(|(_, (_, inc_set))| inc_set.is_match(rel_path_str.as_ref()));
 
-            if let Some((rule_index, (rule_arc, _))) = matched_rule {
-                let parent = rel_path.parent().unwrap_or(Path::new(""));
-                let parent_str = Self::normalize_path_str(parent);
-                let test_name_ref = if parent_str.is_empty() {
-                    "."
-                } else {
-                    parent_str.as_ref()
-                };
+            if let Some((_, (rule_arc, _))) = matched_rule {
+                let path_without_ext = rel_path.with_extension("");
+                let test_name_str = Self::normalize_path_str(&path_without_ext).into_owned();
+                let test_name_ref = test_name_str.as_str();
 
-                let rule_map = if let Some(rule_map) = temp_cases.get_mut(test_name_ref) {
-                    rule_map
-                } else {
+                if let std::collections::btree_map::Entry::Vacant(e) =
+                    temp_cases.entry(test_name_ref.to_string())
+                {
                     if let Err(reason) = validate_test_name(test_name_ref) {
                         return Err(ScannerError::InvalidTestName {
                             name: test_name_ref.to_string(),
                             reason,
                         });
                     }
-                    temp_cases.entry(test_name_ref.to_string()).or_default()
-                };
-
-                rule_map
-                    .entry(rule_index)
-                    .or_insert_with(|| TestCase {
+                    e.insert(TestCase {
                         name: test_name_ref.to_string(),
-                        images: Vec::new(),
+                        image: TestImage {
+                            relative_path: rel_path.to_path_buf(),
+                            absolute_path: path.to_path_buf(),
+                        },
                         rule: rule_arc.clone(),
-                    })
-                    .images
-                    .push(TestImage {
-                        relative_path: rel_path.to_path_buf(),
-                        absolute_path: path.to_path_buf(),
                     });
+                }
             }
         }
 
-        let cases = temp_cases
-            .into_values()
-            .flat_map(|rule_map| rule_map.into_values())
-            .map(|mut tc| {
-                tc.images
-                    .sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-                tc
-            })
-            .collect();
+        let cases = temp_cases.into_values().collect();
         Ok(cases)
     }
 
@@ -397,14 +387,9 @@ impl FileScanner {
             return Ok(None);
         }
 
-        let parent = rel_path.parent().unwrap_or(Path::new(""));
-        let parent_str = Self::normalize_path_str(parent);
-
-        let test_name = if parent_str.is_empty() {
-            Cow::Borrowed(".")
-        } else {
-            parent_str
-        };
+        let path_without_ext = rel_path.with_extension("");
+        let test_name_string = Self::normalize_path_str(&path_without_ext).into_owned();
+        let test_name: Cow<'_, str> = Cow::Owned(test_name_string);
 
         if let Err(reason) = validate_test_name(test_name.as_ref()) {
             return Err(ScannerError::InvalidTestName {
@@ -506,14 +491,13 @@ mod tests {
         assert_eq!(cases.len(), 2);
 
         // First test case: billing/stripe
-        assert_eq!(cases[0].name, "billing/stripe");
-        assert_eq!(cases[0].images.len(), 1);
+        assert_eq!(cases[0].name, "billing/stripe/form");
         assert_eq!(
-            cases[0].images[0].relative_path,
+            cases[0].image.relative_path,
             Path::new("billing/stripe/form.png")
         );
         assert_eq!(
-            cases[1].images[0].relative_path,
+            cases[1].image.relative_path,
             Path::new("settings/corrupt.png")
         );
     }
@@ -548,9 +532,9 @@ mod tests {
         )
         .unwrap();
 
-        // Only billing/stripe should remain
+        // Only billing/stripe/form should remain
         assert_eq!(cases.len(), 1);
-        assert_eq!(cases[0].name, "billing/stripe");
+        assert_eq!(cases[0].name, "billing/stripe/form");
     }
 
     #[test]
@@ -635,12 +619,8 @@ exclude:
 
         let cases = FileScanner::scan_workspace(&config, base_path).unwrap();
         assert_eq!(cases.len(), 1);
-        assert_eq!(cases[0].name, "billing");
-        assert_eq!(cases[0].images.len(), 1);
-        assert_eq!(
-            cases[0].images[0].relative_path,
-            Path::new("billing/form.png")
-        );
+        assert_eq!(cases[0].name, "billing/form");
+        assert_eq!(cases[0].image.relative_path, Path::new("billing/form.png"));
     }
 
     #[test]
@@ -710,17 +690,15 @@ screenshots:
             .find(|c| c.rule.mode == crate::config::Mode::Ssim)
             .unwrap();
 
-        assert_eq!(pixel_case.name, "billing");
-        assert_eq!(pixel_case.images.len(), 1);
+        assert_eq!(pixel_case.name, "billing/form");
         assert_eq!(
-            pixel_case.images[0].relative_path,
+            pixel_case.image.relative_path,
             std::path::Path::new("billing/form.png")
         );
 
-        assert_eq!(ssim_case.name, "billing");
-        assert_eq!(ssim_case.images.len(), 1);
+        assert_eq!(ssim_case.name, "billing/receipt");
         assert_eq!(
-            ssim_case.images[0].relative_path,
+            ssim_case.image.relative_path,
             std::path::Path::new("billing/receipt.png")
         );
     }
@@ -808,7 +786,7 @@ screenshots:
 
         let cases = result.unwrap();
         assert_eq!(cases.len(), 1);
-        assert_eq!(cases[0].name, "readable");
+        assert_eq!(cases[0].name, "readable/image");
     }
 
     #[test]
@@ -843,7 +821,7 @@ screenshots:
 
         let tc_res = TestCaseResult {
             name: "test".to_string(),
-            results: vec![],
+            result: image_res,
         };
         assert!(!format!("{:?}", tc_res).is_empty());
     }
@@ -873,9 +851,8 @@ screenshots:
             }),
         )
         .unwrap();
-        assert_eq!(cases.len(), 1, "Expected to find the billing directory");
         assert_eq!(
-            cases[0].images.len(),
+            cases.len(),
             2,
             "Expected to find both uppercase and mixed-case PNG files"
         );
@@ -936,7 +913,7 @@ screenshots:
 
         let test_case = TestCase {
             name: "test_case".to_string(),
-            images: vec![test_image],
+            image: test_image.clone(),
             rule: std::sync::Arc::new(crate::config::ScreenshotRule {
                 include: vec![],
                 mode: crate::config::Mode::Pixel,
@@ -951,7 +928,10 @@ screenshots:
 
         let cloned_case = test_case.clone();
         assert_eq!(cloned_case.name, test_case.name);
-        assert_eq!(cloned_case.images.len(), test_case.images.len());
+        assert_eq!(
+            cloned_case.image.relative_path,
+            test_case.image.relative_path
+        );
     }
 
     #[test]
@@ -983,8 +963,6 @@ screenshots:
         let config: GleonConfig = serde_yaml::from_str(raw_yaml).unwrap();
 
         let cases = FileScanner::scan_workspace(&config, base_path).unwrap();
-        assert_eq!(cases.len(), 1);
-        assert_eq!(cases[0].name, "billing/stripe");
-        assert_eq!(cases[0].images.len(), 2);
+        assert_eq!(cases.len(), 2);
     }
 }

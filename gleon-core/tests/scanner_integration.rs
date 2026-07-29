@@ -29,21 +29,16 @@ fn test_scanner_with_real_fixture() {
     let cases: Vec<TestCase> = FileScanner::scan_files(&include, &exclude, &base_dir, rule)
         .expect("Scanning files should succeed");
 
-    // Both files are in the base_dir, so they both fall under the test case name "."
-    let test_case = cases
-        .iter()
-        .find(|c| c.name == ".")
-        .expect("Should find test case for '.'");
-
-    // Check we found all the expected PNG files (9 files total in the fixtures dir)
-    assert_eq!(test_case.images.len(), 9);
+    // We found all the expected PNG files (9 files total in the fixtures dir)
+    assert_eq!(cases.len(), 9);
 
     // Verify 200x100.png
-    let image_200x100 = test_case
-        .images
+    let test_case_200 = cases
         .iter()
-        .find(|i| i.relative_path.to_str() == Some("200x100.png"))
-        .expect("Should find 200x100.png in the scanned images");
+        .find(|c| c.name == "200x100")
+        .expect("Should find test case for 200x100");
+
+    let image_200x100 = &test_case_200.image;
     assert_eq!(image_200x100.absolute_path, fixture_path);
     let img =
         image::open(&image_200x100.absolute_path).expect("Failed to decode the real PNG fixture");
@@ -51,11 +46,12 @@ fn test_scanner_with_real_fixture() {
     assert_eq!(img.height(), 100);
 
     // Verify baseline_100x100.png
-    let image_100x100 = test_case
-        .images
+    let test_case_100 = cases
         .iter()
-        .find(|i| i.relative_path.to_str() == Some("baseline_100x100.png"))
-        .expect("Should find baseline_100x100.png in the scanned images");
+        .find(|c| c.name == "baseline_100x100")
+        .expect("Should find test case for baseline_100x100");
+
+    let image_100x100 = &test_case_100.image;
     assert_eq!(
         image_100x100.absolute_path,
         base_dir.join("baseline_100x100.png")
@@ -66,11 +62,12 @@ fn test_scanner_with_real_fixture() {
     assert_eq!(img_100.height(), 100);
 
     // Verify corrupt.png
-    let corrupt_image = test_case
-        .images
+    let test_case_corrupt = cases
         .iter()
-        .find(|i| i.relative_path.to_str() == Some("corrupt.png"))
-        .expect("Should find corrupt.png in the scanned images");
+        .find(|c| c.name == "corrupt")
+        .expect("Should find test case for corrupt");
+
+    let corrupt_image = &test_case_corrupt.image;
     assert_eq!(corrupt_image.absolute_path, corrupt_path);
     assert!(
         image::open(&corrupt_image.absolute_path).is_err(),

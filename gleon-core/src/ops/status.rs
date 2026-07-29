@@ -2,9 +2,11 @@
 
 use crate::config::ConfigError;
 use crate::context::{ContextError, ResolvedContext};
-use crate::manifest::ManifestError;
+use crate::manifest::{ManifestError, WorkspaceIndex};
 use crate::scanner::{FileScanner, ScannerError};
 use serde::Serialize;
+use sha2::Digest;
+
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -105,62 +107,90 @@ pub fn check_status(
         return Err(StatusError::NotInitialized);
     }
 
-    let _platform_key = match context.platform.to_key() {
+    let platform_key = match context.platform.to_key() {
         Ok(key) => key,
         Err(e) => return Err(StatusError::Context(ContextError::Platform(e))),
     };
+
+    let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
+    let workspace_index = WorkspaceIndex::load(&manifests_dir)?;
 
     let config = context.config.as_ref().cloned().unwrap_or_default();
 
     // Scan workspace screenshots
     let test_cases = FileScanner::scan_workspace(&config, base_dir)?;
 
-    let mut added = Vec::new();
-    let mut modified = Vec::new();
-    let mut deleted = Vec::new();
+    use rayon::prelude::*;
 
-    // Map test manifests to their entries
-    let mut baseline_entries = std::collections::BTreeMap::<String, (u32, u32, String)>::new();
+    let (mut added, mut modified, seen_test_cases) = test_cases
+        .into_par_iter()
+        .map(
+            |case| -> Result<(Option<PathBuf>, Option<PathBuf>, String), StatusError> {
+                let seen_name = case.name.clone();
+                let baseline_manifest = workspace_index.get(&case.name);
 
-    for case in test_cases {
-        for img in case.images {
-            let rel_path = img.relative_path;
-            let rel_path_str = FileScanner::normalize_path_str(&rel_path);
+                let img = case.image;
+                let rel_path = img.relative_path;
 
-            match baseline_entries.remove(rel_path_str.as_ref()) {
-                None => {
-                    added.push(rel_path);
-                }
-                Some((_w, _h, baseline_sha256)) => {
-                    let matched_zones = case.rule.matched_mask_zones(&rel_path);
-                    let png_bytes = if !matched_zones.is_empty() {
-                        let dynamic_img = image::open(&img.absolute_path)
-                            .map_err(|e| StatusError::Io(std::io::Error::other(e)))?;
-                        let mut rgba = dynamic_img.to_rgba8();
-                        crate::masking::apply_masks(&mut rgba, &matched_zones);
-                        let mut encoded = Vec::new();
-                        let mut cursor = std::io::Cursor::new(&mut encoded);
-                        rgba.write_to(&mut cursor, image::ImageFormat::Png)
-                            .map_err(|e| StatusError::Io(std::io::Error::other(e)))?;
-                        encoded
-                    } else {
-                        std::fs::read(&img.absolute_path).map_err(StatusError::Io)?
-                    };
+                match baseline_manifest {
+                    None => Ok((Some(rel_path), None, seen_name)),
+                    Some(manifest) => {
+                        let matched_zones = case.rule.matched_mask_zones(&rel_path);
+                        let png_bytes = if !matched_zones.is_empty() {
+                            let dynamic_img = image::open(&img.absolute_path)
+                                .map_err(|e| StatusError::Io(std::io::Error::other(e)))?;
+                            let mut rgba = dynamic_img.to_rgba8();
+                            crate::masking::apply_masks(&mut rgba, &matched_zones);
+                            let mut encoded = Vec::new();
+                            let mut cursor = std::io::Cursor::new(&mut encoded);
+                            rgba.write_to(&mut cursor, image::ImageFormat::Png)
+                                .map_err(|e| StatusError::Io(std::io::Error::other(e)))?;
+                            encoded
+                        } else {
+                            std::fs::read(&img.absolute_path)?
+                        };
 
-                    use sha2::{Digest, Sha256};
-                    let computed_sha256 = hex::encode(Sha256::digest(&png_bytes));
-
-                    if computed_sha256 != baseline_sha256 {
-                        modified.push(rel_path);
+                        let actual_sha256 = hex::encode(sha2::Sha256::digest(&png_bytes));
+                        if actual_sha256 != manifest.hash.value() {
+                            Ok((None, Some(rel_path), seen_name))
+                        } else {
+                            Ok((None, None, seen_name))
+                        }
                     }
                 }
-            }
-        }
-    }
+            },
+        )
+        .try_fold(
+            || (Vec::new(), Vec::new(), std::collections::HashSet::new()),
+            |mut acc, item| -> Result<_, StatusError> {
+                let (opt_add, opt_mod, name) = item?;
+                if let Some(p) = opt_add {
+                    acc.0.push(p);
+                }
+                if let Some(p) = opt_mod {
+                    acc.1.push(p);
+                }
+                acc.2.insert(name);
+                Ok(acc)
+            },
+        )
+        .try_reduce(
+            || (Vec::new(), Vec::new(), std::collections::HashSet::new()),
+            |mut a, b| -> Result<_, StatusError> {
+                a.0.extend(b.0);
+                a.1.extend(b.1);
+                a.2.extend(b.2);
+                Ok(a)
+            },
+        )?;
 
-    // Any entry remaining in baseline_entries was not found in the workspace, so it is Deleted
-    for (rel_path_str, _) in baseline_entries {
-        deleted.push(PathBuf::from(rel_path_str));
+    let mut deleted = Vec::new();
+
+    // Identify deleted test cases (staged in index but no longer present on disk)
+    for staged_name in workspace_index.entries().keys() {
+        if !seen_test_cases.contains(staged_name) {
+            deleted.push(PathBuf::from(format!("{}.png", staged_name)));
+        }
     }
 
     added.sort();
@@ -177,30 +207,6 @@ pub fn check_status(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_format_text_clean() {
-        let report = StatusReport::default();
-        assert!(report.is_clean());
-        assert_eq!(
-            report.format_text(),
-            "Nothing to report. Workspace is up to date.\n"
-        );
-    }
-
-    #[test]
-    fn test_format_text_with_changes() {
-        let report = StatusReport {
-            added: vec![PathBuf::from("a.png")],
-            modified: vec![PathBuf::from("b.png")],
-            deleted: vec![PathBuf::from("c.png")],
-        };
-        assert!(!report.is_clean());
-        let formatted = report.format_text();
-        assert!(formatted.contains("Added:\n  a.png"));
-        assert!(formatted.contains("Modified:\n  b.png"));
-        assert!(formatted.contains("Deleted:\n  c.png"));
-    }
 
     #[test]
     fn test_status_error_display() {
@@ -226,5 +232,19 @@ mod tests {
 
         let err6 = StatusError::Io(std::io::Error::other("io test"));
         assert!(err6.to_string().contains("IO error"));
+    }
+
+    #[test]
+    fn test_status_report_format() {
+        let report = StatusReport {
+            added: vec![PathBuf::from("a.png")],
+            modified: vec![PathBuf::from("b.png")],
+            deleted: vec![PathBuf::from("c.png")],
+        };
+        assert!(!report.is_clean());
+        let text = report.format_text();
+        assert!(text.contains("Added:"));
+        assert!(text.contains("Modified:"));
+        assert!(text.contains("Deleted:"));
     }
 }

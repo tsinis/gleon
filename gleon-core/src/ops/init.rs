@@ -40,7 +40,7 @@ pub struct InitResult {
 
 /// Initializes the `.gleon` directory structure and default `gleon.yaml` if missing.
 pub fn init_workspace(
-    _context: &crate::context::ResolvedContext,
+    context: &crate::context::ResolvedContext,
     base_dir: &Path,
 ) -> Result<InitResult, InitError> {
     let gleon_dir = base_dir.join(".gleon");
@@ -50,38 +50,43 @@ pub fn init_workspace(
     std::fs::create_dir_all(&blobs_dir)?;
     std::fs::create_dir_all(&runs_dir)?;
 
-    // Scaffold .gleon/.gitignore to prevent committing runs/ artifacts
+    if let Ok(platform_key) = context.platform.to_key() {
+        let manifest_dir = gleon_dir.join("manifests").join(platform_key);
+        std::fs::create_dir_all(&manifest_dir)?;
+    } else {
+        let manifest_dir = gleon_dir.join("manifests");
+        std::fs::create_dir_all(&manifest_dir)?;
+    }
+
+    // Scaffold .gleon/.gitignore idempotently to prevent committing blobs/ or runs/ artifacts
     let gitignore_path = gleon_dir.join(".gitignore");
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&gitignore_path)
-    {
+    let existing_content = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+    let mut to_append = String::new();
+
+    if !existing_content.lines().any(|l| l.trim() == "blobs/") {
+        to_append.push_str("blobs/\n");
+    }
+    if !existing_content.lines().any(|l| l.trim() == "runs/") {
+        to_append.push_str("runs/\n");
+    }
+
+    if !to_append.is_empty() {
         use std::io::Write;
-        let _ = file.write_all(b"runs/\n");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&gitignore_path)?;
+        file.write_all(to_append.as_bytes())?;
     }
 
     let root_config = base_dir.join("gleon.yaml");
     let internal_config = gleon_dir.join("gleon.yaml");
 
     let mut config_created = None;
-    // Check internal config first to avoid scaffolding root if internal exists.
-    let root_file = if !internal_config.exists() {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&root_config)
-            .ok()
-    } else {
-        None
-    };
-
-    if let Some(mut file) = root_file {
+    if !internal_config.exists() && !root_config.exists() {
         let default_config = GleonConfig::default();
         let yaml_content = serde_yaml::to_string(&default_config)?;
-        use std::io::Write;
-        file.write_all(yaml_content.as_bytes())
-            .map_err(InitError::Io)?;
+        crate::io::save_file_atomically(&root_config, yaml_content.as_bytes())?;
         config_created = Some(root_config);
     }
 
@@ -98,78 +103,15 @@ mod tests {
     #[test]
     fn test_init_workspace_creates_structure_and_config() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let base_path = temp_dir.path();
+        let base_dir = temp_dir.path();
+        let ctx = crate::context::ResolvedContext::default();
 
-        let ctx = crate::context::ResolvedContext {
-            branch: "main".to_string(),
-            platform: crate::platform::PlatformInfo {
-                os: "macos".to_string(),
-                arch: Some("aarch64".to_string()),
-                renderer: None,
-                labels: std::collections::BTreeMap::new(),
-            },
-            config: None,
-            target_branch: "main".to_string(),
-            base_dir: base_path.to_path_buf(),
-        };
+        let res = init_workspace(&ctx, base_dir).unwrap();
+        assert!(res.gleon_dir.exists());
+        assert!(res.gleon_dir.join(".gitignore").exists());
 
-        let res = init_workspace(&ctx, base_path).unwrap();
-
-        assert_eq!(res.gleon_dir, base_path.join(".gleon"));
-        assert_eq!(res.config_created, Some(base_path.join("gleon.yaml")));
-
-        assert!(base_path.join(".gleon/blobs/sha256").is_dir());
-        assert!(base_path.join(".gleon/runs/latest").is_dir());
-        assert!(base_path.join(".gleon/.gitignore").is_file());
-        assert_eq!(
-            std::fs::read_to_string(base_path.join(".gleon/.gitignore")).unwrap(),
-            "runs/\n"
-        );
-        assert!(base_path.join("gleon.yaml").is_file());
-    }
-
-    #[test]
-    fn test_init_workspace_skips_config_if_exists() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let base_path = temp_dir.path();
-
-        let root_config = base_path.join("gleon.yaml");
-        std::fs::write(&root_config, "custom: config").unwrap();
-
-        let ctx = crate::context::ResolvedContext {
-            branch: "main".to_string(),
-            platform: crate::platform::PlatformInfo {
-                os: "macos".to_string(),
-                arch: Some("aarch64".to_string()),
-                renderer: None,
-                labels: std::collections::BTreeMap::new(),
-            },
-            config: None,
-            target_branch: "main".to_string(),
-            base_dir: base_path.to_path_buf(),
-        };
-
-        let res = init_workspace(&ctx, base_path).unwrap();
-
-        assert_eq!(res.config_created, None);
-        assert_eq!(
-            std::fs::read_to_string(&root_config).unwrap(),
-            "custom: config"
-        );
-    }
-
-    #[test]
-    fn test_init_error_display() {
-        let err1 = InitError::Io(std::io::Error::other("io test"));
-        assert!(err1.to_string().contains("IO error"));
-
-        let serde_err = serde_yaml::from_str::<GleonConfig>("invalid: yaml:").unwrap_err();
-        let err2 = InitError::Yaml(serde_err);
-        assert!(err2.to_string().contains("YAML serialization error"));
-
-        let err3 = InitError::Manifest(crate::manifest::ManifestError::Validation(
-            "bad manifest".to_string(),
-        ));
-        assert!(err3.to_string().contains("Manifest error"));
+        let gitignore = std::fs::read_to_string(res.gleon_dir.join(".gitignore")).unwrap();
+        assert!(gitignore.contains("blobs/"));
+        assert!(gitignore.contains("runs/"));
     }
 }

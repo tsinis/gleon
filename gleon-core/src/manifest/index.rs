@@ -1,0 +1,206 @@
+//! In-memory workspace index built from per-test manifest files.
+
+use ignore::WalkBuilder;
+use std::borrow::Cow;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+
+use crate::manifest::ManifestError;
+use crate::manifest::single::SingleTestManifest;
+
+/// Normalizes path separators to forward slashes without unnecessary allocations.
+pub fn normalize_test_name(test_name: &str) -> Cow<'_, str> {
+    if test_name.contains('\\') {
+        Cow::Owned(test_name.replace('\\', "/"))
+    } else {
+        Cow::Borrowed(test_name)
+    }
+}
+
+/// Validates a relative test path (e.g. `auth/login_screen`).
+/// Splits on both `/` and `\`, verifying that each segment contains only valid characters `[a-z0-9_.-]`.
+pub fn validate_test_path(test_path: &str) -> Result<(), ManifestError> {
+    if test_path.trim().is_empty() {
+        return Err(ManifestError::Validation(
+            "Test path cannot be empty".to_string(),
+        ));
+    }
+
+    for segment in test_path.split(['/', '\\']) {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return Err(ManifestError::Validation(format!(
+                "Invalid test path segment '{}' in '{}'",
+                segment, test_path
+            )));
+        }
+        if !segment
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
+        {
+            return Err(ManifestError::Validation(format!(
+                "Test path segment '{}' contains invalid characters",
+                segment
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// In-memory index mapping test case relative paths to their `SingleTestManifest`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkspaceIndex {
+    entries: BTreeMap<String, SingleTestManifest>,
+}
+
+impl WorkspaceIndex {
+    /// Creates a new empty `WorkspaceIndex`.
+    pub fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+        }
+    }
+
+    /// Loads the `WorkspaceIndex` by scanning the given platform manifest directory.
+    /// If the directory does not exist on disk, returns an empty index.
+    pub fn load<P: AsRef<Path>>(manifest_dir: P) -> Result<Self, ManifestError> {
+        let manifest_dir = manifest_dir.as_ref();
+        if !manifest_dir.exists() {
+            tracing::debug!(
+                "Manifest directory {:?} does not exist, returning empty index",
+                manifest_dir
+            );
+            return Ok(Self::new());
+        }
+
+        let mut entries = BTreeMap::new();
+        let walker = WalkBuilder::new(manifest_dir)
+            .standard_filters(false)
+            .build();
+
+        for entry in walker.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+
+            let rel_path = match path.strip_prefix(manifest_dir) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            // Remove .json extension
+            let without_ext = rel_path.with_extension("");
+            let rel_str = normalize_test_name(&without_ext.to_string_lossy()).into_owned();
+
+            validate_test_path(&rel_str)?;
+
+            let manifest = SingleTestManifest::load(path)?;
+            entries.insert(rel_str, manifest);
+        }
+
+        Ok(Self { entries })
+    }
+
+    /// Returns a reference to the inner entries map.
+    pub fn entries(&self) -> &BTreeMap<String, SingleTestManifest> {
+        &self.entries
+    }
+
+    /// Consumes the index and returns the inner entries map.
+    pub fn into_entries(self) -> BTreeMap<String, SingleTestManifest> {
+        self.entries
+    }
+
+    /// Gets a single test manifest by test case name.
+    pub fn get(&self, test_name: &str) -> Option<&SingleTestManifest> {
+        let normalized = normalize_test_name(test_name);
+        self.entries.get(normalized.as_ref())
+    }
+
+    /// Inserts or updates a single test manifest in memory.
+    pub fn insert(&mut self, test_name: String, manifest: SingleTestManifest) {
+        let normalized = normalize_test_name(&test_name).into_owned();
+        self.entries.insert(normalized, manifest);
+    }
+
+    /// Removes a test case entry from the in-memory map.
+    pub fn remove(&mut self, test_name: &str) -> Option<SingleTestManifest> {
+        let normalized = normalize_test_name(test_name);
+        self.entries.remove(normalized.as_ref())
+    }
+
+    /// Saves a single test manifest to disk under `manifest_dir` and updates memory.
+    pub fn save_test<P: AsRef<Path>>(
+        &mut self,
+        manifest_dir: P,
+        test_name: &str,
+        manifest: &SingleTestManifest,
+    ) -> Result<(), ManifestError> {
+        let normalized = normalize_test_name(test_name);
+        validate_test_path(normalized.as_ref())?;
+
+        let manifest_dir = manifest_dir.as_ref();
+        let target_path = manifest_dir.join(format!("{}.json", normalized));
+
+        manifest.save(&target_path)?;
+        self.entries
+            .insert(normalized.into_owned(), manifest.clone());
+        Ok(())
+    }
+
+    /// Removes a test case manifest file from disk and memory.
+    pub fn remove_test<P: AsRef<Path>>(
+        &mut self,
+        manifest_dir: P,
+        test_name: &str,
+    ) -> Result<Option<SingleTestManifest>, ManifestError> {
+        let normalized = normalize_test_name(test_name);
+        let manifest_dir = manifest_dir.as_ref();
+        let target_path = manifest_dir.join(format!("{}.json", normalized));
+
+        if target_path.exists() {
+            fs::remove_file(&target_path)?;
+        }
+        Ok(self.entries.remove(normalized.as_ref()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::manifest::ImageHash;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_workspace_index_load_empty() {
+        let temp = tempdir().unwrap();
+        let non_existent = temp.path().join("does_not_exist");
+        let index = WorkspaceIndex::load(&non_existent).unwrap();
+        assert!(index.entries().is_empty());
+    }
+
+    #[test]
+    fn test_workspace_index_save_and_load() {
+        let temp = tempdir().unwrap();
+        let manifest_dir = temp.path().join("macos-aarch64");
+
+        let hash = ImageHash::new("sha256", "a".repeat(64)).unwrap();
+        let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
+        let single = SingleTestManifest::new(hash, phash, 100, 200).unwrap();
+
+        let mut index = WorkspaceIndex::new();
+        index
+            .save_test(&manifest_dir, "auth/login_screen", &single)
+            .unwrap();
+
+        assert_eq!(index.entries().len(), 1);
+        assert_eq!(index.get("auth/login_screen"), Some(&single));
+
+        let loaded = WorkspaceIndex::load(&manifest_dir).unwrap();
+        assert_eq!(index, loaded);
+    }
+}

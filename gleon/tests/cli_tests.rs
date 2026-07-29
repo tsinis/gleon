@@ -412,13 +412,13 @@ screenshots:
     // 5. Overwrite screenshot with different image
     std::fs::write(billing_dir.join("form.png"), &img_100)?;
 
-    // 6. gleon diff in Phase 3.2
+    // 6. gleon diff on mismatch -> returns exit code 1
     let mut cmd_diff_mismatch = Command::cargo_bin("gleon")?;
     cmd_diff_mismatch
         .current_dir(dir.path())
         .arg("diff")
         .assert()
-        .code(0);
+        .code(1);
 
     Ok(())
 }
@@ -462,16 +462,14 @@ screenshots:
             "Staged 1 screenshot(s) across 1 test case(s).",
         ));
 
-    // Second stage in Phase 3.2
+    // Second stage on unchanged screenshots: outputs Already up to date.
     let mut cmd_stage2 = Command::cargo_bin("gleon")?;
     cmd_stage2
         .current_dir(dir.path())
         .arg("stage")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
-            "Staged 1 screenshot(s) across 1 test case(s).",
-        ));
+        .stdout(predicates::str::contains("Already up to date."));
 
     Ok(())
 }

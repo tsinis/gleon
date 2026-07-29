@@ -88,7 +88,8 @@ mod tests {
         let img2 = ImageBuffer::from_pixel(100, 100, Rgba([255, 0, 0, 255]));
         let mut img3 = ImageBuffer::from_pixel(100, 100, Rgba([255, 0, 0, 255]));
         // Make img3 slightly different
-        img3.put_pixel(50, 50, Rgba([0, 255, 0, 255]));
+        let offset = (50 * 100 + 50) * 4;
+        (&mut *img3)[offset..offset + 4].copy_from_slice(&[0, 255, 0, 255]);
 
         let phash1 = compute_phash(&img1);
         let phash2 = compute_phash(&img2);

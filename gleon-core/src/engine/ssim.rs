@@ -44,10 +44,9 @@ mod tests {
         let img1 = ImageBuffer::from_pixel(100, 100, Rgba([255, 0, 0, 255]));
         let mut img2 = ImageBuffer::from_pixel(100, 100, Rgba([255, 0, 0, 255]));
         // Make half of img2 green
-        for y in 0..50 {
-            for x in 0..100 {
-                img2.put_pixel(x, y, Rgba([0, 255, 0, 255]));
-            }
+        let half_bytes = 50 * 100 * 4;
+        for chunk in (&mut *img2)[..half_bytes].chunks_exact_mut(4) {
+            chunk.copy_from_slice(&[0, 255, 0, 255]);
         }
 
         let (score, _diff_img) = compare_ssim(&img1, &img2).unwrap();

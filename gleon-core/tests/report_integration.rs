@@ -62,65 +62,85 @@ fn test_report_generation_with_real_images_and_durability() {
         .expect("Failed to save ssim diff image");
 
     // 4. Construct comprehensive TestCaseResult covering all 4 failure types
-    let tc_res = TestCaseResult {
-        name: "billing_dashboard".to_string(),
-        results: vec![
-            TestImageResult::Mismatch {
-                relative_path: PathBuf::from("overview_metrics.png"),
-                detail: pixel_detail,
-                diff_path: diff_pixel_path.clone(),
-                baseline_path: baseline_path.clone(),
-                actual_path: actual_path.clone(),
-            },
-            TestImageResult::Mismatch {
-                relative_path: PathBuf::from("revenue_performance.png"),
-                detail: ssim_detail,
-                diff_path: diff_ssim_path,
-                baseline_path: baseline_path.clone(),
-                actual_path: actual_path.clone(),
-            },
-            TestImageResult::Mismatch {
-                relative_path: PathBuf::from("security_alert_banner.png"),
-                detail: MismatchDetail::SsimFallback { diff_count: 14205 },
-                diff_path: diff_pixel_path,
-                baseline_path: baseline_path.clone(),
-                actual_path: actual_path.clone(),
-            },
-            TestImageResult::DimensionMismatch {
-                relative_path: PathBuf::from("sidebar_navigation.png"),
-                baseline_size: (1920, 1080),
-                actual_size: (1920, 1200),
-                baseline_path: baseline_path.clone(),
-                actual_path: actual_path.clone(),
-            },
-            TestImageResult::DecodeError {
-                relative_path: PathBuf::from("user_avatar.png"),
-                error: "PNG header corrupted or incomplete".to_string(),
-            },
-        ],
+    let tc_res1 = TestCaseResult {
+        name: "billing_dashboard_1".to_string(),
+        result: TestImageResult::Mismatch {
+            relative_path: PathBuf::from("overview_metrics.png"),
+            detail: pixel_detail,
+            diff_path: diff_pixel_path.clone(),
+            baseline_path: baseline_path.clone(),
+            actual_path: actual_path.clone(),
+        },
+    };
+    let tc_res2 = TestCaseResult {
+        name: "billing_dashboard_2".to_string(),
+        result: TestImageResult::Mismatch {
+            relative_path: PathBuf::from("revenue_performance.png"),
+            detail: ssim_detail,
+            diff_path: diff_ssim_path,
+            baseline_path: baseline_path.clone(),
+            actual_path: actual_path.clone(),
+        },
+    };
+    let tc_res3 = TestCaseResult {
+        name: "billing_dashboard_3".to_string(),
+        result: TestImageResult::Mismatch {
+            relative_path: PathBuf::from("security_alert_banner.png"),
+            detail: MismatchDetail::SsimFallback { diff_count: 14205 },
+            diff_path: diff_pixel_path,
+            baseline_path: baseline_path.clone(),
+            actual_path: actual_path.clone(),
+        },
+    };
+    let tc_res4 = TestCaseResult {
+        name: "billing_dashboard_4".to_string(),
+        result: TestImageResult::DimensionMismatch {
+            relative_path: PathBuf::from("sidebar_navigation.png"),
+            baseline_size: (1920, 1080),
+            actual_size: (1920, 1200),
+            baseline_path: baseline_path.clone(),
+            actual_path: actual_path.clone(),
+        },
+    };
+    let tc_res5 = TestCaseResult {
+        name: "billing_dashboard_5".to_string(),
+        result: TestImageResult::DecodeError {
+            relative_path: PathBuf::from("user_avatar.png"),
+            error: "PNG header corrupted or incomplete".to_string(),
+        },
     };
 
+    let tc_res6 = TestCaseResult {
+        name: "billing_dashboard_6".to_string(),
+        result: TestImageResult::MissingBaseline {
+            relative_path: PathBuf::from("missing_base.png"),
+            reason: "Baseline missing".to_string(),
+        },
+    };
+
+    let all_tc_res = vec![tc_res1, tc_res2, tc_res3, tc_res4, tc_res5, tc_res6];
+
     // 5. Generate HTML report
-    let html_report =
-        ReportGenerator::generate_html(std::slice::from_ref(&tc_res), Some(&report_dir));
+    let html_report = ReportGenerator::generate_html(&all_tc_res, Some(&report_dir));
 
     let html = html_report
         .expect("HTML render should succeed")
         .expect("Expected Some(HTML), but got None");
     assert!(!html.contains("data:image/png;base64,"));
-    assert!(html.contains("billing_dashboard / overview_metrics.png"));
-    assert!(html.contains("billing_dashboard / revenue_performance.png"));
-    assert!(html.contains("billing_dashboard / sidebar_navigation.png"));
-    assert!(html.contains("billing_dashboard / user_avatar.png"));
+    assert!(html.contains("billing_dashboard_1 / overview_metrics.png"));
+    assert!(html.contains("billing_dashboard_2 / revenue_performance.png"));
+    assert!(html.contains("billing_dashboard_4 / sidebar_navigation.png"));
+    assert!(html.contains("billing_dashboard_5 / user_avatar.png"));
+    assert!(html.contains("billing_dashboard_6 / missing_base.png"));
     assert!(html.contains("PNG header corrupted or incomplete"));
+    assert!(html.contains("Baseline missing"));
 
     let html_path = report_dir.join("report.html");
     fs::write(&html_path, &html).expect("Failed to write HTML report");
     assert!(html_path.exists());
 
     // 6. Generate and write JUnit XML
-    let xml = ReportGenerator::generate_junit_xml(std::slice::from_ref(&tc_res))
-        .expect("XML render should succeed");
+    let xml = ReportGenerator::generate_junit_xml(&all_tc_res).expect("XML render should succeed");
     assert!(xml.contains("<testsuites name=\"Gleon Tests\""));
     assert!(xml.contains("<failure message=\"Visual mismatch detected ("));
     assert!(xml.contains("<failure message=\"Visual mismatch detected (SSIM score:"));
@@ -131,17 +151,19 @@ fn test_report_generation_with_real_images_and_durability() {
         "<failure message=\"Dimension mismatch (Baseline: 1920x1080, Actual: 1920x1200)\""
     ));
     assert!(xml.contains("<failure message=\"Decode error: PNG header corrupted or incomplete\""));
+    assert!(xml.contains("<failure message=\"Decode error: Baseline missing\""));
 
     let xml_path = report_dir.join("junit.xml");
     fs::write(&xml_path, &xml).expect("Failed to write XML report");
     assert!(xml_path.exists());
 
     // 7. Generate and write Markdown
-    let md = ReportGenerator::generate_markdown(std::slice::from_ref(&tc_res));
+    let md = ReportGenerator::generate_markdown(&all_tc_res);
     assert!(md.contains("# Gleon Visual Regression Summary"));
     assert!(md.contains("❌ Mismatch"));
     assert!(md.contains("❌ Dimension Mismatch"));
     assert!(md.contains("❌ Decode Error"));
+    assert!(md.contains("❌ Missing Baseline"));
 
     let md_path = report_dir.join("report.md");
     fs::write(&md_path, &md).expect("Failed to write MD report");
