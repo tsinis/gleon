@@ -251,6 +251,7 @@ screenshots:
     assert!(md_missing.contains("Missing Baseline"));
 
     // 2. Write corrupt baseline blob file back
+    let mut blob_digest = String::new();
     for entry in fs::read_dir(base_path.join(".gleon/manifests")).unwrap() {
         // Find platform dir
         let p_dir = entry.unwrap().path();
@@ -260,8 +261,8 @@ screenshots:
                 let manifest_json = fs::read_to_string(&manifest_path).unwrap();
                 if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&manifest_json) {
                     let hash_str = manifest["hash"].as_str().unwrap();
-                    let digest = hash_str.split_once(':').unwrap().1;
-                    fs::write(blobs_dir.join(digest), b"not a png").unwrap();
+                    blob_digest = hash_str.split_once(':').unwrap().1.to_string();
+                    fs::write(blobs_dir.join(&blob_digest), b"not a png").unwrap();
                 }
             }
         }
@@ -272,6 +273,9 @@ screenshots:
     let md_corrupt_blob =
         fs::read_to_string(report_corrupt_blob.runs_dir.join("report.md")).unwrap();
     assert!(md_corrupt_blob.to_lowercase().contains("decode"));
+
+    // Restore valid baseline blob so run_diff decodes the baseline and tests corrupt actual screenshot
+    fs::write(blobs_dir.join(&blob_digest), &baseline_png_bytes).unwrap();
 
     // 3. Write corrupt actual screenshot file
     fs::write(&screenshot_file, b"not a png").unwrap();

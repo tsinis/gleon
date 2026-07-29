@@ -105,6 +105,13 @@ impl WorkspaceIndex {
 
             validate_test_path(&rel_str)?;
 
+            if entries.contains_key(&rel_str) {
+                return Err(ManifestError::Validation(format!(
+                    "Duplicate test case key collision in manifest index: '{}'",
+                    rel_str
+                )));
+            }
+
             let manifest = SingleTestManifest::load(path)?;
             entries.insert(rel_str, manifest);
         }
@@ -248,6 +255,22 @@ mod tests {
 
         let index = WorkspaceIndex::load(&manifest_dir);
         assert!(index.is_err());
+    }
+
+    #[test]
+    fn test_workspace_index_load_rejects_duplicates() {
+        let temp = tempdir().unwrap();
+        let manifest_dir = temp.path().join("macos-aarch64");
+        std::fs::create_dir_all(manifest_dir.join("auth")).unwrap();
+
+        let hash = ImageHash::new("sha256", "a".repeat(64)).unwrap();
+        let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
+        let manifest = SingleTestManifest::new(hash, phash, 100, 100).unwrap();
+        manifest.save(manifest_dir.join("auth/login.json")).unwrap();
+
+        let loaded = WorkspaceIndex::load(&manifest_dir).unwrap();
+        assert_eq!(loaded.entries.len(), 1);
+        assert!(loaded.get("auth/login").is_some());
     }
 
     #[test]
