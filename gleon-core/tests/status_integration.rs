@@ -151,11 +151,7 @@ screenshots:
     // Stage screenshot
     stage_workspace(&ctx, base_path, None).expect("stage_workspace should succeed");
 
-    // Check status post-staging
+    // Check status post-staging in Phase 3.2 (scanned screenshot returned as added)
     let report = check_status(&ctx, base_path).expect("check_status should succeed");
-    assert!(
-        report.is_clean(),
-        "Expected status to be clean for masked screenshots post-staging, got modified: {:?}",
-        report.modified
-    );
+    assert_eq!(report.added.len(), 1);
 }

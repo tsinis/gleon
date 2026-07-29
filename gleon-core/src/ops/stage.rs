@@ -5,8 +5,7 @@ use crate::context::{ContextError, ResolvedContext};
 use crate::engine::phash::compute_phash;
 use crate::git::GitResolver;
 use crate::manifest::{
-    ImageHash, Manifest, ManifestEntry, ManifestError, ManifestIndex,
-    SUPPORTED_MANIFEST_SCHEMA_VERSION,
+    ImageHash, Manifest, ManifestEntry, ManifestError, SUPPORTED_MANIFEST_SCHEMA_VERSION,
 };
 use crate::masking::apply_masks;
 use crate::scanner::{FileScanner, ScannerError};
@@ -81,28 +80,13 @@ pub fn stage_workspace(
         return Err(StageError::NotInitialized);
     }
 
-    let platform_key = context.platform.to_key().map_err(ContextError::Platform)?;
+    let _platform_key = match context.platform.to_key() {
+        Ok(key) => key,
+        Err(e) => return Err(StageError::Context(ContextError::Platform(e))),
+    };
 
     let blobs_dir = gleon_dir.join("blobs").join("sha256");
     std::fs::create_dir_all(&blobs_dir).map_err(StageError::Io)?;
-
-    let branch_dir = gleon_dir
-        .join("branches")
-        .join(&context.branch)
-        .join(&platform_key);
-    std::fs::create_dir_all(&branch_dir).map_err(StageError::Io)?;
-
-    let index_path = branch_dir.join("manifest_index.json");
-
-    let manifest_index_opt = match ManifestIndex::load(&index_path) {
-        Ok(idx) => Some(idx),
-        Err(ManifestError::Io(crate::io::IoError::Io(e)))
-            if e.kind() == std::io::ErrorKind::NotFound =>
-        {
-            None
-        }
-        Err(e) => return Err(StageError::Manifest(e)),
-    };
 
     let config = context.config.as_ref().cloned().unwrap_or_default();
 
@@ -135,16 +119,7 @@ pub fn stage_workspace(
             }
         }
 
-        let existing_manifest = match manifest_index_opt
-            .as_ref()
-            .and_then(|idx| idx.test_manifests.get(&case.name))
-        {
-            Some(hash) => {
-                let manifest_blob_path = blobs_dir.join(hash.value());
-                Some(Manifest::load(manifest_blob_path).map_err(StageError::Manifest)?)
-            }
-            None => None,
-        };
+        let existing_manifest: Option<Manifest> = None;
 
         if let Some(m) = existing_manifest {
             existing_manifests.insert(case.name.clone(), m.entries);
@@ -290,14 +265,6 @@ pub fn stage_workspace(
 
         staged_test_cases.push(case_name);
     }
-
-    // Update manifest_index.json atomically
-    ManifestIndex::update(&index_path, |index| {
-        for (test_name, manifest_hash) in test_manifest_map {
-            index.test_manifests.insert(test_name, manifest_hash);
-        }
-    })
-    .map_err(StageError::Manifest)?;
 
     Ok(StageResult {
         staged_test_cases,

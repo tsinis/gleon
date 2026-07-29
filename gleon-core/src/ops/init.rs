@@ -40,16 +40,14 @@ pub struct InitResult {
 
 /// Initializes the `.gleon` directory structure and default `gleon.yaml` if missing.
 pub fn init_workspace(
-    context: &crate::context::ResolvedContext,
+    _context: &crate::context::ResolvedContext,
     base_dir: &Path,
 ) -> Result<InitResult, InitError> {
     let gleon_dir = base_dir.join(".gleon");
     let blobs_dir = gleon_dir.join("blobs").join("sha256");
-    let branches_dir = gleon_dir.join("branches");
     let runs_dir = gleon_dir.join("runs").join("latest");
 
     std::fs::create_dir_all(&blobs_dir)?;
-    std::fs::create_dir_all(&branches_dir)?;
     std::fs::create_dir_all(&runs_dir)?;
 
     // Scaffold .gleon/.gitignore to prevent committing runs/ artifacts
@@ -61,14 +59,6 @@ pub fn init_workspace(
     {
         use std::io::Write;
         let _ = file.write_all(b"runs/\n");
-    }
-
-    // Scaffold default manifest_index.json for current branch
-    if let Ok(platform_key) = context.platform.to_key() {
-        let branch_dir = branches_dir.join(&context.branch).join(&platform_key);
-        let index_path = branch_dir.join("manifest_index.json");
-        std::fs::create_dir_all(&branch_dir)?;
-        let _ = crate::manifest::ManifestIndex::update(&index_path, |_| {});
     }
 
     let root_config = base_dir.join("gleon.yaml");
@@ -129,7 +119,6 @@ mod tests {
         assert_eq!(res.config_created, Some(base_path.join("gleon.yaml")));
 
         assert!(base_path.join(".gleon/blobs/sha256").is_dir());
-        assert!(base_path.join(".gleon/branches").is_dir());
         assert!(base_path.join(".gleon/runs/latest").is_dir());
         assert!(base_path.join(".gleon/.gitignore").is_file());
         assert_eq!(

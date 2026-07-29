@@ -1,8 +1,6 @@
 //! Storage module backed by `object_store` for cloud and local baseline synchronization.
 
 pub mod adapter;
-pub mod merge;
-pub mod sync;
 
 pub use adapter::{ObjectStoreAdapter, StorageConfig};
 use object_store::path::Path as ObjPath;
@@ -54,10 +52,4 @@ pub enum StorageError {
 #[must_use]
 pub fn blob_key(sha256: &str) -> ObjPath {
     ObjPath::from(format!("blobs/sha256/{sha256}"))
-}
-
-/// Helper function constructing the remote object path for a branch/platform manifest index.
-#[must_use]
-pub fn manifest_key(branch: &str, platform: &str) -> ObjPath {
-    ObjPath::from(format!("branches/{branch}/{platform}/manifest_index.json"))
 }
