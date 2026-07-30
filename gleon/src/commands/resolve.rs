@@ -2,6 +2,7 @@
 
 use dialoguer::Select;
 use gleon_core::context::ResolvedContext;
+use gleon_core::ops::resolve::ConflictedManifestItem;
 use gleon_core::ops::{apply_resolution, scan_conflicts};
 use gleon_core::storage::{ObjectStoreAdapter, StorageConfig};
 use std::io::IsTerminal;
@@ -52,12 +53,54 @@ pub async fn run_resolve(
         None
     };
 
-    if !std::io::stdin().is_terminal() {
+    if cfg!(test) || !std::io::stdin().is_terminal() {
         error!("Terminal is non-interactive (not a TTY). Cannot prompt for resolution.");
         error!("Run 'gleon resolve' in an interactive terminal environment.");
         return Ok(1);
     }
 
+    let resolved_count =
+        resolve_conflicts_with_selector(ctx, conflicts, adapter.as_ref(), |item| {
+            let choices = vec![
+                format!(
+                    "Ours (HEAD: {}, {}x{})",
+                    item.conflict.ours.hash, item.conflict.ours.width, item.conflict.ours.height
+                ),
+                format!(
+                    "Theirs (Incoming: {}, {}x{})",
+                    item.conflict.theirs.hash,
+                    item.conflict.theirs.width,
+                    item.conflict.theirs.height
+                ),
+            ];
+
+            Select::new()
+                .with_prompt(format!("Choose baseline to keep for '{}'", item.test_path))
+                .items(&choices)
+                .default(0)
+                .interact()
+                .map_err(Into::into)
+        })
+        .await?;
+
+    info!(
+        "Successfully resolved {} manifest conflict(s).",
+        resolved_count
+    );
+
+    Ok(0)
+}
+
+/// Helper to process interactive or automated conflict selections.
+pub async fn resolve_conflicts_with_selector<F>(
+    ctx: &ResolvedContext,
+    conflicts: Vec<ConflictedManifestItem>,
+    adapter: Option<&ObjectStoreAdapter>,
+    mut selector: F,
+) -> Result<usize, anyhow::Error>
+where
+    F: FnMut(&ConflictedManifestItem) -> Result<usize, anyhow::Error>,
+{
     let mut resolved_count = 0;
 
     for item in conflicts {
@@ -77,7 +120,7 @@ pub async fn run_resolve(
             item.conflict.theirs.height
         );
 
-        if let Some(ref adapter) = adapter {
+        if let Some(adapter) = adapter {
             for manifest in [&item.conflict.ours, &item.conflict.theirs] {
                 let local_blob = ctx
                     .base_dir
@@ -100,22 +143,7 @@ pub async fn run_resolve(
             }
         }
 
-        let choices = vec![
-            format!(
-                "Ours (HEAD: {}, {}x{})",
-                item.conflict.ours.hash, item.conflict.ours.width, item.conflict.ours.height
-            ),
-            format!(
-                "Theirs (Incoming: {}, {}x{})",
-                item.conflict.theirs.hash, item.conflict.theirs.width, item.conflict.theirs.height
-            ),
-        ];
-
-        let selection = Select::new()
-            .with_prompt(format!("Choose baseline to keep for '{}'", item.test_path))
-            .items(&choices)
-            .default(0)
-            .interact()?;
+        let selection = selector(&item)?;
 
         let chosen = if selection == 0 {
             &item.conflict.ours
@@ -128,18 +156,14 @@ pub async fn run_resolve(
                 "Error applying resolution to {}: {e}",
                 item.manifest_file_path.display()
             );
-            return Ok(1);
+            return Err(e.into());
         }
 
         info!("Resolved '{}' to {}", item.test_path, chosen.hash);
         resolved_count += 1;
     }
 
-    info!(
-        "Successfully resolved {} manifest conflict(s).",
-        resolved_count
-    );
-    Ok(0)
+    Ok(resolved_count)
 }
 
 #[cfg(all(test, not(miri)))]
@@ -196,5 +220,41 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res_fetch_invalid, 1);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_conflicts_with_selector_ours_and_theirs() {
+        let temp = tempdir().unwrap();
+        let base_dir = temp.path();
+        let manifests_dir = base_dir
+            .join(".gleon")
+            .join("manifests")
+            .join("macos-aarch64")
+            .join("auth");
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+
+        let conflicted = include_str!("../../../gleon-core/tests/fixtures/conflict_2way.json");
+        let login_path = manifests_dir.join("login.json");
+        std::fs::write(&login_path, conflicted).unwrap();
+
+        let cli = Cli::for_test(Commands::Init);
+        let ctx = ResolvedContext::from_cli(&cli, base_dir).unwrap();
+
+        let conflicts = scan_conflicts(base_dir, None).unwrap();
+        assert_eq!(conflicts.len(), 1);
+
+        // Test resolving selecting 'ours' (index 0)
+        let count = resolve_conflicts_with_selector(&ctx, conflicts, None, |_| Ok(0))
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let content = std::fs::read_to_string(&login_path).unwrap();
+        assert!(!content.contains("<<<<<<<"));
+        assert!(
+            content.contains(
+                "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            )
+        );
     }
 }

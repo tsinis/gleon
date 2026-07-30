@@ -157,6 +157,20 @@ pub fn validate_test_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Default directories unconditionally pruned during scanner traversal to prevent hanging
+/// or indexing build artifacts across frontend ecosystems (Flutter, Android, iOS, Web/Node, Rust, Go).
+pub const DEFAULT_PRUNED_DIRECTORIES: &[&str] = &[
+    ".git",
+    ".gleon",
+    ".dart_tool",
+    "build",
+    "target",
+    "node_modules",
+    "vendor",
+    "DerivedData",
+    ".gradle",
+];
+
 /// Scanner for visual regression test screenshots.
 pub struct FileScanner;
 
@@ -340,12 +354,13 @@ impl FileScanner {
         ignore::WalkBuilder::new(base_dir)
             .standard_filters(false)
             .filter_entry(move |entry| {
-                if entry.file_type().is_some_and(|ft| ft.is_dir()) {
-                    let name = entry.file_name();
-                    // Explicitly prune internal system directories
-                    if name == ".git" || name == ".gleon" {
-                        return false;
-                    }
+                if entry.file_type().is_some_and(|ft| ft.is_dir())
+                    && entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| DEFAULT_PRUNED_DIRECTORIES.contains(&name))
+                {
+                    return false;
                 }
                 if let Ok(rel_path) = entry.path().strip_prefix(&base_dir_for_filter) {
                     if rel_path.as_os_str().is_empty() {

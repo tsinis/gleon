@@ -187,7 +187,10 @@ impl WorkspaceIndex {
         let canonical_key = normalized.as_ref();
         let target_path = manifest_dir.join(format!("{canonical_key}.json"));
 
-        manifest.save(&target_path)?;
+        match manifest.save(&target_path) {
+            Ok(()) => {}
+            Err(e) => return Err(e),
+        }
 
         // Remove legacy-cased manifest file on disk if it differs from canonical path
         if let Some(old_source) = self
@@ -201,7 +204,11 @@ impl WorkspaceIndex {
                 _ => false,
             };
             if !is_same_file {
-                let _ = fs::remove_file(old_path);
+                match fs::remove_file(&old_path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(ManifestError::StdIo(e)),
+                }
             }
         }
 
@@ -226,7 +233,11 @@ impl WorkspaceIndex {
 
         if let Some(old_source) = self.source_paths.remove(canonical_key) {
             let old_path = manifest_dir.join(format!("{old_source}.json"));
-            let _ = fs::remove_file(old_path);
+            match fs::remove_file(&old_path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(ManifestError::StdIo(e)),
+            }
         }
 
         let target_path = manifest_dir.join(format!("{canonical_key}.json"));

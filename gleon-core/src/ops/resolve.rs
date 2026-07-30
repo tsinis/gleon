@@ -242,5 +242,21 @@ mod tests {
             err_multi,
             Err(ResolveError::InvalidPlatformFilter(_))
         ));
+
+        // 4. Positive valid single platform filter case
+        let manifests_dir = temp
+            .path()
+            .join(".gleon")
+            .join("manifests")
+            .join("macos-aarch64")
+            .join("auth");
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+        let conflicted = include_str!("../../tests/fixtures/conflict_2way.json");
+        std::fs::write(manifests_dir.join("login.json"), conflicted).unwrap();
+
+        let conflicts = scan_conflicts(temp.path(), Some("macos-aarch64")).unwrap();
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].test_path, "auth/login");
+        assert_eq!(conflicts[0].platform, "macos-aarch64");
     }
 }
