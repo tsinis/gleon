@@ -165,17 +165,35 @@ async fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<i32> {
         Commands::Test => {
             info!("Subcommand test is not fully implemented yet");
         }
-        Commands::Pull => {
-            info!("Blob pull will be updated in Phase 3.5.");
+        Commands::Pull {
+            all_platforms,
+            platform,
+        } => {
+            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let storage_cfg = get_storage_config();
+            return commands::pull::run_pull(
+                &ctx,
+                storage_cfg.as_ref(),
+                *all_platforms,
+                platform.as_deref(),
+            )
+            .await;
         }
-        Commands::Push => {
-            info!("Blob push will be updated in Phase 3.5.");
-        }
-        Commands::Merge { target_branch } => {
-            info!(
-                "Subcommand merge for branch '{}' is not fully implemented yet",
-                target_branch
-            );
+        Commands::Push {
+            all_platforms,
+            platform,
+        } => {
+            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let storage_cfg = get_storage_config();
+            return commands::push::run_push(
+                &ctx,
+                storage_cfg.as_ref(),
+                *all_platforms,
+                platform.as_deref(),
+            )
+            .await;
         }
         Commands::Gc => {
             info!("Subcommand gc is not fully implemented yet");

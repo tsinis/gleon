@@ -11,6 +11,23 @@ fn init_temp_dir() -> TempDir {
     dir
 }
 
+fn copy_dir_all(
+    src: impl AsRef<std::path::Path>,
+    dst: impl AsRef<std::path::Path>,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(&dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_all(entry.path(), dst.as_ref().join(entry.file_name()))?;
+        } else {
+            std::fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn test_help() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("gleon")?;
@@ -189,19 +206,6 @@ fn test_diff_command() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_merge_placeholder() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("gleon")?;
-    cmd.arg("merge")
-        .arg("test-branch")
-        .assert()
-        .success()
-        .stderr(predicates::str::contains(
-            "Subcommand merge for branch 'test-branch' is not fully implemented yet",
-        ));
-    Ok(())
-}
-
-#[test]
 fn test_test_placeholder() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("gleon")?;
     cmd.arg("test")
@@ -215,26 +219,30 @@ fn test_test_placeholder() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_pull_placeholder() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
     let mut cmd = Command::cargo_bin("gleon")?;
-    cmd.env_remove("GLEON_STORAGE_URL")
+    cmd.current_dir(dir.path())
+        .env_remove("GLEON_STORAGE_URL")
         .arg("pull")
         .assert()
         .success()
         .stderr(predicates::str::contains(
-            "Blob pull will be updated in Phase 3.5.",
+            "Operating in local mode. Cloud sync disabled. Please configure storage.",
         ));
     Ok(())
 }
 
 #[test]
 fn test_push_placeholder() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
     let mut cmd = Command::cargo_bin("gleon")?;
-    cmd.env_remove("GLEON_STORAGE_URL")
+    cmd.current_dir(dir.path())
+        .env_remove("GLEON_STORAGE_URL")
         .arg("push")
         .assert()
         .success()
         .stderr(predicates::str::contains(
-            "Blob push will be updated in Phase 3.5.",
+            "Operating in local mode. Cloud sync disabled. Please configure storage.",
         ));
     Ok(())
 }
@@ -487,7 +495,7 @@ fn test_pull_and_push_no_storage_configured() -> Result<(), Box<dyn std::error::
         .assert()
         .success()
         .stderr(predicates::str::contains(
-            "Blob pull will be updated in Phase 3.5.",
+            "Operating in local mode. Cloud sync disabled. Please configure storage.",
         ));
 
     // Push without GLEON_STORAGE_URL
@@ -499,7 +507,7 @@ fn test_pull_and_push_no_storage_configured() -> Result<(), Box<dyn std::error::
         .assert()
         .success()
         .stderr(predicates::str::contains(
-            "Blob push will be updated in Phase 3.5.",
+            "Operating in local mode. Cloud sync disabled. Please configure storage.",
         ));
 
     // Diff --auto-pull without GLEON_STORAGE_URL
@@ -529,7 +537,7 @@ fn test_sync_fails_and_clears_spinner() -> Result<(), Box<dyn std::error::Error>
         .assert()
         .success()
         .stderr(predicates::str::contains(
-            "Blob pull will be updated in Phase 3.5.",
+            "No baseline blobs found to pull.",
         ));
 
     Ok(())
@@ -578,10 +586,10 @@ screenshots:
         .assert()
         .success()
         .stderr(predicates::str::contains(
-            "Blob push will be updated in Phase 3.5.",
+            "Uploaded 1 missing baseline blob(s) to storage",
         ));
 
-    // 3. Pull in clean workspace
+    // 3. Pull in fresh workspace with copied manifests (simulating git pull)
     let fresh_dir = tempfile::tempdir()?;
     let mut cmd_init2 = Command::cargo_bin("gleon")?;
     cmd_init2
@@ -589,6 +597,12 @@ screenshots:
         .arg("init")
         .assert()
         .success();
+
+    let manifests_src = dir.path().join(".gleon").join("manifests");
+    let manifests_dst = fresh_dir.path().join(".gleon").join("manifests");
+    if manifests_src.exists() {
+        copy_dir_all(&manifests_src, &manifests_dst)?;
+    }
 
     let mut cmd_pull = Command::cargo_bin("gleon")?;
     cmd_pull
@@ -598,7 +612,7 @@ screenshots:
         .assert()
         .success()
         .stderr(predicates::str::contains(
-            "Blob pull will be updated in Phase 3.5.",
+            "Downloaded 1 missing baseline blob(s) from storage",
         ));
 
     Ok(())
@@ -612,15 +626,6 @@ fn test_unimplemented_subcommands() -> Result<(), Box<dyn std::error::Error>> {
     cmd_test
         .current_dir(dir.path())
         .arg("test")
-        .assert()
-        .success()
-        .stderr(predicates::str::contains("not fully implemented yet"));
-
-    let mut cmd_merge = Command::cargo_bin("gleon")?;
-    cmd_merge
-        .current_dir(dir.path())
-        .arg("merge")
-        .arg("main")
         .assert()
         .success()
         .stderr(predicates::str::contains("not fully implemented yet"));

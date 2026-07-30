@@ -140,13 +140,22 @@ pub enum Commands {
     /// Execute tests and run diff comparison
     Test,
     /// Pull latest baselines from remote storage
-    Pull,
+    Pull {
+        /// Pull blobs for all platforms under .gleon/manifests/ instead of only the active platform
+        #[arg(short = 'a', long = "all")]
+        all_platforms: bool,
+        /// Optional target platform override (e.g. macos-aarch64)
+        #[arg(short = 'p', long = "platform")]
+        platform: Option<String>,
+    },
     /// Push staged changes and report to remote storage
-    Push,
-    /// Merge branch manifest into main's manifest
-    Merge {
-        /// The target branch to merge into main
-        target_branch: String,
+    Push {
+        /// Push blobs for all platforms under .gleon/manifests/ instead of only the active platform
+        #[arg(short = 'a', long = "all")]
+        all_platforms: bool,
+        /// Optional target platform override (e.g. macos-aarch64)
+        #[arg(short = 'p', long = "platform")]
+        platform: Option<String>,
     },
     /// Clean up unreferenced baseline blobs
     Gc,
@@ -272,19 +281,6 @@ mod tests {
         let cli = Cli::try_parse_from(args)?;
         assert_eq!(cli.platform, Some("custom-opaque".to_string()));
         assert_eq!(cli.command, Commands::Stage { paths: vec![] });
-        Ok(())
-    }
-
-    #[test]
-    fn test_parse_merge_subcommand() -> Result<(), clap::Error> {
-        let args = ["gleon", "merge", "feature-branch"];
-        let cli = Cli::try_parse_from(args)?;
-        assert_eq!(
-            cli.command,
-            Commands::Merge {
-                target_branch: "feature-branch".to_string()
-            }
-        );
         Ok(())
     }
 

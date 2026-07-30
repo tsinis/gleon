@@ -71,7 +71,10 @@ pub fn run_diff(
     };
 
     let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
-    let workspace_index = WorkspaceIndex::load(&manifests_dir).map_err(DiffOpError::Manifest)?;
+    let workspace_index = match WorkspaceIndex::load(&manifests_dir) {
+        Ok(idx) => idx,
+        Err(e) => return Err(DiffOpError::Manifest(e)),
+    };
 
     let runs_dir = gleon_dir.join("runs").join("latest");
     let diffs_dir = runs_dir.join("diffs");
@@ -80,8 +83,10 @@ pub fn run_diff(
     use rayon::prelude::*;
 
     let config = context.config.as_ref().cloned().unwrap_or_default();
-    let test_cases =
-        FileScanner::scan_workspace(&config, base_dir).map_err(DiffOpError::Scanner)?;
+    let test_cases = match FileScanner::scan_workspace(&config, base_dir) {
+        Ok(tc) => tc,
+        Err(e) => return Err(DiffOpError::Scanner(e)),
+    };
 
     let case_results: Vec<TestCaseResult> = test_cases
         .into_par_iter()

@@ -193,7 +193,7 @@ pub fn check_status(
     // Identify deleted test cases (staged in index but no longer present on disk)
     for staged_name in workspace_index.entries().keys() {
         if !seen_test_cases.contains(staged_name) {
-            deleted.push(PathBuf::from(format!("{}.png", staged_name)));
+            deleted.push(PathBuf::from(staged_name).with_extension("png"));
         }
     }
 

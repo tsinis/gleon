@@ -128,3 +128,27 @@ async fn test_adapter_list_blobs() {
     let blobs = adapter.list_blobs().await.unwrap();
     assert_eq!(blobs, vec![blob_hash.to_string()]);
 }
+
+#[test]
+fn test_aws_options_coverage() {
+    let mut config = StorageConfig::new("memory://");
+    config.aws_access_key_id = Some("abc".to_string());
+    config.aws_secret_access_key = Some("def".to_string());
+    config.aws_region = Some("us-east-1".to_string());
+    config.aws_endpoint = Some("http://localhost:9000".to_string());
+
+    // We expect this to not panic and return Ok, even though memory:// ignores AWS options.
+    let adapter = ObjectStoreAdapter::from_config(&config).unwrap();
+    assert_eq!(adapter.concurrency(), 8);
+
+    // Test the R2 fallback path
+    let mut config_r2 = StorageConfig::new("memory://");
+    config_r2.r2_account_id = Some("123456789".to_string());
+    let adapter_r2 = ObjectStoreAdapter::from_config(&config_r2).unwrap();
+    assert_eq!(adapter_r2.concurrency(), 8);
+
+    // Test invalid url parse error
+    let config_bad = StorageConfig::new("http://[:::1]"); // Invalid IPv6
+    let err = ObjectStoreAdapter::from_config(&config_bad);
+    assert!(matches!(err, Err(StorageError::InvalidUrl { .. })));
+}
