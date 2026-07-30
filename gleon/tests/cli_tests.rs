@@ -51,7 +51,7 @@ fn test_init_command() -> Result<(), Box<dyn std::error::Error>> {
         .arg("init")
         .assert()
         .success()
-        .stdout(predicates::str::contains("Initialized gleon workspace"));
+        .stderr(predicates::str::contains("Initialized gleon workspace"));
 
     assert!(dir.path().join(".gleon").is_dir());
     assert!(dir.path().join("gleon.yaml").is_file());
@@ -170,7 +170,7 @@ fn test_stage_command() -> Result<(), Box<dyn std::error::Error>> {
         .arg("stage")
         .assert()
         .success()
-        .stdout(predicates::str::contains("Already up to date."));
+        .stderr(predicates::str::contains("Already up to date."));
     Ok(())
 }
 
@@ -182,7 +182,7 @@ fn test_diff_command() -> Result<(), Box<dyn std::error::Error>> {
         .arg("diff")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
+        .stderr(predicates::str::contains(
             "Ran 0 test(s). Passed: 0, Failed: 0.",
         ));
     Ok(())
@@ -195,7 +195,7 @@ fn test_merge_placeholder() -> Result<(), Box<dyn std::error::Error>> {
         .arg("test-branch")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
+        .stderr(predicates::str::contains(
             "Subcommand merge for branch 'test-branch' is not fully implemented yet",
         ));
     Ok(())
@@ -207,7 +207,7 @@ fn test_test_placeholder() -> Result<(), Box<dyn std::error::Error>> {
     cmd.arg("test")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
+        .stderr(predicates::str::contains(
             "Subcommand test is not fully implemented yet",
         ));
     Ok(())
@@ -220,7 +220,7 @@ fn test_pull_placeholder() -> Result<(), Box<dyn std::error::Error>> {
         .arg("pull")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
+        .stderr(predicates::str::contains(
             "Blob pull will be updated in Phase 3.5.",
         ));
     Ok(())
@@ -233,7 +233,7 @@ fn test_push_placeholder() -> Result<(), Box<dyn std::error::Error>> {
         .arg("push")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
+        .stderr(predicates::str::contains(
             "Blob push will be updated in Phase 3.5.",
         ));
     Ok(())
@@ -245,7 +245,7 @@ fn test_gc_placeholder() -> Result<(), Box<dyn std::error::Error>> {
     cmd.arg("gc")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
+        .stderr(predicates::str::contains(
             "Subcommand gc is not fully implemented yet",
         ));
     Ok(())
@@ -458,7 +458,7 @@ screenshots:
         .arg("stage")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
+        .stderr(predicates::str::contains(
             "Staged 1 screenshot(s) across 1 test case(s).",
         ));
 
@@ -469,7 +469,7 @@ screenshots:
         .arg("stage")
         .assert()
         .success()
-        .stdout(predicates::str::contains("Already up to date."));
+        .stderr(predicates::str::contains("Already up to date."));
 
     Ok(())
 }
@@ -486,7 +486,7 @@ fn test_pull_and_push_no_storage_configured() -> Result<(), Box<dyn std::error::
         .arg("pull")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
+        .stderr(predicates::str::contains(
             "Blob pull will be updated in Phase 3.5.",
         ));
 
@@ -498,7 +498,7 @@ fn test_pull_and_push_no_storage_configured() -> Result<(), Box<dyn std::error::
         .arg("push")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
+        .stderr(predicates::str::contains(
             "Blob push will be updated in Phase 3.5.",
         ));
 
@@ -511,7 +511,7 @@ fn test_pull_and_push_no_storage_configured() -> Result<(), Box<dyn std::error::
         .arg("--auto-pull")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
+        .stderr(predicates::str::contains(
             "Ran 0 test(s). Passed: 0, Failed: 0.",
         ));
 
@@ -528,7 +528,7 @@ fn test_sync_fails_and_clears_spinner() -> Result<(), Box<dyn std::error::Error>
         .arg("pull")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
+        .stderr(predicates::str::contains(
             "Blob pull will be updated in Phase 3.5.",
         ));
 
@@ -577,7 +577,7 @@ screenshots:
         .arg("push")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
+        .stderr(predicates::str::contains(
             "Blob push will be updated in Phase 3.5.",
         ));
 
@@ -597,7 +597,7 @@ screenshots:
         .arg("pull")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
+        .stderr(predicates::str::contains(
             "Blob pull will be updated in Phase 3.5.",
         ));
 
@@ -614,7 +614,7 @@ fn test_unimplemented_subcommands() -> Result<(), Box<dyn std::error::Error>> {
         .arg("test")
         .assert()
         .success()
-        .stdout(predicates::str::contains("not fully implemented yet"));
+        .stderr(predicates::str::contains("not fully implemented yet"));
 
     let mut cmd_merge = Command::cargo_bin("gleon")?;
     cmd_merge
@@ -623,7 +623,7 @@ fn test_unimplemented_subcommands() -> Result<(), Box<dyn std::error::Error>> {
         .arg("main")
         .assert()
         .success()
-        .stdout(predicates::str::contains("not fully implemented yet"));
+        .stderr(predicates::str::contains("not fully implemented yet"));
 
     let mut cmd_gc = Command::cargo_bin("gleon")?;
     cmd_gc
@@ -631,7 +631,7 @@ fn test_unimplemented_subcommands() -> Result<(), Box<dyn std::error::Error>> {
         .arg("gc")
         .assert()
         .success()
-        .stdout(predicates::str::contains("not fully implemented yet"));
+        .stderr(predicates::str::contains("not fully implemented yet"));
 
     Ok(())
 }
@@ -663,7 +663,7 @@ fn test_stage_path_filter() -> Result<(), Box<dyn std::error::Error>> {
         .arg("non_existent_folder")
         .assert()
         .success()
-        .stdout(predicates::str::contains("Already up to date"));
+        .stderr(predicates::str::contains("Already up to date"));
 
     Ok(())
 }

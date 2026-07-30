@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+dialoguer = { workspace = true }
 gleon-core = { path = "../gleon-core" }
 tokio = { workspace = true }
 tracing = { workspace = true }

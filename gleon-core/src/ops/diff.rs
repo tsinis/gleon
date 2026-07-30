@@ -86,16 +86,18 @@ pub fn run_diff(
     let case_results: Vec<TestCaseResult> = test_cases
         .into_par_iter()
         .map(|case| {
-            let single_manifest_opt = workspace_index.get(&case.name);
+            let test_name = case.name;
+            let single_manifest_opt = workspace_index.get(&test_name);
 
             let baseline_entry = match single_manifest_opt {
                 Some(entry) => entry,
                 None => {
+                    let reason = format!("No staged baseline manifest for test '{}'", test_name);
                     return TestCaseResult {
-                        name: case.name.clone(),
+                        name: test_name,
                         result: TestImageResult::MissingBaseline {
                             relative_path: case.image.relative_path,
-                            reason: format!("No staged baseline manifest for test '{}'", case.name),
+                            reason,
                         },
                     };
                 }
@@ -110,7 +112,7 @@ pub fn run_diff(
                 Ok(b) => b,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     return TestCaseResult {
-                        name: case.name.clone(),
+                        name: test_name,
                         result: TestImageResult::MissingBaseline {
                             relative_path: case.image.relative_path,
                             reason: format!(
@@ -122,7 +124,7 @@ pub fn run_diff(
                 }
                 Err(e) => {
                     return TestCaseResult {
-                        name: case.name.clone(),
+                        name: test_name,
                         result: TestImageResult::DecodeError {
                             relative_path: case.image.relative_path,
                             error: format!("Failed to read baseline blob file: {}", e),
@@ -135,7 +137,7 @@ pub fn run_diff(
                 Ok(img) => img,
                 Err(e) => {
                     return TestCaseResult {
-                        name: case.name.clone(),
+                        name: test_name,
                         result: TestImageResult::DecodeError {
                             relative_path: case.image.relative_path,
                             error: format!("Failed to decode baseline blob: {}", e),
@@ -149,7 +151,7 @@ pub fn run_diff(
                 Ok(img) => img,
                 Err(e) => {
                     return TestCaseResult {
-                        name: case.name.clone(),
+                        name: test_name,
                         result: TestImageResult::DecodeError {
                             relative_path: case.image.relative_path,
                             error: format!("Failed to decode actual screenshot: {}", e),
@@ -190,7 +192,7 @@ pub fn run_diff(
                 },
                 ComparisonResult::Mismatch { detail, diff_image } => {
                     // Write diff visualization image to .gleon/runs/latest/diffs/<case_name>/<file_name>
-                    let case_diff_dir = diffs_dir.join(&case.name);
+                    let case_diff_dir = diffs_dir.join(&test_name);
                     let raw_file_name = case
                         .image
                         .relative_path
@@ -198,20 +200,26 @@ pub fn run_diff(
                         .unwrap_or_else(|| std::ffi::OsStr::new("diff.png"))
                         .to_string_lossy();
                     let diff_file_name = format!("diff_{raw_file_name}");
-                    let diff_path = case_diff_dir.join(diff_file_name);
+                    let diff_file_path = case_diff_dir.join(&diff_file_name);
 
-                    if let Err(e) = crate::io::write_file_atomically(&diff_path, |writer| {
-                        diff_image
-                            .write_to(writer, image::ImageFormat::Png)
-                            .map_err(|e| crate::io::IoError::Io(std::io::Error::other(e)))
-                    }) {
-                        tracing::warn!("Failed to save diff image to {:?}: {}", diff_path, e);
+                    let mut encoded = Vec::new();
+                    let mut cursor = std::io::Cursor::new(&mut encoded);
+                    if let Err(e) = diff_image.write_to(&mut cursor, image::ImageFormat::Png) {
+                        tracing::warn!("Failed to encode diff image to PNG: {}", e);
+                    } else if let Err(e) =
+                        crate::io::save_file_atomically(&diff_file_path, &encoded)
+                    {
+                        tracing::warn!(
+                            "Failed to save diff image atomically to {:?}: {}",
+                            diff_file_path,
+                            e
+                        );
                     }
 
                     TestImageResult::Mismatch {
                         relative_path: case.image.relative_path,
                         detail,
-                        diff_path,
+                        diff_path: diff_file_path,
                         baseline_path: baseline_blob_path,
                         actual_path: case.image.absolute_path,
                     }
@@ -219,7 +227,7 @@ pub fn run_diff(
             };
 
             TestCaseResult {
-                name: case.name,
+                name: test_name,
                 result,
             }
         })

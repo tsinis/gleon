@@ -157,6 +157,20 @@ pub fn validate_test_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Default directories unconditionally pruned during scanner traversal to prevent hanging
+/// or indexing build artifacts across frontend ecosystems (Flutter, Android, iOS, Web/Node, Rust, Go).
+pub const DEFAULT_PRUNED_DIRECTORIES: &[&str] = &[
+    ".git",
+    ".gleon",
+    ".dart_tool",
+    "build",
+    "target",
+    "node_modules",
+    "vendor",
+    "DerivedData",
+    ".gradle",
+];
+
 /// Scanner for visual regression test screenshots.
 pub struct FileScanner;
 
@@ -198,21 +212,20 @@ impl FileScanner {
             if let Some((test_name, rel_path, abs_path)) =
                 Self::parse_entry(&entry, base_dir, &include_set, &exclude_set)?
             {
-                let test_name_owned = test_name.into_owned();
-                match temp_cases.entry(test_name_owned.clone()) {
-                    std::collections::btree_map::Entry::Vacant(e) => {
-                        e.insert(TestImage {
+                if temp_cases.contains_key(test_name.as_str()) {
+                    tracing::warn!(
+                        "Duplicate test name '{}' detected for relative path {:?}. Skipping duplicate.",
+                        test_name,
+                        rel_path
+                    );
+                } else {
+                    temp_cases.insert(
+                        test_name,
+                        TestImage {
                             relative_path: rel_path,
                             absolute_path: abs_path,
-                        });
-                    }
-                    std::collections::btree_map::Entry::Occupied(_) => {
-                        tracing::warn!(
-                            "Duplicate test name '{}' detected for relative path {:?}. Skipping duplicate.",
-                            test_name_owned,
-                            rel_path
-                        );
-                    }
+                        },
+                    );
                 }
             }
         }
@@ -251,7 +264,10 @@ impl FileScanner {
 
         let walker = Self::build_walker(base_dir, &exclude_set);
 
-        let mut temp_cases = std::collections::BTreeMap::<String, TestCase>::new();
+        let mut temp_cases = std::collections::BTreeMap::<
+            String,
+            (TestImage, std::sync::Arc<crate::config::ScreenshotRule>),
+        >::new();
 
         for entry_res in walker {
             let entry = match entry_res {
@@ -289,43 +305,44 @@ impl FileScanner {
 
             let matched_rule = rule_sets
                 .iter()
-                .enumerate()
-                .find(|(_, (_, inc_set))| inc_set.is_match(rel_path_str.as_ref()));
+                .find(|(_, inc_set)| inc_set.is_match(rel_path_str.as_ref()));
 
-            if let Some((_, (rule_arc, _))) = matched_rule {
+            if let Some((rule_arc, _)) = matched_rule {
                 let path_without_ext = rel_path.with_extension("");
-                let test_name_str = Self::normalize_path_str(&path_without_ext).into_owned();
-                let test_name_ref = test_name_str.as_str();
+                let test_name_cow = Self::normalize_path_str(&path_without_ext);
+                let test_name_norm = test_name_cow.as_ref();
 
-                match temp_cases.entry(test_name_ref.to_string()) {
-                    std::collections::btree_map::Entry::Vacant(e) => {
-                        if let Err(reason) = validate_test_name(test_name_ref) {
-                            return Err(ScannerError::InvalidTestName {
-                                name: test_name_ref.to_string(),
-                                reason,
-                            });
-                        }
-                        e.insert(TestCase {
-                            name: test_name_ref.to_string(),
-                            image: TestImage {
+                if temp_cases.contains_key(test_name_norm) {
+                    tracing::warn!(
+                        "Duplicate test name '{}' detected for relative path {:?}. Skipping duplicate.",
+                        test_name_norm,
+                        rel_path
+                    );
+                } else {
+                    if let Err(reason) = validate_test_name(test_name_norm) {
+                        return Err(ScannerError::InvalidTestName {
+                            name: test_name_norm.to_string(),
+                            reason,
+                        });
+                    }
+                    temp_cases.insert(
+                        test_name_norm.to_string(),
+                        (
+                            TestImage {
                                 relative_path: rel_path.to_path_buf(),
                                 absolute_path: path.to_path_buf(),
                             },
-                            rule: rule_arc.clone(),
-                        });
-                    }
-                    std::collections::btree_map::Entry::Occupied(_) => {
-                        tracing::warn!(
-                            "Duplicate test name '{}' detected for relative path {:?}. Skipping duplicate.",
-                            test_name_ref,
-                            rel_path
-                        );
-                    }
+                            rule_arc.clone(),
+                        ),
+                    );
                 }
             }
         }
 
-        let cases = temp_cases.into_values().collect();
+        let cases = temp_cases
+            .into_iter()
+            .map(|(name, (image, rule))| TestCase { name, image, rule })
+            .collect();
         Ok(cases)
     }
 
@@ -337,17 +354,25 @@ impl FileScanner {
         ignore::WalkBuilder::new(base_dir)
             .standard_filters(false)
             .filter_entry(move |entry| {
-                if entry.file_type().is_some_and(|ft| ft.is_dir()) {
-                    let name = entry.file_name();
-                    if name == ".git" || name == ".gleon" {
-                        return false;
-                    }
+                if entry.file_type().is_some_and(|ft| ft.is_dir())
+                    && entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| DEFAULT_PRUNED_DIRECTORIES.contains(&name))
+                {
+                    return false;
                 }
                 if let Ok(rel_path) = entry.path().strip_prefix(&base_dir_for_filter) {
                     if rel_path.as_os_str().is_empty() {
                         return true;
                     }
                     let rel_path_str = Self::normalize_path_str(rel_path);
+
+                    // We must check if the directory string EXACTLY matches an exclude pattern.
+                    // However, ignore globs typically target files (like `**/*.png`).
+                    // Active directory pruning is notoriously hard with globset unless the glob explicitly ignores a directory prefix.
+                    // If the user ignores `node_modules/`, globset might not match it cleanly here without trailing slash,
+                    // but we handle standard cases explicitly above to prevent hanging.
                     if exclude_for_filter.is_match(rel_path_str.as_ref()) {
                         return false;
                     }
@@ -360,20 +385,16 @@ impl FileScanner {
     /// Normalizes path separators to forward slashes for cross-platform manifest key consistency.
     pub fn normalize_path_str(path: &Path) -> Cow<'_, str> {
         let lossy = path.to_string_lossy();
-        if lossy.contains('\\') {
-            Cow::Owned(lossy.replace('\\', "/"))
-        } else {
-            lossy
-        }
+        Cow::Owned(crate::manifest::normalize_test_name(&lossy).into_owned())
     }
 
     /// Parses a directory entry and returns the parsed paths if it's a valid matching PNG.
-    fn parse_entry<'a>(
-        entry: &'a ignore::DirEntry,
+    fn parse_entry(
+        entry: &ignore::DirEntry,
         base_dir: &Path,
         include_set: &globset::GlobSet,
         exclude_set: &globset::GlobSet,
-    ) -> Result<Option<(Cow<'a, str>, PathBuf, PathBuf)>, ScannerError> {
+    ) -> Result<Option<(String, PathBuf, PathBuf)>, ScannerError> {
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             return Ok(None);
         }
@@ -403,18 +424,18 @@ impl FileScanner {
         }
 
         let path_without_ext = rel_path.with_extension("");
-        let test_name_string = Self::normalize_path_str(&path_without_ext).into_owned();
-        let test_name: Cow<'_, str> = Cow::Owned(test_name_string);
+        let test_name_cow = Self::normalize_path_str(&path_without_ext);
+        let test_name_str = test_name_cow.as_ref();
 
-        if let Err(reason) = validate_test_name(test_name.as_ref()) {
+        if let Err(reason) = validate_test_name(test_name_str) {
             return Err(ScannerError::InvalidTestName {
-                name: test_name.into_owned(),
+                name: test_name_str.to_string(),
                 reason,
             });
         }
 
         Ok(Some((
-            test_name,
+            test_name_str.to_string(),
             rel_path.to_path_buf(),
             path.to_path_buf(),
         )))
@@ -650,15 +671,15 @@ exclude:
         let temp_dir = tempfile::tempdir().unwrap();
         let base_path = temp_dir.path();
 
-        // Invalid directory name (uppercase)
-        let billing_dir = base_path.join("Billing");
+        // Invalid directory name (space)
+        let billing_dir = base_path.join("billing dir");
         std::fs::create_dir_all(&billing_dir).unwrap();
         std::fs::write(billing_dir.join("form.png"), VALID_PNG_BYTES).unwrap();
 
         let raw_yaml = r#"
 required_version: ">=0.1.0"
 screenshots:
-  - include: "Billing/**/*.png"
+  - include: "billing dir/**/*.png"
 "#;
         let config: GleonConfig = serde_yaml::from_str(raw_yaml).unwrap();
 
@@ -723,8 +744,8 @@ screenshots:
         let temp_dir = tempfile::tempdir().unwrap();
         let base_path = temp_dir.path();
 
-        // Folder with invalid character (uppercase)
-        let billing_dir = base_path.join("Billing");
+        // Folder with invalid character (space)
+        let billing_dir = base_path.join("billing dir");
         std::fs::create_dir_all(&billing_dir).unwrap();
         std::fs::write(billing_dir.join("form.png"), VALID_PNG_BYTES).unwrap();
 
