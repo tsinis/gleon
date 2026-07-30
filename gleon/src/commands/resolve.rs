@@ -141,3 +141,60 @@ pub async fn run_resolve(
     );
     Ok(0)
 }
+
+#[cfg(all(test, not(miri)))]
+mod tests {
+    use super::*;
+    use gleon_core::cli::{Cli, Commands};
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_run_resolve_missing_manifest_dir() {
+        let temp = tempdir().unwrap();
+        let cli = Cli::for_test(Commands::Init);
+        let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
+
+        // Missing manifest directory causes scan_conflicts to fail -> return Ok(1)
+        let res = run_resolve(&ctx, None, false, None).await.unwrap();
+        assert_eq!(res, 1);
+    }
+
+    #[tokio::test]
+    async fn test_run_resolve_filter_and_fetch_options() {
+        let temp = tempdir().unwrap();
+        let base_dir = temp.path();
+        let manifests_dir = base_dir
+            .join(".gleon")
+            .join("manifests")
+            .join("macos-aarch64")
+            .join("auth");
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+
+        let conflicted = include_str!("../../../gleon-core/tests/fixtures/conflict_2way.json");
+        std::fs::write(manifests_dir.join("login.json"), conflicted).unwrap();
+
+        let cli = Cli::for_test(Commands::Init);
+        let ctx = ResolvedContext::from_cli(&cli, base_dir).unwrap();
+
+        // 1. Filter out all test paths
+        let res_filtered = run_resolve(&ctx, Some("nonexistent_filter"), false, None)
+            .await
+            .unwrap();
+        assert_eq!(res_filtered, 0);
+
+        // 2. Matching filter in non-interactive mode
+        let res_matching = run_resolve(&ctx, Some("login"), false, None).await.unwrap();
+        assert_eq!(res_matching, 1);
+
+        // 3. Fetch mode without storage config
+        let res_fetch_local = run_resolve(&ctx, Some("login"), true, None).await.unwrap();
+        assert_eq!(res_fetch_local, 1);
+
+        // 4. Fetch mode with storage config (invalid scheme)
+        let invalid_storage = StorageConfig::new("invalid_scheme://bucket".to_string());
+        let res_fetch_invalid = run_resolve(&ctx, Some("login"), true, Some(invalid_storage))
+            .await
+            .unwrap();
+        assert_eq!(res_fetch_invalid, 1);
+    }
+}

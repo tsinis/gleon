@@ -202,16 +202,18 @@ pub fn run_diff(
                     let diff_file_name = format!("diff_{raw_file_name}");
                     let diff_file_path = case_diff_dir.join(&diff_file_name);
 
-                    if let Err(e) = std::fs::create_dir_all(&case_diff_dir) {
+                    let mut encoded = Vec::new();
+                    let mut cursor = std::io::Cursor::new(&mut encoded);
+                    if let Err(e) = diff_image.write_to(&mut cursor, image::ImageFormat::Png) {
+                        tracing::warn!("Failed to encode diff image to PNG: {}", e);
+                    } else if let Err(e) =
+                        crate::io::save_file_atomically(&diff_file_path, &encoded)
+                    {
                         tracing::warn!(
-                            "Failed to create diff directory {:?}: {}",
-                            case_diff_dir,
+                            "Failed to save diff image atomically to {:?}: {}",
+                            diff_file_path,
                             e
                         );
-                    }
-
-                    if let Err(e) = diff_image.save(&diff_file_path) {
-                        tracing::warn!("Failed to save diff image to {:?}: {}", diff_file_path, e);
                     }
 
                     TestImageResult::Mismatch {

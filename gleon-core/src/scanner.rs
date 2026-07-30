@@ -296,28 +296,23 @@ impl FileScanner {
             if let Some((rule_arc, _)) = matched_rule {
                 let path_without_ext = rel_path.with_extension("");
                 let test_name_cow = Self::normalize_path_str(&path_without_ext);
+                let test_name_norm = test_name_cow.as_ref();
 
-                let test_name_norm = if test_name_cow.chars().any(|c| c.is_ascii_uppercase()) {
-                    test_name_cow.to_lowercase()
-                } else {
-                    test_name_cow.into_owned()
-                };
-
-                if temp_cases.contains_key(test_name_norm.as_str()) {
+                if temp_cases.contains_key(test_name_norm) {
                     tracing::warn!(
                         "Duplicate test name '{}' detected for relative path {:?}. Skipping duplicate.",
                         test_name_norm,
                         rel_path
                     );
                 } else {
-                    if let Err(reason) = validate_test_name(test_name_norm.as_str()) {
+                    if let Err(reason) = validate_test_name(test_name_norm) {
                         return Err(ScannerError::InvalidTestName {
-                            name: test_name_norm,
+                            name: test_name_norm.to_string(),
                             reason,
                         });
                     }
                     temp_cases.insert(
-                        test_name_norm,
+                        test_name_norm.to_string(),
                         (
                             TestImage {
                                 relative_path: rel_path.to_path_buf(),
@@ -380,11 +375,7 @@ impl FileScanner {
     /// Normalizes path separators to forward slashes for cross-platform manifest key consistency.
     pub fn normalize_path_str(path: &Path) -> Cow<'_, str> {
         let lossy = path.to_string_lossy();
-        if lossy.contains('\\') {
-            Cow::Owned(lossy.replace('\\', "/"))
-        } else {
-            lossy
-        }
+        Cow::Owned(crate::manifest::normalize_test_name(&lossy).into_owned())
     }
 
     /// Parses a directory entry and returns the parsed paths if it's a valid matching PNG.
@@ -424,22 +415,17 @@ impl FileScanner {
 
         let path_without_ext = rel_path.with_extension("");
         let test_name_cow = Self::normalize_path_str(&path_without_ext);
+        let test_name_str = test_name_cow.as_ref();
 
-        let test_name_norm = if test_name_cow.chars().any(|c| c.is_ascii_uppercase()) {
-            test_name_cow.to_lowercase()
-        } else {
-            test_name_cow.into_owned()
-        };
-
-        if let Err(reason) = validate_test_name(test_name_norm.as_str()) {
+        if let Err(reason) = validate_test_name(test_name_str) {
             return Err(ScannerError::InvalidTestName {
-                name: test_name_norm,
+                name: test_name_str.to_string(),
                 reason,
             });
         }
 
         Ok(Some((
-            test_name_norm,
+            test_name_str.to_string(),
             rel_path.to_path_buf(),
             path.to_path_buf(),
         )))

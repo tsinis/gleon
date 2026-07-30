@@ -9,10 +9,18 @@ use std::path::Path;
 use crate::manifest::ManifestError;
 use crate::manifest::single::SingleTestManifest;
 
-/// Normalizes path separators to forward slashes without unnecessary allocations.
+/// Normalizes path separators to forward slashes and lowercases test names without unnecessary allocations.
 pub fn normalize_test_name(test_name: &str) -> Cow<'_, str> {
-    if test_name.contains('\\') {
-        Cow::Owned(test_name.replace('\\', "/"))
+    if test_name.chars().any(|c| c.is_uppercase() || c == '\\') {
+        let mut s = String::with_capacity(test_name.len());
+        for c in test_name.chars() {
+            if c == '\\' {
+                s.push('/');
+            } else {
+                s.extend(c.to_lowercase());
+            }
+        }
+        Cow::Owned(s)
     } else {
         Cow::Borrowed(test_name)
     }
@@ -76,8 +84,9 @@ impl WorkspaceIndex {
                 Ok(e) => e,
                 Err(err) => {
                     let err_msg = err.to_string();
+                    let depth = err.depth();
                     if let Some(io_err) = err.into_io_error() {
-                        if io_err.kind() == std::io::ErrorKind::NotFound {
+                        if io_err.kind() == std::io::ErrorKind::NotFound && depth == Some(0) {
                             return Ok(Self::new());
                         }
                         return Err(ManifestError::StdIo(io_err));

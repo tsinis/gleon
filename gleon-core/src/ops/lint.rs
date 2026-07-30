@@ -13,6 +13,10 @@ pub enum LintError {
     #[error("Manifest directory does not exist at {0}")]
     ManifestDirNotFound(PathBuf),
 
+    /// Invalid platform filter path provided.
+    #[error("Invalid platform filter '{0}': must be a single platform segment")]
+    InvalidPlatformFilter(String),
+
     /// Standard IO error.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -48,7 +52,20 @@ pub fn lint_workspace_manifests(
     let manifests_root = base_dir.join(".gleon").join("manifests");
 
     let search_dir = match platform_filter {
-        Some(p) => manifests_root.join(p),
+        Some(p) => {
+            let path = Path::new(p);
+            let mut components = path.components();
+            match (components.next(), components.next()) {
+                (Some(std::path::Component::Normal(seg)), None) => {
+                    let seg_str = seg.to_string_lossy();
+                    if crate::manifest::index::validate_test_path(&seg_str).is_err() {
+                        return Err(LintError::InvalidPlatformFilter(p.to_string()));
+                    }
+                    manifests_root.join(p)
+                }
+                _ => return Err(LintError::InvalidPlatformFilter(p.to_string())),
+            }
+        }
         None => manifests_root,
     };
 
@@ -183,5 +200,34 @@ mod tests {
         assert!(!report.passed);
         assert_eq!(report.conflicted_files.len(), 1);
         assert_eq!(report.corrupted_files.len(), 1);
+    }
+
+    #[test]
+    fn test_lint_platform_filter_validation_and_missing_dir() {
+        let temp = tempdir().unwrap();
+        let cli = Cli::for_test(Commands::Init);
+        let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
+
+        // 1. Missing directory
+        let err = lint_workspace_manifests(&ctx, temp.path(), None);
+        assert!(matches!(err, Err(LintError::ManifestDirNotFound(_))));
+
+        // 2. Traversal platform filter
+        let err_traversal = lint_workspace_manifests(&ctx, temp.path(), Some("../../etc"));
+        assert!(matches!(
+            err_traversal,
+            Err(LintError::InvalidPlatformFilter(_))
+        ));
+
+        // 3. Absolute path filter
+        let err_abs = lint_workspace_manifests(&ctx, temp.path(), Some("/tmp"));
+        assert!(matches!(err_abs, Err(LintError::InvalidPlatformFilter(_))));
+
+        // 4. Multi-segment platform filter
+        let err_multi = lint_workspace_manifests(&ctx, temp.path(), Some("macos/aarch64"));
+        assert!(matches!(
+            err_multi,
+            Err(LintError::InvalidPlatformFilter(_))
+        ));
     }
 }

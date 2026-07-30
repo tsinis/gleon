@@ -56,6 +56,10 @@ pub fn scan_conflicts(
         None => manifests_root.clone(),
     };
 
+    if !search_dir.exists() {
+        return Err(ResolveError::ManifestDirNotFound(search_dir));
+    }
+
     let mut items = Vec::new();
 
     for entry_res in WalkBuilder::new(&search_dir)
@@ -74,10 +78,23 @@ pub fn scan_conflicts(
         if entry.file_type().is_some_and(|ft| ft.is_file())
             && path.extension().is_some_and(|ext| ext == "json")
         {
-            let content = std::fs::read_to_string(path)?;
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(e) => return Err(ResolveError::Io(e)),
+            };
+
             if content.contains("<<<<<<<") {
-                let conflict = parse_conflict_manifest(&content)
-                    .map_err(|e| ResolveError::ConflictParse(path.to_path_buf(), e))?;
+                let conflict = match parse_conflict_manifest(&content) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Skipping unparsable conflicted manifest at {:?}: {}",
+                            path,
+                            e
+                        );
+                        continue;
+                    }
+                };
 
                 let rel = path.strip_prefix(&manifests_root).unwrap_or(path);
                 let mut components = rel.components().filter_map(|c| match c {
@@ -160,5 +177,27 @@ mod tests {
                 "sha256:2222222222222222222222222222222222222222222222222222222222222222"
             )
         );
+    }
+
+    #[test]
+    fn test_scan_conflicts_missing_dir_and_unparseable() {
+        let temp = tempdir().unwrap();
+
+        // Missing manifest dir
+        let err = scan_conflicts(temp.path(), None);
+        assert!(matches!(err, Err(ResolveError::ManifestDirNotFound(_))));
+
+        // Unparseable conflict manifest file
+        let manifests_dir = temp
+            .path()
+            .join(".gleon")
+            .join("manifests")
+            .join("macos-aarch64");
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+        let bad_conflict = "<<<<<<< HEAD\ninvalid_json\n=======\ninvalid_json\n>>>>>>> branch";
+        std::fs::write(manifests_dir.join("bad.json"), bad_conflict).unwrap();
+
+        let conflicts = scan_conflicts(temp.path(), None).unwrap();
+        assert!(conflicts.is_empty());
     }
 }

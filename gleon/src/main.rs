@@ -82,8 +82,10 @@ mod commands;
 async fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<i32> {
     match &cli.command {
         Commands::Init => {
-            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)?;
-            let res = gleon_core::ops::init_workspace(&ctx, &ctx.base_dir)?;
+            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let res = gleon_core::ops::init_workspace(&ctx, &ctx.base_dir)
+                .map_err(|e| anyhow::anyhow!(e))?;
             info!("Initialized gleon workspace at {}", res.gleon_dir.display());
             if let Some(ref config_path) = res.config_created {
                 info!(
@@ -93,22 +95,26 @@ async fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<i32> {
             }
         }
         Commands::Status { json } => {
-            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)?;
-            let report = gleon_core::ops::check_status(&ctx, &ctx.base_dir)?;
+            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let report = gleon_core::ops::check_status(&ctx, &ctx.base_dir)
+                .map_err(|e| anyhow::anyhow!(e))?;
             if *json {
-                println!("{}", report.format_json()?);
+                println!("{}", report.format_json().map_err(|e| anyhow::anyhow!(e))?);
             } else {
                 print!("{}", report.format_text());
             }
         }
         Commands::Stage { paths } => {
-            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)?;
+            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)
+                .map_err(|e| anyhow::anyhow!(e))?;
             let filter = if paths.is_empty() {
                 None
             } else {
                 Some(paths.as_slice())
             };
-            let res = gleon_core::ops::stage_workspace(&ctx, &ctx.base_dir, filter)?;
+            let res = gleon_core::ops::stage_workspace(&ctx, &ctx.base_dir, filter)
+                .map_err(|e| anyhow::anyhow!(e))?;
             if res.total_screenshots_staged == 0 {
                 info!("Already up to date.");
             } else {
@@ -123,14 +129,16 @@ async fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<i32> {
             auto_pull: _,
             resolve,
         } => {
-            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)?;
+            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)
+                .map_err(|e| anyhow::anyhow!(e))?;
 
             if *resolve {
                 let storage_cfg = get_storage_config();
                 return commands::resolve::run_resolve(&ctx, None, false, storage_cfg).await;
             }
 
-            let report = gleon_core::ops::run_diff(&ctx, &ctx.base_dir)?;
+            let report =
+                gleon_core::ops::run_diff(&ctx, &ctx.base_dir).map_err(|e| anyhow::anyhow!(e))?;
             info!(
                 "Ran {} test(s). Passed: {}, Failed: {}.",
                 report.total_tests,
@@ -143,11 +151,13 @@ async fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<i32> {
             }
         }
         Commands::LintManifests { platform } => {
-            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)?;
+            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)
+                .map_err(|e| anyhow::anyhow!(e))?;
             return commands::lint::run_lint(&ctx, platform.as_deref());
         }
         Commands::Resolve { test_path, fetch } => {
-            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)?;
+            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)
+                .map_err(|e| anyhow::anyhow!(e))?;
             let storage_cfg = get_storage_config();
             return commands::resolve::run_resolve(&ctx, test_path.as_deref(), *fetch, storage_cfg)
                 .await;
