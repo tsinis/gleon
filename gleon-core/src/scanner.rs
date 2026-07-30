@@ -342,13 +342,8 @@ impl FileScanner {
             .filter_entry(move |entry| {
                 if entry.file_type().is_some_and(|ft| ft.is_dir()) {
                     let name = entry.file_name();
-                    // Explicitly prune common high-density uninteresting directories
-                    if name == ".git"
-                        || name == ".gleon"
-                        || name == "node_modules"
-                        || name == "target"
-                        || name == "vendor"
-                    {
+                    // Explicitly prune internal system directories
+                    if name == ".git" || name == ".gleon" {
                         return false;
                     }
                 }

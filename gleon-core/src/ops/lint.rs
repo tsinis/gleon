@@ -230,4 +230,44 @@ mod tests {
             Err(LintError::InvalidPlatformFilter(_))
         ));
     }
+
+    #[test]
+    fn test_lint_detects_json_syntax_and_schema_errors() {
+        let temp = tempdir().unwrap();
+        let manifests_dir = temp
+            .path()
+            .join(".gleon")
+            .join("manifests")
+            .join("macos-aarch64");
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+
+        // 1. Invalid JSON syntax
+        std::fs::write(manifests_dir.join("syntax.json"), "invalid_json").unwrap();
+
+        // 2. Valid JSON but invalid schema validation (e.g. invalid hash scheme)
+        let bad_schema = "{\"schema_version\":1,\"hash\":\"invalid:123\",\"phash\":\"dhash:0000000000000000\",\"width\":10,\"height\":10}";
+        std::fs::write(manifests_dir.join("schema.json"), bad_schema).unwrap();
+
+        let cli = Cli::for_test(Commands::Init);
+        let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
+        let report = lint_workspace_manifests(&ctx, temp.path(), None).unwrap();
+
+        assert_eq!(report.total_files, 2);
+        assert_eq!(report.valid_files, 0);
+        assert!(!report.passed);
+        assert_eq!(report.corrupted_files.len(), 2);
+    }
+
+    #[test]
+    fn test_lint_error_display() {
+        let err_missing = LintError::ManifestDirNotFound(PathBuf::from("/missing"));
+        assert!(err_missing.to_string().contains("does not exist"));
+
+        let err_filter = LintError::InvalidPlatformFilter("bad/filter".to_string());
+        assert!(err_filter.to_string().contains("Invalid platform filter"));
+
+        let io_err = std::io::Error::other("test error");
+        let err_io = LintError::Io(io_err);
+        assert!(err_io.to_string().contains("IO error"));
+    }
 }

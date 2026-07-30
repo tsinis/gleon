@@ -59,6 +59,7 @@ pub fn validate_test_path(test_path: &str) -> Result<(), ManifestError> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkspaceIndex {
     entries: BTreeMap<String, SingleTestManifest>,
+    source_paths: BTreeMap<String, String>,
 }
 
 impl WorkspaceIndex {
@@ -66,6 +67,7 @@ impl WorkspaceIndex {
     pub fn new() -> Self {
         Self {
             entries: BTreeMap::new(),
+            source_paths: BTreeMap::new(),
         }
     }
 
@@ -75,6 +77,7 @@ impl WorkspaceIndex {
         let manifest_dir = manifest_dir.as_ref();
 
         let mut entries = BTreeMap::new();
+        let mut source_paths = BTreeMap::new();
         let walker = WalkBuilder::new(manifest_dir)
             .standard_filters(false)
             .build();
@@ -130,10 +133,14 @@ impl WorkspaceIndex {
             }
 
             let manifest = SingleTestManifest::load(path)?;
+            source_paths.insert(normalized.to_string(), rel_str.to_string());
             entries.insert(normalized.into_owned(), manifest);
         }
 
-        Ok(Self { entries })
+        Ok(Self {
+            entries,
+            source_paths,
+        })
     }
 
     /// Returns a reference to the inner entries map.
@@ -155,12 +162,14 @@ impl WorkspaceIndex {
     /// Inserts or updates a single test manifest in memory.
     pub fn insert(&mut self, test_name: String, manifest: SingleTestManifest) {
         let normalized = normalize_test_name(&test_name).into_owned();
+        self.source_paths.insert(normalized.clone(), test_name);
         self.entries.insert(normalized, manifest);
     }
 
     /// Removes a test case entry from the in-memory map.
     pub fn remove(&mut self, test_name: &str) -> Option<SingleTestManifest> {
         let normalized = normalize_test_name(test_name);
+        self.source_paths.remove(normalized.as_ref());
         self.entries.remove(normalized.as_ref())
     }
 
@@ -175,9 +184,29 @@ impl WorkspaceIndex {
         validate_test_path(normalized.as_ref())?;
 
         let manifest_dir = manifest_dir.as_ref();
-        let target_path = manifest_dir.join(format!("{}.json", normalized));
+        let canonical_key = normalized.as_ref();
+        let target_path = manifest_dir.join(format!("{canonical_key}.json"));
 
         manifest.save(&target_path)?;
+
+        // Remove legacy-cased manifest file on disk if it differs from canonical path
+        if let Some(old_source) = self
+            .source_paths
+            .get(canonical_key)
+            .filter(|s| *s != canonical_key)
+        {
+            let old_path = manifest_dir.join(format!("{old_source}.json"));
+            let is_same_file = match (fs::canonicalize(&old_path), fs::canonicalize(&target_path)) {
+                (Ok(p1), Ok(p2)) => p1 == p2,
+                _ => false,
+            };
+            if !is_same_file {
+                let _ = fs::remove_file(old_path);
+            }
+        }
+
+        self.source_paths
+            .insert(canonical_key.to_string(), canonical_key.to_string());
         self.entries
             .insert(normalized.into_owned(), manifest.clone());
         Ok(())
@@ -193,14 +222,20 @@ impl WorkspaceIndex {
         validate_test_path(normalized.as_ref())?;
 
         let manifest_dir = manifest_dir.as_ref();
-        let target_path = manifest_dir.join(format!("{}.json", normalized));
+        let canonical_key = normalized.as_ref();
 
+        if let Some(old_source) = self.source_paths.remove(canonical_key) {
+            let old_path = manifest_dir.join(format!("{old_source}.json"));
+            let _ = fs::remove_file(old_path);
+        }
+
+        let target_path = manifest_dir.join(format!("{canonical_key}.json"));
         match fs::remove_file(&target_path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(ManifestError::StdIo(e)),
         }
-        Ok(self.entries.remove(normalized.as_ref()))
+        Ok(self.entries.remove(canonical_key))
     }
 }
 
@@ -317,5 +352,39 @@ mod tests {
         );
         let map = index2.into_entries();
         assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn test_legacy_cased_manifest_migration() {
+        let temp = tempdir().unwrap();
+        let manifest_dir = temp.path().join("macos-aarch64");
+        std::fs::create_dir_all(manifest_dir.join("Auth")).unwrap();
+
+        let hash = ImageHash::new("sha256", "a".repeat(64)).unwrap();
+        let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
+        let manifest = SingleTestManifest::new(hash, phash.clone(), 100, 100).unwrap();
+
+        // Save under legacy uppercase path Auth/Login.json
+        manifest.save(manifest_dir.join("Auth/Login.json")).unwrap();
+
+        // Load into WorkspaceIndex (canonicalizes key to auth/login)
+        let mut loaded = WorkspaceIndex::load(&manifest_dir).unwrap();
+        assert_eq!(loaded.entries().len(), 1);
+        assert!(loaded.get("auth/login").is_some());
+
+        // Update / save under canonical key
+        let updated_hash = ImageHash::new("sha256", "b".repeat(64)).unwrap();
+        let updated_manifest = SingleTestManifest::new(updated_hash, phash, 100, 100).unwrap();
+        loaded
+            .save_test(&manifest_dir, "auth/login", &updated_manifest)
+            .unwrap();
+
+        // Verify reloading does not find duplicates and contains updated manifest
+        let reloaded = WorkspaceIndex::load(&manifest_dir).unwrap();
+        assert_eq!(reloaded.entries().len(), 1);
+        assert_eq!(
+            reloaded.get("auth/login").unwrap().hash.value(),
+            &"b".repeat(64)
+        );
     }
 }

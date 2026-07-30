@@ -15,6 +15,10 @@ pub enum ResolveError {
     #[error("Manifest directory does not exist at {0}")]
     ManifestDirNotFound(PathBuf),
 
+    /// Invalid platform filter path provided.
+    #[error("Invalid platform filter '{0}': must be a single platform segment")]
+    InvalidPlatformFilter(String),
+
     /// Standard I/O error.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -52,7 +56,20 @@ pub fn scan_conflicts(
     let manifests_root = base_dir.join(".gleon").join("manifests");
 
     let search_dir = match platform_filter {
-        Some(p) => manifests_root.join(p),
+        Some(p) => {
+            let path = Path::new(p);
+            let mut components = path.components();
+            match (components.next(), components.next()) {
+                (Some(std::path::Component::Normal(seg)), None) => {
+                    let seg_str = seg.to_string_lossy();
+                    if crate::manifest::index::validate_test_path(&seg_str).is_err() {
+                        return Err(ResolveError::InvalidPlatformFilter(p.to_string()));
+                    }
+                    manifests_root.join(p)
+                }
+                _ => return Err(ResolveError::InvalidPlatformFilter(p.to_string())),
+            }
+        }
         None => manifests_root.clone(),
     };
 
@@ -199,5 +216,31 @@ mod tests {
 
         let conflicts = scan_conflicts(temp.path(), None).unwrap();
         assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn test_scan_conflicts_platform_filter_validation() {
+        let temp = tempdir().unwrap();
+
+        // 1. Traversal filter
+        let err_traversal = scan_conflicts(temp.path(), Some("../../etc"));
+        assert!(matches!(
+            err_traversal,
+            Err(ResolveError::InvalidPlatformFilter(_))
+        ));
+
+        // 2. Absolute filter
+        let err_abs = scan_conflicts(temp.path(), Some("/tmp"));
+        assert!(matches!(
+            err_abs,
+            Err(ResolveError::InvalidPlatformFilter(_))
+        ));
+
+        // 3. Multi-segment filter
+        let err_multi = scan_conflicts(temp.path(), Some("macos/aarch64"));
+        assert!(matches!(
+            err_multi,
+            Err(ResolveError::InvalidPlatformFilter(_))
+        ));
     }
 }

@@ -95,6 +95,7 @@ words = [
     "rustlib",
     "rustup",
     "sanitization",
+    "seg",
     "serde",
     "shellcheck",
     "smallvec",
