@@ -128,6 +128,7 @@ async fn test_push_pull_file_scheme_lifecycle() {
     assert_eq!(pull1.downloaded_blobs, 1);
     assert_eq!(pull1.skipped_blobs, 0);
     assert!(local_blob_path.is_file());
+    assert_eq!(fs::read(&local_blob_path).unwrap(), fixture_png.to_vec());
 
     // 5. Idempotent Pull -> Downloaded 0, skips 1
     let pull2 = pull_blobs(

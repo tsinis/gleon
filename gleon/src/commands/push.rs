@@ -70,5 +70,10 @@ mod tests {
         gleon_core::ops::init_workspace(&ctx, temp.path()).unwrap();
         let exit_code_local = run_push(&ctx, None, false, None).await.unwrap();
         assert_eq!(exit_code_local, 0);
+
+        // 3. Initialized + Storage Configured + 0 manifest blobs -> exit code 0
+        let cfg = StorageConfig::new("memory://");
+        let exit_code_zero_blobs = run_push(&ctx, Some(&cfg), false, None).await.unwrap();
+        assert_eq!(exit_code_zero_blobs, 0);
     }
 }

@@ -142,7 +142,7 @@ pub enum Commands {
     /// Pull latest baselines from remote storage
     Pull {
         /// Pull blobs for all platforms under .gleon/manifests/ instead of only the active platform
-        #[arg(short = 'a', long = "all")]
+        #[arg(short = 'a', long = "all", conflicts_with = "platform")]
         all_platforms: bool,
         /// Optional target platform override (e.g. macos-aarch64)
         #[arg(short = 'p', long = "platform")]
@@ -151,7 +151,7 @@ pub enum Commands {
     /// Push staged changes and report to remote storage
     Push {
         /// Push blobs for all platforms under .gleon/manifests/ instead of only the active platform
-        #[arg(short = 'a', long = "all")]
+        #[arg(short = 'a', long = "all", conflicts_with = "platform")]
         all_platforms: bool,
         /// Optional target platform override (e.g. macos-aarch64)
         #[arg(short = 'p', long = "platform")]
@@ -325,5 +325,21 @@ mod tests {
         assert!(parse_label("=value").is_err());
         assert!(parse_label("key=").is_err());
         assert!(parse_label("  =  ").is_err());
+    }
+
+    #[test]
+    fn test_parse_pull_push_conflicting_all_and_platform() {
+        let pull_conflict =
+            Cli::try_parse_from(["gleon", "pull", "--all", "--platform", "macos-aarch64"]);
+        assert!(pull_conflict.is_err());
+
+        let push_conflict = Cli::try_parse_from(["gleon", "push", "-a", "-p", "macos-aarch64"]);
+        assert!(push_conflict.is_err());
+
+        let pull_ok = Cli::try_parse_from(["gleon", "pull", "--all"]);
+        assert!(pull_ok.is_ok());
+
+        let push_ok = Cli::try_parse_from(["gleon", "push", "--platform", "linux-x86_64"]);
+        assert!(push_ok.is_ok());
     }
 }

@@ -1,6 +1,6 @@
 //! Push operation for uploading baseline blobs to remote storage.
 
-use futures::StreamExt as _;
+use futures::{StreamExt as _, TryStreamExt as _};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -71,11 +71,15 @@ pub(crate) fn list_platform_dirs(
     for entry in std::fs::read_dir(manifests_root)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_dir() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if validate_segment(&name).is_ok() {
-                platforms.push((name, path));
-            }
+        let is_dir = path.is_dir();
+        let valid_name = entry
+            .file_name()
+            .to_str()
+            .filter(|n| is_dir && validate_segment(n).is_ok())
+            .map(|n| n.to_string());
+
+        if let Some(name) = valid_name {
+            platforms.push((name, path));
         }
     }
     platforms.sort_by(|a, b| a.0.cmp(&b.0));
@@ -174,7 +178,7 @@ pub async fn push_blobs(
     let mut missing_blobs = Vec::new();
     let mut skipped_blobs = 0;
 
-    let check_stream = futures::stream::iter(referenced_hashes.into_iter().map(|hash| {
+    let mut check_stream = futures::stream::iter(referenced_hashes.into_iter().map(|hash| {
         let adapter = adapter.clone();
         async move {
             let exists = adapter.blob_exists(&hash).await?;
@@ -183,37 +187,25 @@ pub async fn push_blobs(
     }))
     .buffer_unordered(adapter.concurrency());
 
-    let results: Vec<Result<(String, bool), StorageError>> = check_stream.collect().await;
-
-    for res in results {
-        match res {
-            Ok((hash, exists)) => {
-                if exists {
-                    skipped_blobs += 1;
-                } else {
-                    missing_blobs.push(hash);
-                }
-            }
-            Err(e) => return Err(PushError::Storage(e)),
+    while let Some((hash, exists)) = check_stream.try_next().await? {
+        if exists {
+            skipped_blobs += 1;
+        } else {
+            missing_blobs.push(hash);
         }
     }
 
     let missing_count = missing_blobs.len();
 
-    // Upload missing blobs in parallel
-    let upload_stream = futures::stream::iter(missing_blobs.into_iter().map(|hash| {
+    // Upload missing blobs in parallel with Fail-Fast short-circuiting
+    let mut upload_stream = futures::stream::iter(missing_blobs.into_iter().map(|hash| {
         let adapter = adapter.clone();
         let src_path = blobs_dir.join(&hash);
         async move { adapter.upload_blob(&hash, &src_path).await }
     }))
     .buffer_unordered(adapter.concurrency());
 
-    let upload_results: Vec<Result<(), StorageError>> = upload_stream.collect().await;
-    for res in upload_results {
-        if let Err(e) = res {
-            return Err(PushError::Storage(e));
-        }
-    }
+    while let Some(()) = upload_stream.try_next().await? {}
 
     Ok(PushResult {
         total_manifest_blobs,
@@ -264,5 +256,42 @@ mod tests {
         assert!(!format!("{:?}", res).is_empty());
         let default_res = PushResult::default();
         assert_eq!(default_res.total_manifest_blobs, 0);
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_push_platform_override_validation() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let ctx = ResolvedContext::default();
+        let cfg = StorageConfig::new("memory://");
+
+        // Invalid platform override segment
+        let err = push_blobs(&ctx, temp.path(), Some(&cfg), false, Some("../invalid")).await;
+        assert!(matches!(
+            err,
+            Err(PushError::Context(ContextError::Platform(_)))
+        ));
+
+        // Empty manifest directory for valid platform override -> 0 blobs
+        let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, Some("macos-aarch64"))
+            .await
+            .unwrap();
+        assert_eq!(res.total_manifest_blobs, 0);
+    }
+
+    #[test]
+    fn test_list_platform_dirs_filters_invalid_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifests = temp.path().join("manifests");
+        std::fs::create_dir_all(manifests.join("valid-platform")).unwrap();
+        std::fs::create_dir_all(manifests.join("invalid platform space")).unwrap();
+        std::fs::write(manifests.join("some_file.txt"), "hello").unwrap();
+
+        let dirs = list_platform_dirs(&manifests).unwrap();
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs[0].0, "valid-platform");
     }
 }

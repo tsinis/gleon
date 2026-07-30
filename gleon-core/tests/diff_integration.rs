@@ -303,3 +303,59 @@ screenshots:
         fs::read_to_string(report_corrupt_actual.runs_dir.join("report.md")).unwrap();
     assert!(md_corrupt_actual.to_lowercase().contains("decode"));
 }
+
+#[test]
+fn test_diff_with_mask_rules_ignores_masked_differences() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let baseline_png_bytes = fs::read(fixtures_dir.join("baseline_gradient_100x100.png")).unwrap();
+
+    let screenshot_dir = base_path.join("masked_app");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    let screenshot_file = screenshot_dir.join("screen.png");
+    fs::write(&screenshot_file, &baseline_png_bytes).unwrap();
+
+    // Config mask covering pixel (50, 50)
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "masked_app/**/*.png"
+    masks:
+      - path: "**/*.png"
+        zones:
+          - x: 50
+            y: 50
+            width: 1
+            height: 1
+"#;
+    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+
+    let cli = Cli::for_test(Commands::Diff {
+        auto_pull: false,
+        resolve: false,
+    });
+    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    // 1. Stage baseline (applies mask to baseline blob and saves it)
+    stage_workspace(&ctx, base_path, None).expect("stage_workspace should succeed");
+
+    // 2. Replace actual screenshot with image modified ONLY at (50, 50)
+    let modified_png_bytes =
+        fs::read(fixtures_dir.join("diff_1px_black_center_100x100.png")).unwrap();
+    fs::write(&screenshot_file, &modified_png_bytes).unwrap();
+
+    // 3. Run diff -> Mask on actual screenshot masks out the modified pixel (50, 50),
+    // baseline is already masked. Comparison must PASS!
+    let report = run_diff(&ctx, base_path).expect("run_diff should succeed");
+    assert!(report.passed);
+    assert_eq!(report.total_tests, 1);
+    assert_eq!(report.failed_tests, 0);
+}

@@ -1,6 +1,6 @@
 //! Pull operation for downloading missing baseline blobs from remote storage.
 
-use futures::StreamExt as _;
+use futures::{StreamExt as _, TryStreamExt as _};
 use std::collections::BTreeSet;
 use std::path::Path;
 use thiserror::Error;
@@ -152,27 +152,24 @@ pub async fn pull_blobs(
 
     let missing_count = missing_local.len();
 
-    // Download missing blobs in parallel (Fail Fast on BlobNotFound or Store Error)
-    let download_stream = futures::stream::iter(missing_local.into_iter().map(|(hash, plat)| {
-        let adapter = adapter.clone();
-        let dest_path = blobs_dir.join(&hash);
-        async move {
-            match adapter.download_blob(&hash, &dest_path).await {
-                Ok(()) => Ok(()),
-                Err(StorageError::BlobNotFound(_)) => Err(PullError::MissingRemoteBlob {
-                    sha256: hash,
-                    platform: plat,
-                }),
-                Err(e) => Err(PullError::Storage(e)),
+    let mut download_stream =
+        futures::stream::iter(missing_local.into_iter().map(|(hash, plat)| {
+            let adapter = adapter.clone();
+            let dest_path = blobs_dir.join(&hash);
+            async move {
+                match adapter.download_blob(&hash, &dest_path).await {
+                    Ok(()) => Ok(()),
+                    Err(StorageError::BlobNotFound(_)) => Err(PullError::MissingRemoteBlob {
+                        sha256: hash,
+                        platform: plat,
+                    }),
+                    Err(e) => Err(PullError::Storage(e)),
+                }
             }
-        }
-    }))
-    .buffer_unordered(adapter.concurrency());
+        }))
+        .buffer_unordered(adapter.concurrency());
 
-    let results: Vec<Result<(), PullError>> = download_stream.collect().await;
-    for res in results {
-        res?;
-    }
+    while let Some(()) = download_stream.try_next().await? {}
 
     Ok(PullResult {
         total_manifest_blobs,
@@ -223,5 +220,29 @@ mod tests {
         assert!(!format!("{:?}", res).is_empty());
         let default_res = PullResult::default();
         assert_eq!(default_res.total_manifest_blobs, 0);
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_pull_platform_override_validation() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let ctx = ResolvedContext::default();
+        let cfg = StorageConfig::new("memory://");
+
+        // Invalid platform override segment
+        let err = pull_blobs(&ctx, temp.path(), Some(&cfg), false, Some("../invalid")).await;
+        assert!(matches!(
+            err,
+            Err(PullError::Context(ContextError::Platform(_)))
+        ));
+
+        // Empty manifest directory for valid platform override -> 0 blobs
+        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, Some("macos-aarch64"))
+            .await
+            .unwrap();
+        assert_eq!(res.total_manifest_blobs, 0);
     }
 }
