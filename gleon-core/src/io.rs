@@ -165,16 +165,12 @@ mod tests {
         };
         // Saving to "/" should fail because it has no parent directory
         let result = save_json_atomically(Path::new("/"), &dummy);
-        assert!(result.is_err());
-        if let Err(IoError::Io(err)) = result {
-            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-            assert_eq!(
-                err.to_string(),
-                "Cannot resolve parent directory for root path"
-            );
-        } else {
-            panic!("Expected IoError::Io with InvalidInput");
-        }
+        assert!(matches!(
+            result,
+            Err(IoError::Io(ref err))
+                if err.kind() == std::io::ErrorKind::InvalidInput
+                    && err.to_string() == "Cannot resolve parent directory for root path"
+        ));
     }
 
     #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug, Default)]

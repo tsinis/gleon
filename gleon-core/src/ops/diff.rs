@@ -71,7 +71,10 @@ pub fn run_diff(
     };
 
     let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
-    let workspace_index = WorkspaceIndex::load(&manifests_dir).map_err(DiffOpError::Manifest)?;
+    let workspace_index = match WorkspaceIndex::load(&manifests_dir) {
+        Ok(idx) => idx,
+        Err(e) => return Err(DiffOpError::Manifest(e)),
+    };
 
     let runs_dir = gleon_dir.join("runs").join("latest");
     let diffs_dir = runs_dir.join("diffs");
@@ -80,8 +83,10 @@ pub fn run_diff(
     use rayon::prelude::*;
 
     let config = context.config.as_ref().cloned().unwrap_or_default();
-    let test_cases =
-        FileScanner::scan_workspace(&config, base_dir).map_err(DiffOpError::Scanner)?;
+    let test_cases = match FileScanner::scan_workspace(&config, base_dir) {
+        Ok(tc) => tc,
+        Err(e) => return Err(DiffOpError::Scanner(e)),
+    };
 
     let case_results: Vec<TestCaseResult> = test_cases
         .into_par_iter()
@@ -279,5 +284,21 @@ mod tests {
 
         let err6 = DiffOpError::Io(std::io::Error::other("io test"));
         assert!(err6.to_string().contains("IO error"));
+    }
+
+    #[test]
+    fn test_diff_invalid_platform_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let mut ctx = ResolvedContext::default();
+        ctx.platform.os = "../invalid".to_string(); // Invalid segment
+
+        let err = run_diff(&ctx, temp.path());
+        assert!(matches!(
+            err,
+            Err(DiffOpError::Context(ContextError::Platform(_)))
+        ));
     }
 }

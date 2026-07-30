@@ -126,18 +126,17 @@ pub fn check_status(
 
     use rayon::prelude::*;
 
-    let (mut added, mut modified, seen_test_cases) = test_cases
-        .into_par_iter()
+    let (mut added, mut modified) = test_cases
+        .par_iter()
         .map(
-            |case| -> Result<(Option<PathBuf>, Option<PathBuf>, String), StatusError> {
-                let seen_name = case.name.clone();
+            |case| -> Result<(Option<PathBuf>, Option<PathBuf>), StatusError> {
                 let baseline_manifest = workspace_index.get(&case.name);
 
-                let img = case.image;
-                let rel_path = img.relative_path;
+                let img = &case.image;
+                let rel_path = img.relative_path.clone();
 
                 match baseline_manifest {
-                    None => Ok((Some(rel_path), None, seen_name)),
+                    None => Ok((Some(rel_path), None)),
                     Some(manifest) => {
                         let matched_zones = case.rule.matched_mask_zones(&rel_path);
                         let png_bytes = if !matched_zones.is_empty() {
@@ -156,44 +155,48 @@ pub fn check_status(
 
                         let actual_sha256 = hex::encode(sha2::Sha256::digest(&png_bytes));
                         if actual_sha256 != manifest.hash.value() {
-                            Ok((None, Some(rel_path), seen_name))
+                            Ok((None, Some(rel_path)))
                         } else {
-                            Ok((None, None, seen_name))
+                            Ok((None, None))
                         }
                     }
                 }
             },
         )
         .try_fold(
-            || (Vec::new(), Vec::new(), std::collections::HashSet::new()),
+            || (Vec::new(), Vec::new()),
             |mut acc, item| -> Result<_, StatusError> {
-                let (opt_add, opt_mod, name) = item?;
+                let (opt_add, opt_mod) = match item {
+                    Ok(val) => val,
+                    Err(e) => return Err(e),
+                };
                 if let Some(p) = opt_add {
                     acc.0.push(p);
                 }
                 if let Some(p) = opt_mod {
                     acc.1.push(p);
                 }
-                acc.2.insert(name);
                 Ok(acc)
             },
         )
         .try_reduce(
-            || (Vec::new(), Vec::new(), std::collections::HashSet::new()),
+            || (Vec::new(), Vec::new()),
             |mut a, b| -> Result<_, StatusError> {
                 a.0.extend(b.0);
                 a.1.extend(b.1);
-                a.2.extend(b.2);
                 Ok(a)
             },
         )?;
+
+    let seen_test_cases: std::collections::HashSet<&str> =
+        test_cases.iter().map(|c| c.name.as_str()).collect();
 
     let mut deleted = Vec::new();
 
     // Identify deleted test cases (staged in index but no longer present on disk)
     for staged_name in workspace_index.entries().keys() {
-        if !seen_test_cases.contains(staged_name) {
-            deleted.push(PathBuf::from(format!("{}.png", staged_name)));
+        if !seen_test_cases.contains(staged_name.as_str()) {
+            deleted.push(PathBuf::from(format!("{staged_name}.png")));
         }
     }
 
@@ -267,5 +270,16 @@ mod tests {
 
         let json = report.format_json().unwrap();
         assert!(json.contains("a.png"));
+    }
+
+    #[test]
+    fn test_status_deleted_dotted_test_name() {
+        let report = StatusReport {
+            added: vec![],
+            modified: vec![],
+            deleted: vec![PathBuf::from("auth/user.v2.png")],
+        };
+        let text = report.format_text();
+        assert!(text.contains("auth/user.v2.png"));
     }
 }
