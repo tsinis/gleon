@@ -166,7 +166,10 @@ pub fn check_status(
         .try_fold(
             || (Vec::new(), Vec::new()),
             |mut acc, item| -> Result<_, StatusError> {
-                let (opt_add, opt_mod) = item?;
+                let (opt_add, opt_mod) = match item {
+                    Ok(val) => val,
+                    Err(e) => return Err(e),
+                };
                 if let Some(p) = opt_add {
                     acc.0.push(p);
                 }

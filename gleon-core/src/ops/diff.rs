@@ -150,7 +150,7 @@ pub fn run_diff(
                     };
                 }
             };
-            let baseline_rgba = baseline_dyn_img.to_rgba8();
+            let mut baseline_rgba = baseline_dyn_img.to_rgba8();
 
             let actual_dyn_img = match image::open(&case.image.absolute_path) {
                 Ok(img) => img,
@@ -169,6 +169,7 @@ pub fn run_diff(
             // Apply ignore-zone masks if defined
             let matched_zones = case.rule.matched_mask_zones(&case.image.relative_path);
             if !matched_zones.is_empty() {
+                apply_masks(&mut baseline_rgba, &matched_zones);
                 apply_masks(&mut actual_rgba, &matched_zones);
             }
 

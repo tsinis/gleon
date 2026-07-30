@@ -359,3 +359,70 @@ screenshots:
     assert_eq!(report.total_tests, 1);
     assert_eq!(report.failed_tests, 0);
 }
+
+#[test]
+fn test_diff_baseline_staged_before_mask_configuration() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let baseline_png_bytes = fs::read(fixtures_dir.join("baseline_gradient_100x100.png")).unwrap();
+
+    let screenshot_dir = base_path.join("unmasked_app");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    let screenshot_file = screenshot_dir.join("screen.png");
+    fs::write(&screenshot_file, &baseline_png_bytes).unwrap();
+
+    // 1. Initial config WITHOUT masks
+    let initial_config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "unmasked_app/**/*.png"
+"#;
+    fs::write(base_path.join("gleon.yaml"), initial_config_yaml).unwrap();
+
+    let cli = Cli::for_test(Commands::Diff {
+        auto_pull: false,
+        resolve: false,
+    });
+    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    // 2. Stage baseline BEFORE configuring mask (blob on disk is UNMASKED)
+    stage_workspace(&ctx, base_path, None).expect("stage_workspace should succeed");
+
+    // 3. Update config AFTER staging to ADD mask covering pixel (50, 50)
+    let masked_config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "unmasked_app/**/*.png"
+    masks:
+      - path: "**/*.png"
+        zones:
+          - x: 50
+            y: 50
+            width: 1
+            height: 1
+"#;
+    fs::write(base_path.join("gleon.yaml"), masked_config_yaml).unwrap();
+
+    // 4. Modify actual screenshot at (50, 50)
+    let modified_png_bytes =
+        fs::read(fixtures_dir.join("diff_1px_black_center_100x100.png")).unwrap();
+    fs::write(&screenshot_file, &modified_png_bytes).unwrap();
+
+    // Re-resolve context with updated config
+    let ctx_masked = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    // 5. Run diff -> baseline blob on disk was unmasked, but run_diff applies the new mask
+    // to BOTH baseline_rgba and actual_rgba on the fly. Comparison MUST PASS!
+    let report = run_diff(&ctx_masked, base_path).expect("run_diff should succeed");
+    assert!(report.passed);
+    assert_eq!(report.total_tests, 1);
+    assert_eq!(report.failed_tests, 0);
+}

@@ -181,8 +181,11 @@ pub async fn push_blobs(
     let mut check_stream = futures::stream::iter(referenced_hashes.into_iter().map(|hash| {
         let adapter = adapter.clone();
         async move {
-            let exists = adapter.blob_exists(&hash).await?;
-            Ok::<(String, bool), StorageError>((hash, exists))
+            let exists = adapter
+                .blob_exists(&hash)
+                .await
+                .map_err(PushError::Storage)?;
+            Ok::<(String, bool), PushError>((hash, exists))
         }
     }))
     .buffer_unordered(adapter.concurrency());
@@ -201,7 +204,12 @@ pub async fn push_blobs(
     let mut upload_stream = futures::stream::iter(missing_blobs.into_iter().map(|hash| {
         let adapter = adapter.clone();
         let src_path = blobs_dir.join(&hash);
-        async move { adapter.upload_blob(&hash, &src_path).await }
+        async move {
+            adapter
+                .upload_blob(&hash, &src_path)
+                .await
+                .map_err(PushError::Storage)
+        }
     }))
     .buffer_unordered(adapter.concurrency());
 
