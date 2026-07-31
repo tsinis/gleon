@@ -28,6 +28,12 @@ async fn main() -> anyhow::Result<()> {
     let current_dir = std::env::current_dir()
         .map_err(|e| anyhow::anyhow!("Failed to determine current directory: {}", e))?;
 
+    // Load environment configuration from .gleon/.env and .gleon/.env.local
+    let env_count = gleon_core::env::load_dotenv(&current_dir);
+    if env_count > 0 {
+        tracing::debug!("Loaded {} environment file(s)", env_count);
+    }
+
     let exit_code = run(&cli, &current_dir).await?;
     if exit_code != 0 {
         std::process::exit(exit_code);
@@ -35,46 +41,9 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 fn get_storage_config() -> Option<gleon_core::storage::StorageConfig> {
-    let url = std::env::var("GLEON_STORAGE_URL").ok()?;
-    if url.is_empty() {
-        return None;
-    }
-    let mut storage_cfg = gleon_core::storage::StorageConfig::new(url);
-
-    // Read standard AWS vars
-    storage_cfg.aws_access_key_id = std::env::var("AWS_ACCESS_KEY_ID").ok();
-    storage_cfg.aws_secret_access_key = std::env::var("AWS_SECRET_ACCESS_KEY").ok();
-    storage_cfg.aws_region = std::env::var("AWS_REGION").ok();
-    storage_cfg.aws_endpoint = std::env::var("AWS_ENDPOINT_URL").ok();
-    storage_cfg.r2_account_id = std::env::var("R2_ACCOUNT_ID").ok();
-
-    // Allow GLEON_ overrides
-    if let Ok(v) = std::env::var("GLEON_AWS_ACCESS_KEY_ID") {
-        storage_cfg.aws_access_key_id = Some(v);
-    }
-    if let Ok(v) = std::env::var("GLEON_AWS_SECRET_ACCESS_KEY") {
-        storage_cfg.aws_secret_access_key = Some(v);
-    }
-    if let Ok(v) = std::env::var("GLEON_AWS_REGION") {
-        storage_cfg.aws_region = Some(v);
-    }
-    if let Ok(v) = std::env::var("GLEON_AWS_ENDPOINT_URL") {
-        storage_cfg.aws_endpoint = Some(v);
-    }
-    if let Ok(v) = std::env::var("GLEON_R2_ACCOUNT_ID") {
-        storage_cfg.r2_account_id = Some(v);
-    }
-
-    if let Some(c) = std::env::var("GLEON_CONCURRENCY")
-        .ok()
-        .and_then(|v| v.parse().ok())
-    {
-        storage_cfg.concurrency = c;
-    }
-
-    Some(storage_cfg)
+    let vars = std::env::vars().collect();
+    gleon_core::storage::StorageConfig::from_env_map(&vars)
 }
 
 mod commands;

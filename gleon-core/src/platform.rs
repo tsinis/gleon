@@ -50,6 +50,27 @@ pub enum PlatformConfig {
     Structured(PlatformFields),
 }
 
+impl PlatformConfig {
+    /// Resolves this configuration to a platform key string.
+    ///
+    /// # Errors
+    /// Returns [`PlatformError`] if invalid characters are present in fields.
+    pub fn to_key(&self) -> Result<String, PlatformError> {
+        match self {
+            PlatformConfig::Opaque(s) => validate_segment(s).map(|c| c.into_owned()),
+            PlatformConfig::Structured(fields) => {
+                let info = PlatformInfo {
+                    os: fields.os.clone().unwrap_or_else(|| "unknown".to_string()),
+                    arch: fields.arch.clone(),
+                    renderer: fields.renderer.clone(),
+                    labels: fields.labels.clone().unwrap_or_default(),
+                };
+                info.to_key()
+            }
+        }
+    }
+}
+
 impl Serialize for PlatformConfig {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -267,6 +288,7 @@ impl PlatformInfo {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PlatformEnv {
     pub platform: Option<String>,
+    pub fallback_platform: Option<String>,
     pub os: Option<String>,
     pub arch: Option<String>,
     pub renderer: Option<String>,
@@ -276,6 +298,7 @@ impl PlatformEnv {
     pub fn from_env() -> Self {
         Self {
             platform: std::env::var("GLEON_PLATFORM").ok(),
+            fallback_platform: std::env::var("GLEON_FALLBACK_PLATFORM").ok(),
             os: std::env::var("GLEON_OS").ok(),
             arch: std::env::var("GLEON_ARCH").ok(),
             renderer: std::env::var("GLEON_RENDERER").ok(),

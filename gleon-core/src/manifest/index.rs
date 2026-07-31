@@ -143,6 +143,16 @@ impl WorkspaceIndex {
         })
     }
 
+    /// Returns `true` if the index contains no test cases.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Returns the number of test cases in the index.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
     /// Returns a reference to the inner entries map.
     pub fn entries(&self) -> &BTreeMap<String, SingleTestManifest> {
         &self.entries

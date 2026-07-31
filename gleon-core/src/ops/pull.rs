@@ -108,7 +108,29 @@ pub async fn pull_blobs(
             Ok(key) => key,
             Err(e) => return Err(PullError::Context(ContextError::Platform(e))),
         };
-        vec![(platform_key.clone(), manifests_root.join(platform_key))]
+        let plat_dir = manifests_root.join(&platform_key);
+        let has_manifests =
+            plat_dir.is_dir() && WorkspaceIndex::load(&plat_dir).is_ok_and(|idx| !idx.is_empty());
+
+        if !has_manifests {
+            if let Some(ref fallback_key) = context.fallback_platform_key {
+                let fb_dir = manifests_root.join(fallback_key);
+                if fb_dir.is_dir() {
+                    tracing::warn!(
+                        "No manifests found for platform '{}'. Falling back to pulling blobs for fallback platform '{}'.",
+                        platform_key,
+                        fallback_key
+                    );
+                    vec![(fallback_key.clone(), fb_dir)]
+                } else {
+                    vec![(platform_key.clone(), plat_dir)]
+                }
+            } else {
+                vec![(platform_key.clone(), plat_dir)]
+            }
+        } else {
+            vec![(platform_key.clone(), plat_dir)]
+        }
     };
 
     // Collect all referenced unique sha256 blob hashes and identify missing local ones
@@ -151,25 +173,31 @@ pub async fn pull_blobs(
     let adapter = ObjectStoreAdapter::from_config(storage_cfg)?;
 
     let missing_count = missing_local.len();
+    let progress_bar = crate::ui::create_progress_bar(missing_count as u64);
 
     let mut download_stream =
         futures::stream::iter(missing_local.into_iter().map(|(hash, plat)| {
             let adapter = adapter.clone();
             let dest_path = blobs_dir.join(&hash);
+            let pb = progress_bar.clone();
             async move {
-                match adapter.download_blob(&hash, &dest_path).await {
+                pb.set_message(format!("Downloading {}", &hash[..8.min(hash.len())]));
+                let res = match adapter.download_blob(&hash, &dest_path).await {
                     Ok(()) => Ok(()),
                     Err(StorageError::BlobNotFound(_)) => Err(PullError::MissingRemoteBlob {
                         sha256: hash,
                         platform: plat,
                     }),
                     Err(e) => Err(PullError::Storage(e)),
-                }
+                };
+                pb.inc(1);
+                res
             }
         }))
         .buffer_unordered(adapter.concurrency());
 
     while let Some(()) = download_stream.try_next().await? {}
+    progress_bar.finish_and_clear();
 
     Ok(PullResult {
         total_manifest_blobs,

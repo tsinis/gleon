@@ -71,10 +71,26 @@ pub fn run_diff(
     };
 
     let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
-    let workspace_index = match WorkspaceIndex::load(&manifests_dir) {
+    let mut workspace_index = match WorkspaceIndex::load(&manifests_dir) {
         Ok(idx) => idx,
         Err(e) => return Err(DiffOpError::Manifest(e)),
     };
+
+    if workspace_index.is_empty()
+        && let Some(fallback_key) = context.fallback_platform_key.as_deref()
+    {
+        let fallback_dir = gleon_dir.join("manifests").join(fallback_key);
+        if let Ok(fb_index) = WorkspaceIndex::load(&fallback_dir)
+            && !fb_index.is_empty()
+        {
+            tracing::warn!(
+                "No manifests found for platform '{}'. Falling back to manifests from platform '{}'.",
+                platform_key,
+                fallback_key
+            );
+            workspace_index = fb_index;
+        }
+    }
 
     let runs_dir = gleon_dir.join("runs").join("latest");
     let diffs_dir = runs_dir.join("diffs");
@@ -88,16 +104,20 @@ pub fn run_diff(
         Err(e) => return Err(DiffOpError::Scanner(e)),
     };
 
+    let progress_bar = crate::ui::create_progress_bar(test_cases.len() as u64);
+
     let case_results: Vec<TestCaseResult> = test_cases
         .into_par_iter()
         .map(|case| {
             let test_name = case.name;
+            progress_bar.set_message(case.image.relative_path.display().to_string());
             let single_manifest_opt = workspace_index.get(&test_name);
 
             let baseline_entry = match single_manifest_opt {
                 Some(entry) => entry,
                 None => {
                     let reason = format!("No staged baseline manifest for test '{}'", test_name);
+                    progress_bar.inc(1);
                     return TestCaseResult {
                         name: test_name,
                         result: TestImageResult::MissingBaseline {
@@ -231,12 +251,16 @@ pub fn run_diff(
                 }
             };
 
+            progress_bar.inc(1);
+
             TestCaseResult {
                 name: test_name,
                 result,
             }
         })
         .collect();
+
+    progress_bar.finish_and_clear();
 
     let total_tests = case_results.len();
     let failed_tests = case_results

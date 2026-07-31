@@ -69,6 +69,15 @@ pub fn init_workspace(
     if !existing_content.lines().any(|l| l.trim() == "runs/") {
         to_append.push_str("runs/\n");
     }
+    if !existing_content.lines().any(|l| l.trim() == ".env") {
+        to_append.push_str(".env\n");
+    }
+    if !existing_content.lines().any(|l| l.trim() == ".env.local") {
+        to_append.push_str(".env.local\n");
+    }
+    if !existing_content.lines().any(|l| l.trim() == "credentials") {
+        to_append.push_str("credentials\n");
+    }
 
     if !to_append.is_empty() {
         use std::io::Write;
@@ -77,6 +86,19 @@ pub fn init_workspace(
             .append(true)
             .open(&gitignore_path)?;
         file.write_all(to_append.as_bytes())?;
+    }
+
+    // Scaffold .gleon/.env.template if it does not exist
+    let env_template_path = gleon_dir.join(".env.template");
+    if !env_template_path.exists() {
+        let template_content = "# Gleon Storage Configuration\n\
+            # Copy this file to .env.local and fill in your credentials\n\
+            GLEON_STORAGE_URL=\n\
+            AWS_ACCESS_KEY_ID=\n\
+            AWS_SECRET_ACCESS_KEY=\n\
+            # For Cloudflare R2:\n\
+            # R2_ACCOUNT_ID=\n";
+        crate::io::save_file_atomically(&env_template_path, template_content.as_bytes())?;
     }
 
     let root_config = base_dir.join("gleon.yaml");
@@ -116,5 +138,12 @@ mod tests {
         let gitignore = std::fs::read_to_string(res.gleon_dir.join(".gitignore")).unwrap();
         assert!(gitignore.contains("blobs/"));
         assert!(gitignore.contains("runs/"));
+        assert!(gitignore.contains(".env.local"));
+        assert!(gitignore.contains("credentials"));
+
+        let env_template = res.gleon_dir.join(".env.template");
+        assert!(env_template.exists());
+        let template_str = std::fs::read_to_string(env_template).unwrap();
+        assert!(template_str.contains("GLEON_STORAGE_URL="));
     }
 }

@@ -672,3 +672,35 @@ fn test_stage_path_filter() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[test]
+fn test_dotenv_loading_integration() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+
+    // Copy our real .env fixtures into the .gleon folder of the temp workspace
+    let fixtures_env = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("gleon-core")
+        .join("tests")
+        .join("fixtures")
+        .join("env");
+
+    std::fs::copy(
+        fixtures_env.join(".env"),
+        dir.path().join(".gleon").join(".env"),
+    )?;
+    std::fs::copy(
+        fixtures_env.join(".env.local"),
+        dir.path().join(".gleon").join(".env.local"),
+    )?;
+
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.current_dir(dir.path())
+        .arg("--verbose")
+        .arg("diff")
+        .assert()
+        .stderr(predicates::str::contains("Loaded 2 environment file(s)"));
+
+    Ok(())
+}

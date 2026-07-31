@@ -181,6 +181,9 @@ pub struct GleonConfig {
     /// The platform identifier for which these rules apply (e.g. macos-aarch64).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform: Option<PlatformConfig>,
+    /// Optional fallback platform identifier used when current platform baselines are missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_platform: Option<PlatformConfig>,
     /// List of screenshot match rules.
     pub screenshots: Vec<ScreenshotRule>,
     /// Globs of paths to exclude from testing.
@@ -442,6 +445,7 @@ impl Default for GleonConfig {
         Self {
             required_version,
             platform: None,
+            fallback_platform: None,
             screenshots: vec![ScreenshotRule {
                 #[allow(clippy::expect_used)]
                 include: vec![
