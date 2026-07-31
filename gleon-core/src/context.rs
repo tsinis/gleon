@@ -105,19 +105,18 @@ impl ResolvedContext {
         )?;
 
         let fallback_platform_key = if let Some(ref fb_env) = platform_env.fallback_platform {
-            if let Ok(fields) = crate::platform::PlatformFields::parse_key_value(fb_env) {
-                crate::platform::PlatformConfig::Structured(fields)
-                    .to_key()
-                    .ok()
-            } else {
-                crate::platform::PlatformConfig::Opaque(fb_env.clone())
-                    .to_key()
-                    .ok()
-            }
+            let plat_cfg =
+                if let Ok(fields) = crate::platform::PlatformFields::parse_key_value(fb_env) {
+                    crate::platform::PlatformConfig::Structured(fields)
+                } else {
+                    crate::platform::PlatformConfig::Opaque(fb_env.clone())
+                };
+            Some(plat_cfg.to_key().map_err(ContextError::Platform)?)
         } else if let Some(ref cfg) = config {
             cfg.fallback_platform
                 .as_ref()
-                .and_then(|fb_cfg| fb_cfg.to_key().ok())
+                .map(|fb_cfg| fb_cfg.to_key().map_err(ContextError::Platform))
+                .transpose()?
         } else {
             None
         };
@@ -459,5 +458,57 @@ mod tests {
         assert_eq!(ctx.platform.arch, None);
         assert_eq!(ctx.platform.renderer, None);
         assert_eq!(ctx.branch, "main");
+    }
+
+    #[test]
+    fn test_invalid_fallback_platform_error() {
+        let temp = tempdir().unwrap();
+        let root_dir = temp.path();
+
+        let cli = Cli {
+            os: None,
+            arch: None,
+            renderer: None,
+            labels: vec![],
+            platform: None,
+            branch: None,
+            target_branch: "main".to_string(),
+            verbose: false,
+            quiet: false,
+            config: None,
+            command: Commands::Status { json: false },
+        };
+
+        // Invalid fallback in env
+        let env_invalid = PlatformEnv {
+            fallback_platform: Some("INVALID/OS".to_string()),
+            ..Default::default()
+        };
+        let err =
+            ResolvedContext::from_cli_impl(&cli, root_dir, &EmptyEnv, &env_invalid).unwrap_err();
+        assert!(matches!(err, ContextError::Platform(_)));
+
+        // Invalid fallback in config
+        let config_path = root_dir.join("invalid_gleon.yaml");
+        let invalid_cfg = GleonConfig {
+            fallback_platform: Some(crate::platform::PlatformConfig::Opaque(
+                "INVALID/OS".to_string(),
+            )),
+            ..Default::default()
+        };
+        let yaml_str = serde_yaml::to_string(&invalid_cfg).unwrap();
+        std::fs::write(&config_path, yaml_str).unwrap();
+
+        let cli_cfg = Cli {
+            config: Some(config_path),
+            ..cli
+        };
+        let err_cfg =
+            ResolvedContext::from_cli_impl(&cli_cfg, root_dir, &EmptyEnv, &PlatformEnv::default())
+                .unwrap_err();
+        assert!(matches!(
+            err_cfg,
+            ContextError::Config(_) | ContextError::Platform(_)
+        ));
     }
 }

@@ -6,18 +6,18 @@ use indicatif::{ProgressBar, ProgressStyle};
 pub fn create_progress_bar(total: u64) -> ProgressBar {
     let pb = ProgressBar::new(total);
     let template = "{pos}/{len} [{wide_bar}] {msg}";
-    if let Ok(style) = ProgressStyle::default_bar().template(template) {
-        pb.set_style(style.progress_chars("=>."));
+    match ProgressStyle::default_bar().template(template) {
+        Ok(style) => pb.set_style(style.progress_chars("=>.")),
+        Err(e) => tracing::debug!("Failed to build progress bar style: {}", e),
     }
     pb
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
 
     #[test]
-    #[cfg(not(miri))]
     fn test_create_progress_bar() {
         let pb = create_progress_bar(100);
         pb.set_message("testing");

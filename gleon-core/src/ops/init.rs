@@ -98,7 +98,8 @@ pub fn init_workspace(
             AWS_SECRET_ACCESS_KEY=\n\
             # For Cloudflare R2:\n\
             # R2_ACCOUNT_ID=\n";
-        crate::io::save_file_atomically(&env_template_path, template_content.as_bytes())?;
+        crate::io::save_file_atomically(&env_template_path, template_content.as_bytes())
+            .map_err(InitError::from)?;
     }
 
     let root_config = base_dir.join("gleon.yaml");
@@ -107,8 +108,9 @@ pub fn init_workspace(
     let mut config_created = None;
     if !internal_config.exists() && !root_config.exists() {
         let default_config = GleonConfig::default();
-        let yaml_content = serde_yaml::to_string(&default_config)?;
-        crate::io::save_file_atomically(&root_config, yaml_content.as_bytes())?;
+        let yaml_content = serde_yaml::to_string(&default_config).map_err(InitError::Yaml)?;
+        crate::io::save_file_atomically(&root_config, yaml_content.as_bytes())
+            .map_err(InitError::from)?;
         config_created = Some(root_config);
     }
 

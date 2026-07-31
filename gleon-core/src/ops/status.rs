@@ -123,9 +123,8 @@ pub fn check_status(
         && let Some(fallback_key) = context.fallback_platform_key.as_deref()
     {
         let fallback_dir = gleon_dir.join("manifests").join(fallback_key);
-        if let Ok(fb_index) = WorkspaceIndex::load(&fallback_dir)
-            && !fb_index.is_empty()
-        {
+        let fb_index = WorkspaceIndex::load(&fallback_dir)?;
+        if !fb_index.is_empty() {
             tracing::warn!(
                 "No manifests found for platform '{}'. Falling back to manifests from platform '{}'.",
                 platform_key,

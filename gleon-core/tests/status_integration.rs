@@ -291,7 +291,20 @@ fn test_status_fallback_platform_integration() {
         arch: Some("aarch64".to_string()),
         ..Cli::for_test(Commands::Status { json: false })
     };
-    let ctx_macos = ResolvedContext::from_cli(&cli_status_macos, base_path).unwrap();
+    struct EmptyEnv;
+    impl gleon_core::git::EnvProvider for EmptyEnv {
+        fn get_var(&self, _key: &str) -> Option<String> {
+            None
+        }
+    }
+
+    let ctx_macos = ResolvedContext::from_cli_impl(
+        &cli_status_macos,
+        base_path,
+        &EmptyEnv,
+        &gleon_core::platform::PlatformEnv::default(),
+    )
+    .unwrap();
 
     let status_res = check_status(&ctx_macos, base_path).unwrap();
     assert!(status_res.is_clean());

@@ -218,8 +218,13 @@ pub async fn push_blobs(
     }))
     .buffer_unordered(adapter.concurrency());
 
-    while let Some(()) = upload_stream.try_next().await? {}
+    let upload_res = async {
+        while let Some(()) = upload_stream.try_next().await? {}
+        Ok::<(), PushError>(())
+    }
+    .await;
     progress_bar.finish_and_clear();
+    upload_res?;
 
     Ok(PushResult {
         total_manifest_blobs,

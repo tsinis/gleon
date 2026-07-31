@@ -1,7 +1,6 @@
 //! Pull operation for downloading missing baseline blobs from remote storage.
 
 use futures::{StreamExt as _, TryStreamExt as _};
-use std::collections::BTreeSet;
 use std::path::Path;
 use thiserror::Error;
 use tracing::info;
@@ -109,13 +108,14 @@ pub async fn pull_blobs(
             Err(e) => return Err(PullError::Context(ContextError::Platform(e))),
         };
         let plat_dir = manifests_root.join(&platform_key);
-        let has_manifests =
-            plat_dir.is_dir() && WorkspaceIndex::load(&plat_dir).is_ok_and(|idx| !idx.is_empty());
+        let plat_idx = WorkspaceIndex::load(&plat_dir).map_err(PullError::Manifest)?;
+        let has_manifests = !plat_idx.is_empty();
 
         if !has_manifests {
             if let Some(ref fallback_key) = context.fallback_platform_key {
                 let fb_dir = manifests_root.join(fallback_key);
-                if fb_dir.is_dir() {
+                let fb_idx = WorkspaceIndex::load(&fb_dir).map_err(PullError::Manifest)?;
+                if !fb_idx.is_empty() {
                     tracing::warn!(
                         "No manifests found for platform '{}'. Falling back to pulling blobs for fallback platform '{}'.",
                         platform_key,
@@ -133,35 +133,29 @@ pub async fn pull_blobs(
         }
     };
 
-    // Collect all referenced unique sha256 blob hashes and identify missing local ones
-    let mut referenced_hashes = BTreeSet::new();
-    let mut missing_local = Vec::new();
+    let mut referenced_hashes = std::collections::BTreeSet::new();
+    let mut missing_blobs = Vec::new();
     let mut skipped_blobs = 0;
 
-    for (plat_key, plat_dir) in &platform_dirs {
-        if !plat_dir.exists() {
-            continue;
-        }
-        let index = match WorkspaceIndex::load(plat_dir) {
-            Ok(idx) => idx,
-            Err(e) => return Err(PullError::Manifest(e)),
-        };
-        for manifest in index.entries().values() {
-            let hash_str = manifest.hash.value();
-            if !referenced_hashes.contains(hash_str) {
-                referenced_hashes.insert(hash_str.to_string());
-                let local_blob_path = blobs_dir.join(hash_str);
-                if local_blob_path.is_file() {
+    for (target_platform_key, target_dir) in platform_dirs {
+        let index = WorkspaceIndex::load(&target_dir).map_err(PullError::Manifest)?;
+
+        for entry in index.entries().values() {
+            let hash_value = entry.hash.value();
+            if referenced_hashes.insert(hash_value.to_string()) {
+                let blob_path = blobs_dir.join(hash_value);
+                if blob_path.exists() {
                     skipped_blobs += 1;
                 } else {
-                    missing_local.push((hash_str.to_string(), plat_key.clone()));
+                    missing_blobs.push((hash_value.to_string(), target_platform_key.clone()));
                 }
             }
         }
     }
 
     let total_manifest_blobs = referenced_hashes.len();
-    if missing_local.is_empty() {
+
+    if missing_blobs.is_empty() {
         return Ok(PullResult {
             total_manifest_blobs,
             downloaded_blobs: 0,
@@ -172,21 +166,21 @@ pub async fn pull_blobs(
 
     let adapter = ObjectStoreAdapter::from_config(storage_cfg)?;
 
-    let missing_count = missing_local.len();
+    let missing_count = missing_blobs.len();
     let progress_bar = crate::ui::create_progress_bar(missing_count as u64);
 
     let mut download_stream =
-        futures::stream::iter(missing_local.into_iter().map(|(hash, plat)| {
+        futures::stream::iter(missing_blobs.into_iter().map(|(hash, _plat)| {
             let adapter = adapter.clone();
             let dest_path = blobs_dir.join(&hash);
             let pb = progress_bar.clone();
             async move {
                 pb.set_message(format!("Downloading {}", &hash[..8.min(hash.len())]));
                 let res = match adapter.download_blob(&hash, &dest_path).await {
-                    Ok(()) => Ok(()),
+                    Ok(_) => Ok(()),
                     Err(StorageError::BlobNotFound(_)) => Err(PullError::MissingRemoteBlob {
                         sha256: hash,
-                        platform: plat,
+                        platform: _plat,
                     }),
                     Err(e) => Err(PullError::Storage(e)),
                 };
@@ -196,8 +190,13 @@ pub async fn pull_blobs(
         }))
         .buffer_unordered(adapter.concurrency());
 
-    while let Some(()) = download_stream.try_next().await? {}
+    let download_res = async {
+        while let Some(()) = download_stream.try_next().await? {}
+        Ok::<(), PullError>(())
+    }
+    .await;
     progress_bar.finish_and_clear();
+    download_res?;
 
     Ok(PullResult {
         total_manifest_blobs,

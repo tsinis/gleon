@@ -473,7 +473,20 @@ fn test_diff_fallback_platform_integration() {
             resolve: false,
         })
     };
-    let ctx_macos = ResolvedContext::from_cli(&cli_diff_macos, base_path).unwrap();
+    struct EmptyEnv;
+    impl gleon_core::git::EnvProvider for EmptyEnv {
+        fn get_var(&self, _key: &str) -> Option<String> {
+            None
+        }
+    }
+
+    let ctx_macos = ResolvedContext::from_cli_impl(
+        &cli_diff_macos,
+        base_path,
+        &EmptyEnv,
+        &gleon_core::platform::PlatformEnv::default(),
+    )
+    .unwrap();
     assert_eq!(
         ctx_macos.fallback_platform_key.as_deref(),
         Some("7:windows-6:x86_64")
