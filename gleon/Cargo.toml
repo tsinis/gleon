@@ -9,7 +9,6 @@ license.workspace = true
 anyhow = { workspace = true }
 clap = { workspace = true }
 dialoguer = { workspace = true }
-dotenvy = { workspace = true }
 gleon-core = { path = "../gleon-core" }
 tokio = { workspace = true }
 tracing = { workspace = true }
