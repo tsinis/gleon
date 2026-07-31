@@ -50,6 +50,27 @@ pub enum PlatformConfig {
     Structured(PlatformFields),
 }
 
+impl PlatformConfig {
+    /// Resolves this configuration to a platform key string.
+    ///
+    /// # Errors
+    /// Returns [`PlatformError`] if invalid characters are present in fields.
+    pub fn to_key(&self) -> Result<String, PlatformError> {
+        match self {
+            PlatformConfig::Opaque(s) => validate_segment(s).map(|c| c.into_owned()),
+            PlatformConfig::Structured(fields) => {
+                let info = PlatformInfo {
+                    os: fields.os.clone().unwrap_or_else(|| "unknown".to_string()),
+                    arch: fields.arch.clone(),
+                    renderer: fields.renderer.clone(),
+                    labels: fields.labels.clone().unwrap_or_default(),
+                };
+                info.to_key()
+            }
+        }
+    }
+}
+
 impl Serialize for PlatformConfig {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -267,18 +288,26 @@ impl PlatformInfo {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PlatformEnv {
     pub platform: Option<String>,
+    pub fallback_platform: Option<String>,
     pub os: Option<String>,
     pub arch: Option<String>,
     pub renderer: Option<String>,
 }
 
 impl PlatformEnv {
+    /// Production constructor — reads from the OS process environment.
     pub fn from_env() -> Self {
+        Self::from_provider(&crate::git::OsEnv)
+    }
+
+    /// Injectable constructor — reads from any EnvProvider.
+    pub fn from_provider(env: &dyn crate::git::EnvProvider) -> Self {
         Self {
-            platform: std::env::var("GLEON_PLATFORM").ok(),
-            os: std::env::var("GLEON_OS").ok(),
-            arch: std::env::var("GLEON_ARCH").ok(),
-            renderer: std::env::var("GLEON_RENDERER").ok(),
+            platform: env.get_var("GLEON_PLATFORM"),
+            fallback_platform: env.get_var("GLEON_FALLBACK_PLATFORM"),
+            os: env.get_var("GLEON_OS"),
+            arch: env.get_var("GLEON_ARCH"),
+            renderer: env.get_var("GLEON_RENDERER"),
         }
     }
 }

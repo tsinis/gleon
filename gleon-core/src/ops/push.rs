@@ -199,21 +199,32 @@ pub async fn push_blobs(
     }
 
     let missing_count = missing_blobs.len();
+    let progress_bar = crate::ui::create_progress_bar(missing_count as u64);
 
     // Upload missing blobs in parallel with Fail-Fast short-circuiting
     let mut upload_stream = futures::stream::iter(missing_blobs.into_iter().map(|hash| {
         let adapter = adapter.clone();
         let src_path = blobs_dir.join(&hash);
+        let pb = progress_bar.clone();
         async move {
-            adapter
+            pb.set_message(format!("Uploading {}", &hash[..8.min(hash.len())]));
+            let res = adapter
                 .upload_blob(&hash, &src_path)
                 .await
-                .map_err(PushError::Storage)
+                .map_err(PushError::Storage);
+            pb.inc(1);
+            res
         }
     }))
     .buffer_unordered(adapter.concurrency());
 
-    while let Some(()) = upload_stream.try_next().await? {}
+    let upload_res = async {
+        while let Some(()) = upload_stream.try_next().await? {}
+        Ok::<(), PushError>(())
+    }
+    .await;
+    progress_bar.finish_and_clear();
+    upload_res?;
 
     Ok(PushResult {
         total_manifest_blobs,
@@ -223,7 +234,7 @@ pub async fn push_blobs(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use crate::platform::PlatformError;

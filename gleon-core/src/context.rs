@@ -36,6 +36,7 @@ pub fn find_config_and_root(
 pub struct ResolvedContext {
     pub config: Option<GleonConfig>,
     pub platform: PlatformInfo,
+    pub fallback_platform_key: Option<String>,
     pub branch: String,
     pub target_branch: String,
     pub base_dir: std::path::PathBuf,
@@ -51,6 +52,7 @@ impl Default for ResolvedContext {
                 renderer: None,
                 labels: std::collections::BTreeMap::new(),
             },
+            fallback_platform_key: None,
             branch: "main".to_string(),
             target_branch: "main".to_string(),
             base_dir: std::path::PathBuf::from("."),
@@ -62,6 +64,15 @@ impl ResolvedContext {
     pub fn from_cli(cli: &Cli, base_dir: &std::path::Path) -> Result<Self, ContextError> {
         let env = PlatformEnv::from_env();
         Self::from_cli_impl(cli, base_dir, &crate::git::OsEnv, &env)
+    }
+
+    pub fn from_cli_with_env(
+        cli: &Cli,
+        base_dir: &std::path::Path,
+        env: &dyn crate::git::EnvProvider,
+    ) -> Result<Self, ContextError> {
+        let platform_env = PlatformEnv::from_provider(env);
+        Self::from_cli_impl(cli, base_dir, env, &platform_env)
     }
 
     pub fn from_cli_impl(
@@ -102,6 +113,23 @@ impl ResolvedContext {
             config.as_ref().and_then(|c| c.platform.as_ref()),
         )?;
 
+        let fallback_platform_key = if let Some(ref fb_env) = platform_env.fallback_platform {
+            let plat_cfg =
+                if let Ok(fields) = crate::platform::PlatformFields::parse_key_value(fb_env) {
+                    crate::platform::PlatformConfig::Structured(fields)
+                } else {
+                    crate::platform::PlatformConfig::Opaque(fb_env.clone())
+                };
+            Some(plat_cfg.to_key().map_err(ContextError::Platform)?)
+        } else if let Some(ref cfg) = config {
+            cfg.fallback_platform
+                .as_ref()
+                .map(|fb_cfg| fb_cfg.to_key().map_err(ContextError::Platform))
+                .transpose()?
+        } else {
+            None
+        };
+
         let branch = match crate::git::GitResolver::resolve_branch_impl(
             cli.branch.as_deref(),
             &resolved_base_dir,
@@ -123,6 +151,7 @@ impl ResolvedContext {
         Ok(Self {
             config,
             platform,
+            fallback_platform_key,
             branch,
             target_branch: cli.target_branch.clone(),
             base_dir: resolved_base_dir,
@@ -389,11 +418,106 @@ mod tests {
     }
 
     #[test]
+    fn test_fallback_platform_key_resolution() {
+        let dir = tempdir().unwrap();
+        let root_dir = dir.path();
+        let config_path = root_dir.join("gleon.yaml");
+        let yaml_content = "required_version: \">=0.1.0\"\nfallback_platform:\n  os: linux\n  arch: x86_64\nscreenshots:\n  - include: \"*.png\"";
+        std::fs::write(&config_path, yaml_content).unwrap();
+
+        let cli = Cli {
+            branch: None,
+            target_branch: "main".to_string(),
+            os: None,
+            arch: None,
+            renderer: None,
+            labels: vec![],
+            platform: None,
+            verbose: false,
+            quiet: false,
+            config: None,
+            command: Commands::Status { json: false },
+        };
+
+        // 1. Resolve from config
+        let ctx =
+            ResolvedContext::from_cli_impl(&cli, root_dir, &EmptyEnv, &PlatformEnv::default())
+                .unwrap();
+        assert_eq!(
+            ctx.fallback_platform_key.as_deref(),
+            Some("5:linux-6:x86_64")
+        );
+
+        // 2. Resolve from env (overrides config)
+        let env = PlatformEnv {
+            fallback_platform: Some("macos-aarch64".to_string()),
+            ..Default::default()
+        };
+        let ctx_env = ResolvedContext::from_cli_impl(&cli, root_dir, &EmptyEnv, &env).unwrap();
+        assert_eq!(
+            ctx_env.fallback_platform_key.as_deref(),
+            Some("5:macos-7:aarch64")
+        );
+    }
+
+    #[test]
     fn test_resolved_context_default() {
         let ctx = ResolvedContext::default();
         assert_eq!(ctx.platform.os, "unknown");
         assert_eq!(ctx.platform.arch, None);
         assert_eq!(ctx.platform.renderer, None);
         assert_eq!(ctx.branch, "main");
+    }
+
+    #[test]
+    fn test_invalid_fallback_platform_error() {
+        let temp = tempdir().unwrap();
+        let root_dir = temp.path();
+
+        let cli = Cli {
+            os: None,
+            arch: None,
+            renderer: None,
+            labels: vec![],
+            platform: None,
+            branch: None,
+            target_branch: "main".to_string(),
+            verbose: false,
+            quiet: false,
+            config: None,
+            command: Commands::Status { json: false },
+        };
+
+        // Invalid fallback in env
+        let env_invalid = PlatformEnv {
+            fallback_platform: Some("INVALID/OS".to_string()),
+            ..Default::default()
+        };
+        let err =
+            ResolvedContext::from_cli_impl(&cli, root_dir, &EmptyEnv, &env_invalid).unwrap_err();
+        assert!(matches!(err, ContextError::Platform(_)));
+
+        // Invalid fallback in config
+        let config_path = root_dir.join("invalid_gleon.yaml");
+        let invalid_cfg = GleonConfig {
+            fallback_platform: Some(crate::platform::PlatformConfig::Opaque(
+                "INVALID/OS".to_string(),
+            )),
+            ..Default::default()
+        };
+        let yaml_str = serde_yaml::to_string(&invalid_cfg).unwrap();
+        std::fs::write(&config_path, yaml_str).unwrap();
+
+        let cli_cfg = Cli {
+            config: Some(config_path),
+            ..cli
+        };
+        let err_cfg =
+            ResolvedContext::from_cli_impl(&cli_cfg, root_dir, &EmptyEnv, &PlatformEnv::default())
+                .unwrap_err();
+        assert!(matches!(
+            err_cfg,
+            ContextError::Config(_) | ContextError::Platform(_)
+        ));
     }
 }

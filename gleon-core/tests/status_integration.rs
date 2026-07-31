@@ -247,3 +247,65 @@ screenshots:
     assert_eq!(report.deleted.len(), 1);
     assert_eq!(report.deleted[0], Path::new("billing/form.png"));
 }
+
+#[test]
+fn test_status_fallback_platform_integration() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+
+    // 1. Setup gleon.yaml with fallback_platform
+    std::fs::copy(
+        fixtures_dir.join("fallback_config.yaml"),
+        base_path.join("gleon.yaml"),
+    )
+    .unwrap();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    init_workspace(&ctx_init, base_path).unwrap();
+
+    // 2. Add real screenshot fixture
+    let baseline_png_bytes = fs::read(fixtures_dir.join("200x100.png")).unwrap();
+
+    let screenshot_dir = base_path.join("billing");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    fs::write(screenshot_dir.join("form.png"), &baseline_png_bytes).unwrap();
+
+    // 3. Stage screenshot specifically on windows-x86_64 (fallback platform)
+    let cli_stage_windows = Cli {
+        os: Some("windows".to_string()),
+        arch: Some("x86_64".to_string()),
+        ..Cli::for_test(Commands::Stage { paths: vec![] })
+    };
+    let ctx_windows = ResolvedContext::from_cli(&cli_stage_windows, base_path).unwrap();
+    let stage_res = stage_workspace(&ctx_windows, base_path, None).unwrap();
+    assert_eq!(stage_res.staged_test_cases.len(), 1);
+
+    // 4. Run status on macos-aarch64 (current platform has NO manifests).
+    let cli_status_macos = Cli {
+        os: Some("macos".to_string()),
+        arch: Some("aarch64".to_string()),
+        ..Cli::for_test(Commands::Status { json: false })
+    };
+    struct EmptyEnv;
+    impl gleon_core::git::EnvProvider for EmptyEnv {
+        fn get_var(&self, _key: &str) -> Option<String> {
+            None
+        }
+    }
+
+    let ctx_macos = ResolvedContext::from_cli_impl(
+        &cli_status_macos,
+        base_path,
+        &EmptyEnv,
+        &gleon_core::platform::PlatformEnv::default(),
+    )
+    .unwrap();
+
+    let status_res = check_status(&ctx_macos, base_path).unwrap();
+    assert!(status_res.is_clean());
+}

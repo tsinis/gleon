@@ -143,6 +143,16 @@ impl WorkspaceIndex {
         })
     }
 
+    /// Returns `true` if the index contains no test cases.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Returns the number of test cases in the index.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
     /// Returns a reference to the inner entries map.
     pub fn entries(&self) -> &BTreeMap<String, SingleTestManifest> {
         &self.entries
@@ -397,5 +407,28 @@ mod tests {
             reloaded.get("auth/login").unwrap().hash.value(),
             &"b".repeat(64)
         );
+    }
+
+    #[test]
+    fn test_remove_test_and_duplicate_collision() {
+        let temp = tempdir().unwrap();
+        let manifest_dir = temp.path().join("manifests");
+        std::fs::create_dir_all(&manifest_dir).unwrap();
+
+        let hash = ImageHash::new("sha256", "a".repeat(64)).unwrap();
+        let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
+        let manifest = SingleTestManifest::new(hash, phash, 100, 100).unwrap();
+
+        manifest.save(manifest_dir.join("test_item.json")).unwrap();
+        let mut index = WorkspaceIndex::load(&manifest_dir).unwrap();
+
+        // 1. Remove existing test
+        let removed = index.remove_test(&manifest_dir, "test_item").unwrap();
+        assert!(removed.is_some());
+        assert!(!manifest_dir.join("test_item.json").exists());
+
+        // 2. Remove non-existent test
+        let removed_none = index.remove_test(&manifest_dir, "non_existent").unwrap();
+        assert!(removed_none.is_none());
     }
 }
