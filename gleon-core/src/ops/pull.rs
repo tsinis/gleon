@@ -288,7 +288,7 @@ mod tests {
         let cfg = StorageConfig::new("memory://");
         let hash = crate::manifest::ImageHash::new(
             "sha256",
-            "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff",
+            "1111111111111111111111111111111111111111111111111111111111111111",
         )
         .unwrap();
         let phash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();
@@ -308,7 +308,7 @@ mod tests {
         let blob_path = gleon_dir
             .join("blobs")
             .join("sha256")
-            .join("11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff");
+            .join("1111111111111111111111111111111111111111111111111111111111111111");
         std::fs::create_dir_all(blob_path.parent().unwrap()).unwrap();
         std::fs::write(&blob_path, "blob content").unwrap();
 

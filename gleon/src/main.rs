@@ -29,35 +29,54 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to determine current directory: {}", e))?;
 
     // Load environment configuration from .gleon/.env and .gleon/.env.local
-    let env_vars = gleon_core::env::load_dotenv(&current_dir);
-    if !env_vars.is_empty() {
-        tracing::debug!("Loaded {} environment variable(s)", env_vars.len());
-        for (k, v) in env_vars {
-            unsafe {
-                std::env::set_var(k, v);
-            }
-        }
+    let dotenv = gleon_core::env::load_dotenv(&current_dir);
+    if !dotenv.is_empty() {
+        tracing::debug!(
+            "Loaded {} environment variable(s) from .env files",
+            dotenv.len()
+        );
     }
+    let env = MergedEnv { dotenv };
 
-    let exit_code = run(&cli, &current_dir).await?;
+    let exit_code = run(&cli, &current_dir, &env).await?;
     if exit_code != 0 {
         std::process::exit(exit_code);
     }
     Ok(())
 }
 
-fn get_storage_config() -> Option<gleon_core::storage::StorageConfig> {
-    let vars = std::env::vars().collect();
-    gleon_core::storage::StorageConfig::from_env_map(&vars)
+/// Merges .env file values with the OS process environment.
+/// Process env always wins — dotenv values are fallback defaults.
+struct MergedEnv {
+    dotenv: std::collections::HashMap<String, String>,
+}
+
+impl gleon_core::git::EnvProvider for MergedEnv {
+    fn get_var(&self, key: &str) -> Option<String> {
+        std::env::var(key)
+            .ok()
+            .or_else(|| self.dotenv.get(key).cloned())
+    }
+}
+
+fn get_storage_config(
+    env: &dyn gleon_core::git::EnvProvider,
+) -> Option<gleon_core::storage::StorageConfig> {
+    gleon_core::storage::StorageConfig::from_env(env)
 }
 
 mod commands;
 
-async fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<i32> {
+async fn run(
+    cli: &Cli,
+    current_dir: &std::path::Path,
+    env: &dyn gleon_core::git::EnvProvider,
+) -> anyhow::Result<i32> {
     match &cli.command {
         Commands::Init => {
-            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)
-                .map_err(|e| anyhow::anyhow!(e))?;
+            let ctx =
+                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
+                    .map_err(|e| anyhow::anyhow!(e))?;
             let res = gleon_core::ops::init_workspace(&ctx, &ctx.base_dir)
                 .map_err(|e| anyhow::anyhow!(e))?;
             info!("Initialized gleon workspace at {}", res.gleon_dir.display());
@@ -69,8 +88,9 @@ async fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<i32> {
             }
         }
         Commands::Status { json } => {
-            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)
-                .map_err(|e| anyhow::anyhow!(e))?;
+            let ctx =
+                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
+                    .map_err(|e| anyhow::anyhow!(e))?;
             let report = gleon_core::ops::check_status(&ctx, &ctx.base_dir)
                 .map_err(|e| anyhow::anyhow!(e))?;
             if *json {
@@ -80,8 +100,9 @@ async fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<i32> {
             }
         }
         Commands::Stage { paths } => {
-            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)
-                .map_err(|e| anyhow::anyhow!(e))?;
+            let ctx =
+                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
+                    .map_err(|e| anyhow::anyhow!(e))?;
             let filter = if paths.is_empty() {
                 None
             } else {
@@ -103,11 +124,12 @@ async fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<i32> {
             auto_pull: _,
             resolve,
         } => {
-            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)
-                .map_err(|e| anyhow::anyhow!(e))?;
+            let ctx =
+                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
+                    .map_err(|e| anyhow::anyhow!(e))?;
 
             if *resolve {
-                let storage_cfg = get_storage_config();
+                let storage_cfg = get_storage_config(env);
                 return commands::resolve::run_resolve(&ctx, None, false, storage_cfg).await;
             }
 
@@ -125,14 +147,16 @@ async fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<i32> {
             }
         }
         Commands::LintManifests { platform } => {
-            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)
-                .map_err(|e| anyhow::anyhow!(e))?;
+            let ctx =
+                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
+                    .map_err(|e| anyhow::anyhow!(e))?;
             return commands::lint::run_lint(&ctx, platform.as_deref());
         }
         Commands::Resolve { test_path, fetch } => {
-            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)
-                .map_err(|e| anyhow::anyhow!(e))?;
-            let storage_cfg = get_storage_config();
+            let ctx =
+                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            let storage_cfg = get_storage_config(env);
             return commands::resolve::run_resolve(&ctx, test_path.as_deref(), *fetch, storage_cfg)
                 .await;
         }
@@ -143,9 +167,10 @@ async fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<i32> {
             all_platforms,
             platform,
         } => {
-            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)
-                .map_err(|e| anyhow::anyhow!(e))?;
-            let storage_cfg = get_storage_config();
+            let ctx =
+                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            let storage_cfg = get_storage_config(env);
             return commands::pull::run_pull(
                 &ctx,
                 storage_cfg.as_ref(),
@@ -158,9 +183,10 @@ async fn run(cli: &Cli, current_dir: &std::path::Path) -> anyhow::Result<i32> {
             all_platforms,
             platform,
         } => {
-            let ctx = gleon_core::context::ResolvedContext::from_cli(cli, current_dir)
-                .map_err(|e| anyhow::anyhow!(e))?;
-            let storage_cfg = get_storage_config();
+            let ctx =
+                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            let storage_cfg = get_storage_config(env);
             return commands::push::run_push(
                 &ctx,
                 storage_cfg.as_ref(),

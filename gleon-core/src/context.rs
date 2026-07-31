@@ -66,6 +66,15 @@ impl ResolvedContext {
         Self::from_cli_impl(cli, base_dir, &crate::git::OsEnv, &env)
     }
 
+    pub fn from_cli_with_env(
+        cli: &Cli,
+        base_dir: &std::path::Path,
+        env: &dyn crate::git::EnvProvider,
+    ) -> Result<Self, ContextError> {
+        let platform_env = PlatformEnv::from_provider(env);
+        Self::from_cli_impl(cli, base_dir, env, &platform_env)
+    }
+
     pub fn from_cli_impl(
         cli: &Cli,
         base_dir: &std::path::Path,

@@ -295,13 +295,19 @@ pub struct PlatformEnv {
 }
 
 impl PlatformEnv {
+    /// Production constructor — reads from the OS process environment.
     pub fn from_env() -> Self {
+        Self::from_provider(&crate::git::OsEnv)
+    }
+
+    /// Injectable constructor — reads from any EnvProvider.
+    pub fn from_provider(env: &dyn crate::git::EnvProvider) -> Self {
         Self {
-            platform: std::env::var("GLEON_PLATFORM").ok(),
-            fallback_platform: std::env::var("GLEON_FALLBACK_PLATFORM").ok(),
-            os: std::env::var("GLEON_OS").ok(),
-            arch: std::env::var("GLEON_ARCH").ok(),
-            renderer: std::env::var("GLEON_RENDERER").ok(),
+            platform: env.get_var("GLEON_PLATFORM"),
+            fallback_platform: env.get_var("GLEON_FALLBACK_PLATFORM"),
+            os: env.get_var("GLEON_OS"),
+            arch: env.get_var("GLEON_ARCH"),
+            renderer: env.get_var("GLEON_RENDERER"),
         }
     }
 }

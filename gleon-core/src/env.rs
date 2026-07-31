@@ -33,8 +33,15 @@ pub fn load_dotenv(base_dir: &Path) -> HashMap<String, String> {
     match dotenvy::from_path_iter(&env_shared) {
         Ok(iter) => {
             debug!("Parsed environment file: {}", env_shared.display());
-            for (k, v) in iter.flatten() {
-                map.insert(k, v);
+            for result in iter {
+                match result {
+                    Ok((k, v)) => {
+                        map.insert(k, v);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to parse line in {}: {}", env_shared.display(), e)
+                    }
+                }
             }
         }
         Err(e) => {
@@ -46,8 +53,15 @@ pub fn load_dotenv(base_dir: &Path) -> HashMap<String, String> {
     match dotenvy::from_path_iter(&env_local) {
         Ok(iter) => {
             debug!("Parsed environment file: {}", env_local.display());
-            for (k, v) in iter.flatten() {
-                map.insert(k, v);
+            for result in iter {
+                match result {
+                    Ok((k, v)) => {
+                        map.insert(k, v);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to parse line in {}: {}", env_local.display(), e)
+                    }
+                }
             }
         }
         Err(e) => {
@@ -95,14 +109,20 @@ mod tests {
             Some("from_local")
         );
 
-        // 2. Corrupt .env and .env.local (invalid syntax)
-        std::fs::write(gleon_dir.join(".env"), "INVALID_LINE_WITHOUT_EQUALS\n").unwrap();
+        // 2. Mixed valid and corrupt .env and .env.local (invalid syntax)
         std::fs::write(
-            gleon_dir.join(".env.local"),
-            "INVALID_LINE_WITHOUT_EQUALS\n",
+            gleon_dir.join(".env"),
+            "INVALID_LINE_WITHOUT_EQUALS\nVALID_MIXED=1\n",
         )
         .unwrap();
-        let corrupt_map = load_dotenv(temp.path());
-        assert!(corrupt_map.is_empty());
+        std::fs::write(
+            gleon_dir.join(".env.local"),
+            "INVALID_LINE_WITHOUT_EQUALS\nVALID_LOCAL=1\n",
+        )
+        .unwrap();
+
+        let env_map = load_dotenv(temp.path());
+        assert_eq!(env_map.get("VALID_MIXED").map(String::as_str), Some("1"));
+        assert_eq!(env_map.get("VALID_LOCAL").map(String::as_str), Some("1"));
     }
 }

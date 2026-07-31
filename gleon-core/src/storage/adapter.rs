@@ -54,26 +54,26 @@ impl StorageConfig {
         }
     }
 
-    /// Constructs a `StorageConfig` from a map of environment variables.
+    /// Constructs a `StorageConfig` from an environment provider.
     ///
     /// `GLEON_*` prefixed variables override standard `AWS_*` / `R2_*` variables.
     /// Returns `None` if `GLEON_STORAGE_URL` is missing or empty.
     #[must_use]
-    pub fn from_env_map(vars: &std::collections::HashMap<String, String>) -> Option<Self> {
-        let url = vars.get("GLEON_STORAGE_URL")?.trim();
+    pub fn from_env(env: &dyn crate::git::EnvProvider) -> Option<Self> {
+        let url_val = env.get_var("GLEON_STORAGE_URL")?;
+        let url = url_val.trim();
         if url.is_empty() {
             return None;
         }
 
         let get_var = |gleon_key: &str, std_key: &str| -> Option<String> {
-            vars.get(gleon_key)
-                .cloned()
+            env.get_var(gleon_key)
                 .filter(|v| !v.trim().is_empty())
-                .or_else(|| vars.get(std_key).cloned().filter(|v| !v.trim().is_empty()))
+                .or_else(|| env.get_var(std_key).filter(|v| !v.trim().is_empty()))
         };
 
-        let concurrency = vars
-            .get("GLEON_CONCURRENCY")
+        let concurrency = env
+            .get_var("GLEON_CONCURRENCY")
             .and_then(|v| v.parse().ok())
             .unwrap_or(8);
 
@@ -296,14 +296,21 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    struct MapEnv(HashMap<String, String>);
+    impl crate::git::EnvProvider for MapEnv {
+        fn get_var(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+    }
+
     #[test]
     fn test_storage_config_from_env_map_missing_or_empty_url() {
         let vars = HashMap::new();
-        assert!(StorageConfig::from_env_map(&vars).is_none());
+        assert!(StorageConfig::from_env(&MapEnv(vars)).is_none());
 
         let mut vars_empty = HashMap::new();
         vars_empty.insert("GLEON_STORAGE_URL".to_string(), "  ".to_string());
-        assert!(StorageConfig::from_env_map(&vars_empty).is_none());
+        assert!(StorageConfig::from_env(&MapEnv(vars_empty)).is_none());
     }
 
     #[test]
@@ -324,7 +331,7 @@ mod tests {
         );
         vars.insert("R2_ACCOUNT_ID".to_string(), "r2_acc".to_string());
 
-        let cfg = StorageConfig::from_env_map(&vars).unwrap();
+        let cfg = StorageConfig::from_env(&MapEnv(vars.clone())).unwrap();
         assert_eq!(cfg.url, "s3://my-bucket/gleon");
         assert_eq!(cfg.aws_access_key_id.as_deref(), Some("aws_key"));
         assert_eq!(cfg.aws_secret_access_key.as_deref(), Some("aws_sec"));
@@ -350,7 +357,7 @@ mod tests {
         vars.insert("GLEON_R2_ACCOUNT_ID".to_string(), "gleon_r2".to_string());
         vars.insert("GLEON_CONCURRENCY".to_string(), "16".to_string());
 
-        let cfg_override = StorageConfig::from_env_map(&vars).unwrap();
+        let cfg_override = StorageConfig::from_env(&MapEnv(vars)).unwrap();
         assert_eq!(cfg_override.aws_access_key_id.as_deref(), Some("gleon_key"));
         assert_eq!(
             cfg_override.aws_secret_access_key.as_deref(),

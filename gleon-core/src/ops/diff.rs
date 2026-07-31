@@ -304,10 +304,10 @@ mod tests {
         let mut ctx = ResolvedContext::default();
         ctx.platform.os = "../invalid".to_string(); // Invalid segment
 
-        let err = run_diff(&ctx, temp.path());
+        let err = run_diff(&ctx, temp.path()).unwrap_err();
         assert!(matches!(
             err,
-            Err(DiffOpError::Context(ContextError::Platform(_)))
+            DiffOpError::Context(ContextError::Platform(_))
         ));
     }
 
@@ -354,15 +354,15 @@ mod tests {
         std::fs::create_dir_all(&manifests_dir).unwrap();
         let hash = crate::manifest::ImageHash::new(
             "sha256",
-            "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff",
+            "1111111111111111111111111111111111111111111111111111111111111111",
         )
         .unwrap();
         let phash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();
         let manifest = crate::manifest::SingleTestManifest::new(hash, phash, 100, 100).unwrap();
-        manifest.save(manifests_dir.join("mytest.json")).unwrap();
+        manifest.save(manifests_dir.join("login.json")).unwrap();
 
         // Create actual screenshot
-        let screenshots_dir = temp.path().join("mytest");
+        let screenshots_dir = temp.path().join("login");
         std::fs::create_dir_all(&screenshots_dir).unwrap();
         let img = image::RgbaImage::new(10, 10);
         img.save(screenshots_dir.join("spec.png")).unwrap();
@@ -371,7 +371,7 @@ mod tests {
         let blob_dir = gleon_dir
             .join("blobs")
             .join("sha256")
-            .join("11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff");
+            .join("1111111111111111111111111111111111111111111111111111111111111111");
         std::fs::create_dir_all(&blob_dir).unwrap();
 
         let res = run_diff(&ctx, temp.path()).unwrap();
