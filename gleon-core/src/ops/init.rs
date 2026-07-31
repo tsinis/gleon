@@ -80,12 +80,18 @@ pub fn init_workspace(
     }
 
     if !to_append.is_empty() {
+        let prefix = if !existing_content.is_empty() && !existing_content.ends_with('\n') {
+            "\n"
+        } else {
+            ""
+        };
+        let full_append = format!("{prefix}{to_append}");
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&gitignore_path)?;
-        file.write_all(to_append.as_bytes())?;
+        file.write_all(full_append.as_bytes())?;
     }
 
     // Scaffold .gleon/.env.template if it does not exist

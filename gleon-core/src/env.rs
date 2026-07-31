@@ -74,10 +74,24 @@ mod tests {
         let gleon_dir = temp.path().join(".gleon");
         std::fs::create_dir_all(&gleon_dir).unwrap();
 
-        // 1. Valid .env and .env.local
-        std::fs::write(gleon_dir.join(".env"), "TEST_VAR_ENV=1\n").unwrap();
-        std::fs::write(gleon_dir.join(".env.local"), "TEST_VAR_LOCAL=1\n").unwrap();
+        // 1. Valid .env and .env.local with shared variable to test precedence
+        std::fs::write(
+            gleon_dir.join(".env"),
+            "TEST_VAR_ENV=1\nTEST_SHARED=from_env\n",
+        )
+        .unwrap();
+        std::fs::write(
+            gleon_dir.join(".env.local"),
+            "TEST_VAR_LOCAL=1\nTEST_SHARED=from_local\n",
+        )
+        .unwrap();
         assert_eq!(load_dotenv(temp.path()), 2);
+        assert_eq!(std::env::var("TEST_SHARED").as_deref(), Ok("from_local"));
+        unsafe {
+            std::env::remove_var("TEST_SHARED");
+            std::env::remove_var("TEST_VAR_ENV");
+            std::env::remove_var("TEST_VAR_LOCAL");
+        }
 
         // 2. Corrupt .env and .env.local (invalid syntax to hit error branches)
         std::fs::write(gleon_dir.join(".env"), "INVALID_LINE_WITHOUT_EQUALS\n").unwrap();

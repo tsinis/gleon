@@ -144,7 +144,7 @@ pub async fn pull_blobs(
             let hash_value = entry.hash.value();
             if referenced_hashes.insert(hash_value.to_string()) {
                 let blob_path = blobs_dir.join(hash_value);
-                if blob_path.exists() {
+                if blob_path.is_file() {
                     skipped_blobs += 1;
                 } else {
                     missing_blobs.push((hash_value.to_string(), target_platform_key.clone()));

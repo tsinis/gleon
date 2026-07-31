@@ -117,13 +117,14 @@ pub fn check_status(
     };
 
     let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
-    let mut workspace_index = WorkspaceIndex::load(&manifests_dir)?;
+    let mut workspace_index =
+        WorkspaceIndex::load(&manifests_dir).map_err(StatusError::Manifest)?;
 
     if workspace_index.is_empty()
         && let Some(fallback_key) = context.fallback_platform_key.as_deref()
     {
         let fallback_dir = gleon_dir.join("manifests").join(fallback_key);
-        let fb_index = WorkspaceIndex::load(&fallback_dir)?;
+        let fb_index = WorkspaceIndex::load(&fallback_dir).map_err(StatusError::Manifest)?;
         if !fb_index.is_empty() {
             tracing::warn!(
                 "No manifests found for platform '{}'. Falling back to manifests from platform '{}'.",
