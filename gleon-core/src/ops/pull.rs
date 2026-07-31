@@ -206,7 +206,7 @@ pub async fn pull_blobs(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use crate::platform::PlatformError;
@@ -271,5 +271,52 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.total_manifest_blobs, 0);
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_pull_fallback_platform_and_duplicate_hashes() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let ctx = ResolvedContext {
+            fallback_platform_key: Some("fallback-platform".to_string()),
+            ..Default::default()
+        };
+
+        let cfg = StorageConfig::new("memory://");
+        let hash = crate::manifest::ImageHash::new(
+            "sha256",
+            "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff",
+        )
+        .unwrap();
+        let phash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();
+
+        // 1. Create manifests in fallback-platform directory
+        let fallback_manifests_dir = gleon_dir.join("manifests").join("fallback-platform");
+        std::fs::create_dir_all(&fallback_manifests_dir).unwrap();
+
+        // Write two manifests with identical hash to test deduplication (`referenced_hashes.insert(...) == false`)
+        let m1 =
+            crate::manifest::SingleTestManifest::new(hash.clone(), phash.clone(), 10, 10).unwrap();
+        let m2 = crate::manifest::SingleTestManifest::new(hash, phash, 10, 10).unwrap();
+        m1.save(fallback_manifests_dir.join("test1.json")).unwrap();
+        m2.save(fallback_manifests_dir.join("test2.json")).unwrap();
+
+        // Pre-create the blob file locally so it counts as skipped
+        let blob_path = gleon_dir
+            .join("blobs")
+            .join("sha256")
+            .join("11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff");
+        std::fs::create_dir_all(blob_path.parent().unwrap()).unwrap();
+        std::fs::write(&blob_path, "blob content").unwrap();
+
+        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, None)
+            .await
+            .unwrap();
+
+        assert_eq!(res.total_manifest_blobs, 1);
+        assert_eq!(res.skipped_blobs, 1);
     }
 }

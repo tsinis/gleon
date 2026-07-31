@@ -1,3 +1,5 @@
+#![cfg(not(miri))]
+
 use gleon_core::git::GitResolver;
 use std::env;
 use std::path::PathBuf;

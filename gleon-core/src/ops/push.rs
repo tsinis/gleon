@@ -234,7 +234,7 @@ pub async fn push_blobs(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use crate::platform::PlatformError;

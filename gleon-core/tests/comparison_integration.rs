@@ -1,3 +1,5 @@
+#![cfg(not(miri))]
+
 use gleon_core::config::{DiffConfig, Mode};
 use gleon_core::engine::{ComparisonResult, MismatchDetail, compare_images};
 use image::{Rgba, RgbaImage};

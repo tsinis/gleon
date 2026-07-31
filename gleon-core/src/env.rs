@@ -1,60 +1,61 @@
 //! Environment variable file loading helpers.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use tracing::debug;
 
-/// Loads `.gleon/.env.local` and `.gleon/.env` from `base_dir`.
-///
-/// Precedence order (highest to lowest):
-/// 1. Pre-existing system environment variables.
-/// 2. `.gleon/.env.local` (local developer secrets).
-/// 3. `.gleon/.env` (shared configuration).
-///
-/// Returns the total number of environment files successfully loaded.
-pub fn load_dotenv(base_dir: &Path) -> usize {
-    let root_dir = crate::context::find_config_and_root(base_dir)
-        .map(|(_, r)| r)
-        .unwrap_or_else(|| base_dir.to_path_buf());
+fn find_gleon_dir(base_dir: &Path) -> PathBuf {
+    let mut current = base_dir.to_path_buf();
+    loop {
+        let candidate = current.join(".gleon");
+        if candidate.is_dir() {
+            return candidate;
+        }
+        if !current.pop() {
+            break;
+        }
+    }
+    base_dir.join(".gleon")
+}
 
-    let gleon_dir = root_dir.join(".gleon");
-    let env_local = gleon_dir.join(".env.local");
+/// Parses `.gleon/.env` and `.gleon/.env.local` into a key-value map.
+///
+/// Precedence order: `.env.local` keys override `.env` keys.
+/// Does NOT mutate the process-global environment.
+pub fn load_dotenv(base_dir: &Path) -> HashMap<String, String> {
+    let gleon_dir = find_gleon_dir(base_dir);
     let env_shared = gleon_dir.join(".env");
+    let env_local = gleon_dir.join(".env.local");
 
-    let mut count = 0;
+    let mut map = HashMap::new();
 
-    // Load .env.local first (overrides .env)
-    match dotenvy::from_path(&env_local) {
-        Ok(()) => {
-            debug!("Loaded environment file: {}", env_local.display());
-            count += 1;
+    // 1. Read shared .env first
+    match dotenvy::from_path_iter(&env_shared) {
+        Ok(iter) => {
+            debug!("Parsed environment file: {}", env_shared.display());
+            for (k, v) in iter.flatten() {
+                map.insert(k, v);
+            }
         }
-        Err(dotenvy::Error::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
-            debug!(
-                "Failed to load environment file {}: {}",
-                env_local.display(),
-                e
-            );
+            debug!("Skipping environment file {}: {}", env_shared.display(), e);
         }
     }
 
-    // Load .env second (provides defaults for unset variables)
-    match dotenvy::from_path(&env_shared) {
-        Ok(()) => {
-            debug!("Loaded environment file: {}", env_shared.display());
-            count += 1;
+    // 2. Read local .env.local second (overwriting shared keys)
+    match dotenvy::from_path_iter(&env_local) {
+        Ok(iter) => {
+            debug!("Parsed environment file: {}", env_local.display());
+            for (k, v) in iter.flatten() {
+                map.insert(k, v);
+            }
         }
-        Err(dotenvy::Error::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
-            debug!(
-                "Failed to load environment file {}: {}",
-                env_shared.display(),
-                e
-            );
+            debug!("Skipping environment file {}: {}", env_local.display(), e);
         }
     }
 
-    count
+    map
 }
 
 #[cfg(all(test, not(miri)))]
@@ -65,7 +66,7 @@ mod tests {
     #[test]
     fn test_load_dotenv_missing_dir() {
         let temp = tempdir().unwrap();
-        assert_eq!(load_dotenv(temp.path()), 0);
+        assert!(load_dotenv(temp.path()).is_empty());
     }
 
     #[test]
@@ -85,21 +86,23 @@ mod tests {
             "TEST_VAR_LOCAL=1\nTEST_SHARED=from_local\n",
         )
         .unwrap();
-        assert_eq!(load_dotenv(temp.path()), 2);
-        assert_eq!(std::env::var("TEST_SHARED").as_deref(), Ok("from_local"));
-        unsafe {
-            std::env::remove_var("TEST_SHARED");
-            std::env::remove_var("TEST_VAR_ENV");
-            std::env::remove_var("TEST_VAR_LOCAL");
-        }
 
-        // 2. Corrupt .env and .env.local (invalid syntax to hit error branches)
+        let env_map = load_dotenv(temp.path());
+        assert_eq!(env_map.get("TEST_VAR_ENV").map(String::as_str), Some("1"));
+        assert_eq!(env_map.get("TEST_VAR_LOCAL").map(String::as_str), Some("1"));
+        assert_eq!(
+            env_map.get("TEST_SHARED").map(String::as_str),
+            Some("from_local")
+        );
+
+        // 2. Corrupt .env and .env.local (invalid syntax)
         std::fs::write(gleon_dir.join(".env"), "INVALID_LINE_WITHOUT_EQUALS\n").unwrap();
         std::fs::write(
             gleon_dir.join(".env.local"),
             "INVALID_LINE_WITHOUT_EQUALS\n",
         )
         .unwrap();
-        assert_eq!(load_dotenv(temp.path()), 0);
+        let corrupt_map = load_dotenv(temp.path());
+        assert!(corrupt_map.is_empty());
     }
 }

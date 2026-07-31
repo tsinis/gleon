@@ -29,9 +29,14 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to determine current directory: {}", e))?;
 
     // Load environment configuration from .gleon/.env and .gleon/.env.local
-    let env_count = gleon_core::env::load_dotenv(&current_dir);
-    if env_count > 0 {
-        tracing::debug!("Loaded {} environment file(s)", env_count);
+    let env_vars = gleon_core::env::load_dotenv(&current_dir);
+    if !env_vars.is_empty() {
+        tracing::debug!("Loaded {} environment variable(s)", env_vars.len());
+        for (k, v) in env_vars {
+            unsafe {
+                std::env::set_var(k, v);
+            }
+        }
     }
 
     let exit_code = run(&cli, &current_dir).await?;

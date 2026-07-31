@@ -265,7 +265,7 @@ pub fn run_diff(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
 
@@ -309,5 +309,73 @@ mod tests {
             err,
             Err(DiffOpError::Context(ContextError::Platform(_)))
         ));
+    }
+
+    #[test]
+    fn test_diff_manifest_load_error_and_scanner_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let ctx = ResolvedContext::default();
+        let plat_key = ctx.platform.to_key().unwrap();
+
+        // 1. Corrupt manifest file in manifests_dir
+        let manifests_dir = gleon_dir.join("manifests").join(&plat_key);
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+        std::fs::write(manifests_dir.join("test.json"), "invalid json").unwrap();
+
+        let res = run_diff(&ctx, temp.path());
+        assert!(matches!(res, Err(DiffOpError::Manifest(_))));
+
+        // Clean up corrupt manifest
+        std::fs::remove_file(manifests_dir.join("test.json")).unwrap();
+
+        // 2. Invalid screenshot directory name (exclamation mark) to trigger Scanner error
+        let bad_dir = temp.path().join("invalid!name");
+        std::fs::create_dir_all(&bad_dir).unwrap();
+        std::fs::write(bad_dir.join("test.png"), "fake png").unwrap();
+
+        let res2 = run_diff(&ctx, temp.path());
+        assert!(matches!(res2, Err(DiffOpError::Scanner(_))));
+    }
+
+    #[test]
+    fn test_diff_blob_read_generic_io_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let ctx = ResolvedContext::default();
+        let plat_key = ctx.platform.to_key().unwrap();
+
+        // Create a valid manifest entry
+        let manifests_dir = gleon_dir.join("manifests").join(&plat_key);
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+        let hash = crate::manifest::ImageHash::new(
+            "sha256",
+            "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff",
+        )
+        .unwrap();
+        let phash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();
+        let manifest = crate::manifest::SingleTestManifest::new(hash, phash, 100, 100).unwrap();
+        manifest.save(manifests_dir.join("mytest.json")).unwrap();
+
+        // Create actual screenshot
+        let screenshots_dir = temp.path().join("mytest");
+        std::fs::create_dir_all(&screenshots_dir).unwrap();
+        let img = image::RgbaImage::new(10, 10);
+        img.save(screenshots_dir.join("spec.png")).unwrap();
+
+        // Create blob path as a DIRECTORY so std::fs::read returns EISDIR (generic IO error, not NotFound)
+        let blob_dir = gleon_dir
+            .join("blobs")
+            .join("sha256")
+            .join("11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff");
+        std::fs::create_dir_all(&blob_dir).unwrap();
+
+        let res = run_diff(&ctx, temp.path()).unwrap();
+        assert_eq!(res.failed_tests, 1);
+        assert!(!res.passed);
     }
 }

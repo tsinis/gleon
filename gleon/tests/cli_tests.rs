@@ -701,7 +701,9 @@ fn test_dotenv_loading_integration() -> Result<(), Box<dyn std::error::Error>> {
         .arg("diff")
         .assert()
         .success()
-        .stderr(predicates::str::contains("Loaded 2 environment file(s)"));
+        .stderr(predicates::str::contains(
+            "Loaded 2 environment variable(s)",
+        ));
 
     Ok(())
 }
