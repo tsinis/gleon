@@ -783,6 +783,7 @@ mod tests {
 
         // Verify fallback JS injection
         assert!(!html.contains("onerror="));
+        assert!(!html.contains("oninput="));
         assert!(html.contains("document.addEventListener('error'"));
         assert!(html.contains("document.addEventListener('input'"));
     }

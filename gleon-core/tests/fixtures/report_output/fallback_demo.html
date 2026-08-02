@@ -61,7 +61,7 @@
 
         .comparison-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
             gap: 1.5rem;
             padding: 1.5rem;
             align-items: start;
@@ -102,6 +102,7 @@
             background-color: var(--danger); /* Make it obvious it's the diff image */
             min-height: 200px;
         }
+    </style>
     <script>
         // Register image loading error capture listener before rendering
         document.addEventListener('error', function(e) {

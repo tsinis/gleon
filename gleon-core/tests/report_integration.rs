@@ -170,7 +170,7 @@ fn test_report_generation_with_real_images_and_durability() {
     assert!(md_path.exists());
 
     // 8. Verify fallback_demo.html fixture integrity
-    let fallback_demo_path = std::path::PathBuf::from("tests/fixtures/report_output/fallback_demo.html");
+    let fallback_demo_path = report_dir.join("fallback_demo.html");
     assert!(
         fallback_demo_path.exists(),
         "fallback_demo.html fixture must exist"
