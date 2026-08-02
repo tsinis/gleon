@@ -15,6 +15,24 @@ pub async fn run_resolve(
     fetch: bool,
     storage_config: Option<StorageConfig>,
 ) -> anyhow::Result<i32> {
+    run_resolve_with_tty(
+        ctx,
+        test_path_filter,
+        fetch,
+        storage_config,
+        std::io::stdin().is_terminal(),
+    )
+    .await
+}
+
+/// Helper for running resolution with an explicit terminal TTY status.
+pub async fn run_resolve_with_tty(
+    ctx: &ResolvedContext,
+    test_path_filter: Option<&str>,
+    fetch: bool,
+    storage_config: Option<StorageConfig>,
+    is_terminal: bool,
+) -> anyhow::Result<i32> {
     info!("Scanning for conflicted manifest files...");
 
     let mut conflicts = match scan_conflicts(&ctx.base_dir, None) {
@@ -53,7 +71,7 @@ pub async fn run_resolve(
         None
     };
 
-    if !std::io::stdin().is_terminal() {
+    if !is_terminal {
         error!("Terminal is non-interactive (not a TTY). Cannot prompt for resolution.");
         error!("Run 'gleon resolve' in an interactive terminal environment.");
         return Ok(1);
@@ -183,7 +201,9 @@ mod tests {
         let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
 
         // Missing manifest directory causes scan_conflicts to fail -> return Ok(1)
-        let res = run_resolve(&ctx, None, false, None).await.unwrap();
+        let res = run_resolve_with_tty(&ctx, None, false, None, false)
+            .await
+            .unwrap();
         assert_eq!(res, 1);
     }
 
@@ -205,31 +225,38 @@ mod tests {
         let ctx = ResolvedContext::from_cli(&cli, base_dir).unwrap();
 
         // 1. Filter out all test paths
-        let res_filtered = run_resolve(&ctx, Some("nonexistent_filter"), false, None)
-            .await
-            .unwrap();
+        let res_filtered =
+            run_resolve_with_tty(&ctx, Some("nonexistent_filter"), false, None, false)
+                .await
+                .unwrap();
         assert_eq!(res_filtered, 0);
 
         // 2. Matching filter in non-interactive mode
-        let res_matching = run_resolve(&ctx, Some("login"), false, None).await.unwrap();
+        let res_matching = run_resolve_with_tty(&ctx, Some("login"), false, None, false)
+            .await
+            .unwrap();
         assert_eq!(res_matching, 1);
 
         // 3. Fetch mode without storage config
-        let res_fetch_local = run_resolve(&ctx, Some("login"), true, None).await.unwrap();
+        let res_fetch_local = run_resolve_with_tty(&ctx, Some("login"), true, None, false)
+            .await
+            .unwrap();
         assert_eq!(res_fetch_local, 1);
 
         // 4. Fetch mode with invalid storage config
         let invalid_storage = StorageConfig::new("invalid_scheme://bucket".to_string());
-        let res_fetch_invalid = run_resolve(&ctx, Some("login"), true, Some(invalid_storage))
-            .await
-            .unwrap();
+        let res_fetch_invalid =
+            run_resolve_with_tty(&ctx, Some("login"), true, Some(invalid_storage), false)
+                .await
+                .unwrap();
         assert_eq!(res_fetch_invalid, 1);
 
         // 5. Fetch mode with valid memory storage config (hits Ok(a) => Some(a))
         let valid_storage = StorageConfig::new("memory://");
-        let res_fetch_valid = run_resolve(&ctx, Some("login"), true, Some(valid_storage))
-            .await
-            .unwrap();
+        let res_fetch_valid =
+            run_resolve_with_tty(&ctx, Some("login"), true, Some(valid_storage), false)
+                .await
+                .unwrap();
         assert_eq!(res_fetch_valid, 1);
     }
 
@@ -332,20 +359,26 @@ mod tests {
         let config = StorageConfig::new("memory://");
         let adapter = ObjectStoreAdapter::from_config(&config).unwrap();
 
+        let ours_hash = "1111111111111111111111111111111111111111111111111111111111111111";
         // Upload a dummy blob for ours hash into memory adapter so download_blob succeeds
-        adapter
-            .upload_blob(
-                "1111111111111111111111111111111111111111111111111111111111111111",
-                &login_path,
-            )
-            .await
-            .unwrap();
+        adapter.upload_blob(ours_hash, &login_path).await.unwrap();
 
         // This will attempt to download missing blob for ours and theirs
         let count = resolve_conflicts_with_selector(&ctx, conflicts, Some(&adapter), |_| Ok(0))
             .await
             .unwrap();
         assert_eq!(count, 1);
+
+        let ours_blob_path = ctx
+            .base_dir
+            .join(".gleon")
+            .join("blobs")
+            .join("sha256")
+            .join(ours_hash);
+        assert!(
+            ours_blob_path.exists(),
+            "Downloaded blob for ours hash must exist on local disk"
+        );
     }
 
     #[tokio::test]
