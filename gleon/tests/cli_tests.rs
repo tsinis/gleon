@@ -71,7 +71,7 @@ fn test_init_command() -> Result<(), Box<dyn std::error::Error>> {
         .stderr(predicates::str::contains("Initialized gleon workspace"));
 
     assert!(dir.path().join(".gleon").is_dir());
-    assert!(dir.path().join("gleon.yaml").is_file());
+    assert!(dir.path().join(".gleon").join("gleon.yaml").is_file());
     Ok(())
 }
 
@@ -399,7 +399,8 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::write(dir.path().join("gleon.yaml"), config_yaml)?;
+    std::fs::create_dir_all(dir.path().join(".gleon")).unwrap();
+    std::fs::write(dir.path().join(".gleon").join("gleon.yaml"), config_yaml)?;
 
     // 3. gleon stage
     let mut cmd_stage = Command::cargo_bin("gleon")?;
@@ -457,7 +458,8 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::write(dir.path().join("gleon.yaml"), config_yaml)?;
+    std::fs::create_dir_all(dir.path().join(".gleon")).unwrap();
+    std::fs::write(dir.path().join(".gleon").join("gleon.yaml"), config_yaml)?;
 
     // First stage
     let mut cmd_stage1 = Command::cargo_bin("gleon")?;
@@ -568,7 +570,8 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::write(dir.path().join("gleon.yaml"), config_yaml)?;
+    std::fs::create_dir_all(dir.path().join(".gleon")).unwrap();
+    std::fs::write(dir.path().join(".gleon").join("gleon.yaml"), config_yaml)?;
 
     let mut cmd_stage = Command::cargo_bin("gleon")?;
     cmd_stage

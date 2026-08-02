@@ -780,6 +780,11 @@ mod tests {
             .expect("Expected HTML output");
         assert!(html.contains("..&#x2f;actual&#x2f;actual.png"));
         assert!(html.contains("Visual mismatch (5 pixels)"));
+
+        // Verify fallback JS injection
+        assert!(!html.contains("onerror="));
+        assert!(html.contains("document.addEventListener('error'"));
+        assert!(html.contains("document.addEventListener('input'"));
     }
 
     #[test]

@@ -168,4 +168,15 @@ fn test_report_generation_with_real_images_and_durability() {
     let md_path = report_dir.join("report.md");
     fs::write(&md_path, &md).expect("Failed to write MD report");
     assert!(md_path.exists());
+
+    // 8. Verify fallback_demo.html fixture integrity
+    let fallback_demo_path = std::path::PathBuf::from("tests/fixtures/report_output/fallback_demo.html");
+    assert!(
+        fallback_demo_path.exists(),
+        "fallback_demo.html fixture must exist"
+    );
+    let fallback_content =
+        fs::read_to_string(&fallback_demo_path).expect("Failed to read fallback_demo.html fixture");
+    assert!(fallback_content.contains("document.addEventListener('error'"));
+    assert!(!fallback_content.contains("onerror="));
 }

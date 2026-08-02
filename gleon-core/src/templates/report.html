@@ -81,7 +81,7 @@
 
         .comparison-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
             gap: 1.5rem;
             padding: 1.5rem;
             align-items: start;
@@ -203,13 +203,32 @@
             background: rgba(239, 68, 68, 0.05);
             border-radius: 0.5rem;
         }
-
-        @media (max-width: 1024px), (orientation: portrait) {
-            .comparison-grid {
-                grid-template-columns: 1fr;
-            }
-        }
     </style>
+    <script>
+        // Register image loading error capture listener before rendering
+        document.addEventListener('error', function(e) {
+            if (e.target && e.target.tagName && e.target.tagName.toLowerCase() === 'img') {
+                const container = e.target.closest('.image-container');
+                if (container) {
+                    container.style.display = 'none';
+                }
+            }
+        }, true);
+
+        // CSP-compliant event delegation for range input sliders
+        document.addEventListener('input', function(e) {
+            if (e.target && e.target.classList && e.target.classList.contains('slider-input')) {
+                const index = e.target.dataset.index;
+                const value = e.target.value;
+                const actualImg = document.getElementById('actual-img-' + index);
+                const handle = document.getElementById('slider-handle-' + index);
+                if (actualImg && handle) {
+                    actualImg.style.clipPath = 'inset(0 ' + (100 - value) + '% 0 0)';
+                    handle.style.left = value + '%';
+                }
+            }
+        });
+    </script>
 </head>
 <body>
     <div class="header">
@@ -230,7 +249,7 @@
             
             {% if failure.type == "Mismatch" %}
             <div class="comparison-grid">
-                <div class="image-container">
+                <div class="image-container" id="slider-container-{{ loop.index }}">
                     <div class="image-title">Actual vs Baseline Slider</div>
                     <div class="slider-wrapper">
                         <!-- Baseline goes below -->
@@ -240,7 +259,7 @@
                         <!-- Handle visual -->
                         <div class="slider-handle" id="slider-handle-{{ loop.index }}"></div>
                         <!-- Invisible slider -->
-                        <input type="range" min="0" max="100" value="50" class="slider-input" aria-label="Actual vs baseline comparison slider for {{ failure.name }} / {{ failure.image }}" oninput="updateSlider({{ loop.index }}, this.value)">
+                        <input type="range" min="0" max="100" value="50" class="slider-input" data-index="{{ loop.index }}" aria-label="Actual vs baseline comparison slider for {{ failure.name }} / {{ failure.image }}">
                     </div>
                 </div>
                 <div class="image-container">
@@ -250,11 +269,11 @@
             </div>
             {% elif failure.type == "DimensionMismatch" %}
             <div class="comparison-grid">
-                <div class="image-container">
+                <div class="image-container" id="dim-actual-container-{{ loop.index }}">
                     <div class="image-title">Actual ({{ failure.actual_size }})</div>
                     <img class="img-static" src="{{ failure.actual_path | escape }}" alt="Actual" loading="lazy">
                 </div>
-                <div class="image-container">
+                <div class="image-container" id="dim-baseline-container-{{ loop.index }}">
                     <div class="image-title">Baseline ({{ failure.baseline_size }})</div>
                     <img class="img-static" src="{{ failure.baseline_path | escape }}" alt="Baseline" loading="lazy">
                 </div>
@@ -267,19 +286,5 @@
         </div>
         {% endfor %}
     </div>
-
-    <script>
-        function updateSlider(index, value) {
-            const actualImg = document.getElementById('actual-img-' + index);
-            const handle = document.getElementById('slider-handle-' + index);
-            
-            // Value is 0 to 100 percentage.
-            // Clip the actual image (which is on top). 
-            // inset(top right bottom left) -> we clip from the right.
-            const clipRight = 100 - value;
-            actualImg.style.clipPath = `inset(0 ${clipRight}% 0 0)`;
-            handle.style.left = `${value}%`;
-        }
-    </script>
 </body>
 </html>

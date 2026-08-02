@@ -81,7 +81,7 @@
 
         .comparison-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
             gap: 1.5rem;
             padding: 1.5rem;
             align-items: start;
@@ -203,13 +203,32 @@
             background: rgba(239, 68, 68, 0.05);
             border-radius: 0.5rem;
         }
-
-        @media (max-width: 1024px), (orientation: portrait) {
-            .comparison-grid {
-                grid-template-columns: 1fr;
-            }
-        }
     </style>
+    <script>
+        // Register image loading error capture listener before rendering
+        document.addEventListener('error', function(e) {
+            if (e.target && e.target.tagName && e.target.tagName.toLowerCase() === 'img') {
+                const container = e.target.closest('.image-container');
+                if (container) {
+                    container.style.display = 'none';
+                }
+            }
+        }, true);
+
+        // CSP-compliant event delegation for range input sliders
+        document.addEventListener('input', function(e) {
+            if (e.target && e.target.classList && e.target.classList.contains('slider-input')) {
+                const index = e.target.dataset.index;
+                const value = e.target.value;
+                const actualImg = document.getElementById('actual-img-' + index);
+                const handle = document.getElementById('slider-handle-' + index);
+                if (actualImg && handle) {
+                    actualImg.style.clipPath = 'inset(0 ' + (100 - value) + '% 0 0)';
+                    handle.style.left = value + '%';
+                }
+            }
+        });
+    </script>
 </head>
 <body>
     <div class="header">
@@ -230,7 +249,7 @@
             
             
             <div class="comparison-grid">
-                <div class="image-container">
+                <div class="image-container" id="slider-container-1">
                     <div class="image-title">Actual vs Baseline Slider</div>
                     <div class="slider-wrapper">
                         <!-- Baseline goes below -->
@@ -240,7 +259,7 @@
                         <!-- Handle visual -->
                         <div class="slider-handle" id="slider-handle-1"></div>
                         <!-- Invisible slider -->
-                        <input type="range" min="0" max="100" value="50" class="slider-input" aria-label="Actual vs baseline comparison slider for billing_dashboard_1 / overview_metrics.png" oninput="updateSlider(1, this.value)">
+                        <input type="range" min="0" max="100" value="50" class="slider-input" data-index="1" aria-label="Actual vs baseline comparison slider for billing_dashboard_1 / overview_metrics.png">
                     </div>
                 </div>
                 <div class="image-container">
@@ -259,7 +278,7 @@
             
             
             <div class="comparison-grid">
-                <div class="image-container">
+                <div class="image-container" id="slider-container-2">
                     <div class="image-title">Actual vs Baseline Slider</div>
                     <div class="slider-wrapper">
                         <!-- Baseline goes below -->
@@ -269,7 +288,7 @@
                         <!-- Handle visual -->
                         <div class="slider-handle" id="slider-handle-2"></div>
                         <!-- Invisible slider -->
-                        <input type="range" min="0" max="100" value="50" class="slider-input" aria-label="Actual vs baseline comparison slider for billing_dashboard_2 / revenue_performance.png" oninput="updateSlider(2, this.value)">
+                        <input type="range" min="0" max="100" value="50" class="slider-input" data-index="2" aria-label="Actual vs baseline comparison slider for billing_dashboard_2 / revenue_performance.png">
                     </div>
                 </div>
                 <div class="image-container">
@@ -288,7 +307,7 @@
             
             
             <div class="comparison-grid">
-                <div class="image-container">
+                <div class="image-container" id="slider-container-3">
                     <div class="image-title">Actual vs Baseline Slider</div>
                     <div class="slider-wrapper">
                         <!-- Baseline goes below -->
@@ -298,7 +317,7 @@
                         <!-- Handle visual -->
                         <div class="slider-handle" id="slider-handle-3"></div>
                         <!-- Invisible slider -->
-                        <input type="range" min="0" max="100" value="50" class="slider-input" aria-label="Actual vs baseline comparison slider for billing_dashboard_3 / security_alert_banner.png" oninput="updateSlider(3, this.value)">
+                        <input type="range" min="0" max="100" value="50" class="slider-input" data-index="3" aria-label="Actual vs baseline comparison slider for billing_dashboard_3 / security_alert_banner.png">
                     </div>
                 </div>
                 <div class="image-container">
@@ -317,11 +336,11 @@
             
             
             <div class="comparison-grid">
-                <div class="image-container">
+                <div class="image-container" id="dim-actual-container-4">
                     <div class="image-title">Actual (1920x1200)</div>
                     <img class="img-static" src="..&#x2f;dashboard_actual.png" alt="Actual" loading="lazy">
                 </div>
-                <div class="image-container">
+                <div class="image-container" id="dim-baseline-container-4">
                     <div class="image-title">Baseline (1920x1080)</div>
                     <img class="img-static" src="..&#x2f;dashboard_baseline.png" alt="Baseline" loading="lazy">
                 </div>
@@ -352,19 +371,5 @@
         </div>
         
     </div>
-
-    <script>
-        function updateSlider(index, value) {
-            const actualImg = document.getElementById('actual-img-' + index);
-            const handle = document.getElementById('slider-handle-' + index);
-            
-            // Value is 0 to 100 percentage.
-            // Clip the actual image (which is on top). 
-            // inset(top right bottom left) -> we clip from the right.
-            const clipRight = 100 - value;
-            actualImg.style.clipPath = `inset(0 ${clipRight}% 0 0)`;
-            handle.style.left = `${value}%`;
-        }
-    </script>
 </body>
 </html>

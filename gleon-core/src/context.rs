@@ -20,7 +20,7 @@ pub fn find_config_and_root(
 ) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     let mut current = start_dir.to_path_buf();
     loop {
-        let candidate = current.join("gleon.yaml");
+        let candidate = current.join(".gleon").join("gleon.yaml");
         if candidate.is_file() {
             return Some((candidate, current));
         }
@@ -246,7 +246,9 @@ mod tests {
     fn test_from_cli_no_config_with_default_file() {
         let dir = tempdir().unwrap();
         create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
-        let default_path = dir.path().join("gleon.yaml");
+        let gleon_dir = dir.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+        let default_path = gleon_dir.join("gleon.yaml");
         let mut file = File::create(&default_path).unwrap();
         writeln!(
             file,
@@ -361,8 +363,10 @@ mod tests {
         let root_dir = dir.path();
         let nested_dir = root_dir.join("src/features/billing");
         std::fs::create_dir_all(&nested_dir).unwrap();
+        let gleon_dir = root_dir.join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
 
-        let config_path = root_dir.join("gleon.yaml");
+        let config_path = gleon_dir.join("gleon.yaml");
         let yaml_content = "required_version: \">=0.1.0\"\nscreenshots:\n  - include: \"*.png\"";
         std::fs::write(&config_path, yaml_content).unwrap();
 
@@ -393,7 +397,9 @@ mod tests {
     fn test_from_cli_corrupted_discovered_config() {
         let dir = tempdir().unwrap();
         let root_dir = dir.path();
-        let config_path = root_dir.join("gleon.yaml");
+        let gleon_dir = root_dir.join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+        let config_path = gleon_dir.join("gleon.yaml");
         std::fs::write(&config_path, "invalid_yaml: : : [bad syntax]").unwrap();
 
         let cli = Cli {
@@ -421,7 +427,9 @@ mod tests {
     fn test_fallback_platform_key_resolution() {
         let dir = tempdir().unwrap();
         let root_dir = dir.path();
-        let config_path = root_dir.join("gleon.yaml");
+        let gleon_dir = root_dir.join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+        let config_path = gleon_dir.join("gleon.yaml");
         let yaml_content = "required_version: \">=0.1.0\"\nfallback_platform:\n  os: linux\n  arch: x86_64\nscreenshots:\n  - include: \"*.png\"";
         std::fs::write(&config_path, yaml_content).unwrap();
 
@@ -498,7 +506,9 @@ mod tests {
         assert!(matches!(err, ContextError::Platform(_)));
 
         // Invalid fallback in config
-        let config_path = root_dir.join("invalid_gleon.yaml");
+        let gleon_dir = root_dir.join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+        let config_path = gleon_dir.join("invalid_gleon.yaml");
         let invalid_cfg = GleonConfig {
             fallback_platform: Some(crate::platform::PlatformConfig::Opaque(
                 "INVALID/OS".to_string(),

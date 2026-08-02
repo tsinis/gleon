@@ -108,16 +108,15 @@ pub fn init_workspace(
             .map_err(InitError::from)?;
     }
 
-    let root_config = base_dir.join("gleon.yaml");
     let internal_config = gleon_dir.join("gleon.yaml");
 
     let mut config_created = None;
-    if !internal_config.exists() && !root_config.exists() {
+    if !internal_config.exists() {
         let default_config = GleonConfig::default();
         let yaml_content = serde_yaml::to_string(&default_config).map_err(InitError::Yaml)?;
-        crate::io::save_file_atomically(&root_config, yaml_content.as_bytes())
+        crate::io::save_file_atomically(&internal_config, yaml_content.as_bytes())
             .map_err(InitError::from)?;
-        config_created = Some(root_config);
+        config_created = Some(internal_config);
     }
 
     Ok(InitResult {
@@ -139,7 +138,7 @@ mod tests {
         let res = init_workspace(&ctx, base_dir).unwrap();
         assert!(res.gleon_dir.exists());
         assert!(res.gleon_dir.join(".gitignore").exists());
-        let expected_config = base_dir.join("gleon.yaml");
+        let expected_config = res.gleon_dir.join("gleon.yaml");
         assert_eq!(res.config_created, Some(expected_config.clone()));
         assert!(expected_config.exists());
 
