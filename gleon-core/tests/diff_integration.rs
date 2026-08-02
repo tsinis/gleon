@@ -63,7 +63,8 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli {
         branch: Some("main".to_string()),
@@ -157,7 +158,8 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Diff {
         auto_pull: false,
@@ -203,7 +205,8 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Diff {
         auto_pull: false,
@@ -245,7 +248,8 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Diff {
         auto_pull: false,
@@ -336,7 +340,8 @@ screenshots:
             width: 1
             height: 1
 "#;
-    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Diff {
         auto_pull: false,
@@ -385,7 +390,12 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "unmasked_app/**/*.png"
 "#;
-    fs::write(base_path.join("gleon.yaml"), initial_config_yaml).unwrap();
+    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::write(
+        base_path.join(".gleon").join("gleon.yaml"),
+        initial_config_yaml,
+    )
+    .unwrap();
 
     let cli = Cli::for_test(Commands::Diff {
         auto_pull: false,
@@ -409,7 +419,12 @@ screenshots:
             width: 1
             height: 1
 "#;
-    fs::write(base_path.join("gleon.yaml"), masked_config_yaml).unwrap();
+    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::write(
+        base_path.join(".gleon").join("gleon.yaml"),
+        masked_config_yaml,
+    )
+    .unwrap();
 
     // 4. Modify actual screenshot at (50, 50)
     let modified_png_bytes =
@@ -437,9 +452,10 @@ fn test_diff_fallback_platform_integration() {
         .join("fixtures");
 
     // 1. Setup gleon.yaml with fallback_platform
+    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
     std::fs::copy(
         fixtures_dir.join("fallback_config.yaml"),
-        base_path.join("gleon.yaml"),
+        base_path.join(".gleon").join("gleon.yaml"),
     )
     .unwrap();
 

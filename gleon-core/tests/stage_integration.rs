@@ -61,7 +61,8 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli {
         branch: Some("main".to_string()),
@@ -142,7 +143,8 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Stage { paths: vec![] });
     let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
@@ -201,7 +203,8 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Stage { paths: vec![] });
     let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
@@ -240,7 +243,8 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Stage { paths: vec![] });
     let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
@@ -293,7 +297,8 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Stage { paths: vec![] });
     let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
@@ -323,7 +328,8 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    fs::write(base_path.join("gleon.yaml"), config_yaml).unwrap();
+    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Stage { paths: vec![] });
     let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();

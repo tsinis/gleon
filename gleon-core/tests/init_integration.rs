@@ -18,7 +18,7 @@ fn test_init_workspace_creates_real_structure_and_valid_config() {
 
     assert_eq!(result.gleon_dir, base_path.join(".gleon"));
     let config_path = result.config_created.expect("gleon.yaml should be created");
-    assert_eq!(config_path, base_path.join("gleon.yaml"));
+    assert_eq!(config_path, base_path.join(".gleon").join("gleon.yaml"));
 
     // Verify directory structure exists on disk
     assert!(base_path.join(".gleon/blobs/sha256").is_dir());
@@ -37,12 +37,13 @@ fn test_init_workspace_idempotent_preserves_custom_config() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let config_path = base_path.join("gleon.yaml");
+    let config_path = base_path.join(".gleon").join("gleon.yaml");
     let custom_yaml = r#"
 required_version: ">=0.1.0"
 screenshots:
   - include: "custom/**/*.png"
 "#;
+    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(&config_path, custom_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Init);
