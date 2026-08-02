@@ -53,7 +53,7 @@ pub async fn run_resolve(
         None
     };
 
-    if cfg!(test) || !std::io::stdin().is_terminal() {
+    if !std::io::stdin().is_terminal() {
         error!("Terminal is non-interactive (not a TTY). Cannot prompt for resolution.");
         error!("Run 'gleon resolve' in an interactive terminal environment.");
         return Ok(1);
@@ -61,18 +61,7 @@ pub async fn run_resolve(
 
     let resolved_count =
         resolve_conflicts_with_selector(ctx, conflicts, adapter.as_ref(), |item| {
-            let choices = vec![
-                format!(
-                    "Ours (HEAD: {}, {}x{})",
-                    item.conflict.ours.hash, item.conflict.ours.width, item.conflict.ours.height
-                ),
-                format!(
-                    "Theirs (Incoming: {}, {}x{})",
-                    item.conflict.theirs.hash,
-                    item.conflict.theirs.width,
-                    item.conflict.theirs.height
-                ),
-            ];
+            let choices = format_conflict_choices(item);
 
             Select::new()
                 .with_prompt(format!("Choose baseline to keep for '{}'", item.test_path))
@@ -89,6 +78,21 @@ pub async fn run_resolve(
     );
 
     Ok(0)
+}
+
+/// Formats selectable prompt choice descriptions for a conflicted manifest item.
+#[must_use]
+pub fn format_conflict_choices(item: &ConflictedManifestItem) -> Vec<String> {
+    vec![
+        format!(
+            "Ours (HEAD: {}, {}x{})",
+            item.conflict.ours.hash, item.conflict.ours.width, item.conflict.ours.height
+        ),
+        format!(
+            "Theirs (Incoming: {}, {}x{})",
+            item.conflict.theirs.hash, item.conflict.theirs.width, item.conflict.theirs.height
+        ),
+    ]
 }
 
 /// Helper to process interactive or automated conflict selections.
@@ -214,12 +218,42 @@ mod tests {
         let res_fetch_local = run_resolve(&ctx, Some("login"), true, None).await.unwrap();
         assert_eq!(res_fetch_local, 1);
 
-        // 4. Fetch mode with storage config (invalid scheme)
+        // 4. Fetch mode with invalid storage config
         let invalid_storage = StorageConfig::new("invalid_scheme://bucket".to_string());
         let res_fetch_invalid = run_resolve(&ctx, Some("login"), true, Some(invalid_storage))
             .await
             .unwrap();
         assert_eq!(res_fetch_invalid, 1);
+
+        // 5. Fetch mode with valid memory storage config (hits Ok(a) => Some(a))
+        let valid_storage = StorageConfig::new("memory://");
+        let res_fetch_valid = run_resolve(&ctx, Some("login"), true, Some(valid_storage))
+            .await
+            .unwrap();
+        assert_eq!(res_fetch_valid, 1);
+    }
+
+    #[tokio::test]
+    async fn test_format_conflict_choices() {
+        let temp = tempdir().unwrap();
+        let base_dir = temp.path();
+        let manifests_dir = base_dir
+            .join(".gleon")
+            .join("manifests")
+            .join("macos-aarch64")
+            .join("auth");
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+
+        let conflicted = include_str!("../../../gleon-core/tests/fixtures/conflict_2way.json");
+        std::fs::write(manifests_dir.join("login.json"), conflicted).unwrap();
+
+        let conflicts = scan_conflicts(base_dir, None).unwrap();
+        assert_eq!(conflicts.len(), 1);
+
+        let choices = format_conflict_choices(&conflicts[0]);
+        assert_eq!(choices.len(), 2);
+        assert!(choices[0].contains("Ours (HEAD:"));
+        assert!(choices[1].contains("Theirs (Incoming:"));
     }
 
     #[tokio::test]
@@ -244,17 +278,100 @@ mod tests {
         assert_eq!(conflicts.len(), 1);
 
         // Test resolving selecting 'ours' (index 0)
-        let count = resolve_conflicts_with_selector(&ctx, conflicts, None, |_| Ok(0))
+        let count_ours = resolve_conflicts_with_selector(&ctx, conflicts.clone(), None, |_| Ok(0))
             .await
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count_ours, 1);
 
-        let content = std::fs::read_to_string(&login_path).unwrap();
-        assert!(!content.contains("<<<<<<<"));
+        let content_ours = std::fs::read_to_string(&login_path).unwrap();
+        assert!(!content_ours.contains("<<<<<<<"));
         assert!(
-            content.contains(
+            content_ours.contains(
                 "sha256:1111111111111111111111111111111111111111111111111111111111111111"
             )
         );
+
+        // Restore conflicted file
+        std::fs::write(&login_path, conflicted).unwrap();
+        let conflicts_theirs = scan_conflicts(base_dir, None).unwrap();
+
+        // Test resolving selecting 'theirs' (index 1)
+        let count_theirs = resolve_conflicts_with_selector(&ctx, conflicts_theirs, None, |_| Ok(1))
+            .await
+            .unwrap();
+        assert_eq!(count_theirs, 1);
+
+        let content_theirs = std::fs::read_to_string(&login_path).unwrap();
+        assert!(!content_theirs.contains("<<<<<<<"));
+        assert!(
+            content_theirs.contains(
+                "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_conflicts_with_selector_adapter_blob_fetch() {
+        let temp = tempdir().unwrap();
+        let base_dir = temp.path();
+        let manifests_dir = base_dir
+            .join(".gleon")
+            .join("manifests")
+            .join("macos-aarch64")
+            .join("auth");
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+
+        let conflicted = include_str!("../../../gleon-core/tests/fixtures/conflict_2way.json");
+        let login_path = manifests_dir.join("login.json");
+        std::fs::write(&login_path, conflicted).unwrap();
+
+        let cli = Cli::for_test(Commands::Init);
+        let ctx = ResolvedContext::from_cli(&cli, base_dir).unwrap();
+
+        let conflicts = scan_conflicts(base_dir, None).unwrap();
+        let config = StorageConfig::new("memory://");
+        let adapter = ObjectStoreAdapter::from_config(&config).unwrap();
+
+        // Upload a dummy blob for ours hash into memory adapter so download_blob succeeds
+        adapter
+            .upload_blob(
+                "1111111111111111111111111111111111111111111111111111111111111111",
+                &login_path,
+            )
+            .await
+            .unwrap();
+
+        // This will attempt to download missing blob for ours and theirs
+        let count = resolve_conflicts_with_selector(&ctx, conflicts, Some(&adapter), |_| Ok(0))
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_conflicts_with_selector_apply_resolution_failure() {
+        let temp = tempdir().unwrap();
+        let base_dir = temp.path();
+        let manifests_dir = base_dir
+            .join(".gleon")
+            .join("manifests")
+            .join("macos-aarch64")
+            .join("auth");
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+
+        let conflicted = include_str!("../../../gleon-core/tests/fixtures/conflict_2way.json");
+        let login_path = manifests_dir.join("login.json");
+        std::fs::write(&login_path, conflicted).unwrap();
+
+        let cli = Cli::for_test(Commands::Init);
+        let ctx = ResolvedContext::from_cli(&cli, base_dir).unwrap();
+
+        let conflicts = scan_conflicts(base_dir, None).unwrap();
+        let mut invalid_conflicts = conflicts;
+        // Setting manifest_file_path to a directory path will cause apply_resolution to fail
+        invalid_conflicts[0].manifest_file_path = manifests_dir.clone();
+
+        let res = resolve_conflicts_with_selector(&ctx, invalid_conflicts, None, |_| Ok(0)).await;
+        assert!(res.is_err());
     }
 }

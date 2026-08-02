@@ -10,6 +10,8 @@ authors = ["tsinis"]
 edition = "2024"
 license = "BUSL-1.1"
 version = "0.1.0"
+publish = false
+
 
 [workspace.dependencies]
 anyhow = "1.0.103"

@@ -824,7 +824,7 @@ mod tests {
         gix::init(dir.path()).expect("gix init should succeed");
         std::fs::write(
             dir.path().join(".git/config"),
-            "[user]\n\tname = Gleon Test\n\temail = test@gleon.dev\n",
+            "[user]\n\tname = gleon Test\n\temail = test@gleon.dev\n",
         )
         .expect("write .git/config should succeed");
         let repo = gix::open(dir.path()).expect("gix open should succeed");

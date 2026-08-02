@@ -699,7 +699,7 @@ impl ReportGenerator {
         }
 
         format!(
-            "# Gleon Visual Regression Summary\n\n**Total Tests:** {}\n**Failed:** {}\n\n{}",
+            "# gleon Visual Regression Summary\n\n**Total Tests:** {}\n**Failed:** {}\n\n{}",
             total, failed, table
         )
     }
@@ -827,7 +827,7 @@ mod tests {
             },
         };
         let md = ReportGenerator::generate_markdown(&[tc]);
-        assert!(md.contains("# Gleon Visual Regression Summary"));
+        assert!(md.contains("# gleon Visual Regression Summary"));
         assert!(md.contains("❌ Decode Error"));
         assert!(md.contains("billing"));
     }
