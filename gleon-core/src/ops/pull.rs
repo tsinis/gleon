@@ -15,7 +15,7 @@ use crate::storage::{ObjectStoreAdapter, StorageConfig, StorageError};
 #[derive(Debug, Error)]
 pub enum PullError {
     /// Workspace has not been initialized (`.gleon` missing).
-    #[error("Gleon workspace is not initialized. Please run 'gleon init' first.")]
+    #[error("gleon workspace is not initialized. Please run 'gleon init' first.")]
     NotInitialized,
 
     /// Error resolving context.
@@ -55,7 +55,7 @@ pub struct PullResult {
     pub downloaded_blobs: usize,
     /// Number of blobs already present in local storage.
     pub skipped_blobs: usize,
-    /// Indicates whether Gleon executed in Local Flat Mode (no storage configured).
+    /// Indicates whether gleon executed in Local Flat Mode (no storage configured).
     pub local_mode: bool,
 }
 

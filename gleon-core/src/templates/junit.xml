@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuites name="Gleon Tests" tests="{{ total_tests }}" failures="{{ failed_tests }}">
+<testsuites name="gleon Tests" tests="{{ total_tests }}" failures="{{ failed_tests }}">
 {% for tc in test_cases %}
   <testsuite name="{{ tc.name | escape }}" tests="{{ tc.results | length }}" failures="{{ tc.failures }}">
     {% for res in tc.results %}

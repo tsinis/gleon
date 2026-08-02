@@ -74,15 +74,15 @@ cargo fmt --all
 
 ## FAQ: Architecture & Best Practices
 
-### Why does Gleon enforce `.gitignore` for baseline images?
+### Why does gleon enforce `.gitignore` for baseline images?
 
-Gleon separates the **control plane** (manifests) from the **data plane** (images) by employing a **Content-Addressable Storage (CAS)** architecture.
+gleon separates the **control plane** (manifests) from the **data plane** (images) by employing a **Content-Addressable Storage (CAS)** architecture.
 
 In modern software engineering, committing binary blobs directly to Git is an anti-pattern. Git is optimized for text; committing thousands of screenshot revisions inherently bloats the repository, severely degrades clone times, and makes PR diffs unmanageable. This is the exact problem that tools like Git LFS or Bazel Remote Execution solve.
 
-To provide enterprise-grade scale, Gleon uses a **Git-First Control Plane with Dumb Blob Storage**:
+To provide enterprise-grade scale, gleon uses a **Git-First Control Plane with Dumb Blob Storage**:
 
-- **Manifests in Git:** Gleon tracks tiny, deterministic JSON files (`.gleon/manifests/**/*.json`) in your Git repository. These files contain the cryptographic hashes (SHA-256) of your baseline images and their spatial dimensions.
+- **Manifests in Git:** gleon tracks tiny, deterministic JSON files (`.gleon/manifests/**/*.json`) in your Git repository. These files contain the cryptographic hashes (SHA-256) of your baseline images and their spatial dimensions.
 - **Blobs in Cloud Storage:** The actual PNG images (`.gleon/blobs/`) are aggressively ignored from Git. They are uploaded to an S3-compatible bucket (like AWS S3, Cloudflare R2, or Google Cloud Storage) using `gleon push` and downloaded using `gleon pull`.
 
 This architecture guarantees that your Git repository remains lightning-fast and lightweight indefinitely, while immutable graphical artifacts are offloaded to purpose-built object storage.
@@ -93,4 +93,4 @@ When running visual tests across diverse operating systems (e.g., generating on 
 
 **Do NOT arbitrarily increase the global error threshold (e.g., 2%) to ignore these!** Inflating the tolerance threshold masks genuine regressions and defeats the purpose of visual testing.
 
-Instead, Gleon natively embraces **Platform-Specific Baselines**.
+Instead, gleon natively embraces **Platform-Specific Baselines**.

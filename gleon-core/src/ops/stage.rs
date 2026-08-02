@@ -15,7 +15,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum StageError {
     /// Workspace has not been initialized (`.gleon` missing).
-    #[error("Gleon workspace is not initialized. Please run 'gleon init' first.")]
+    #[error("gleon workspace is not initialized. Please run 'gleon init' first.")]
     NotInitialized,
 
     /// Error resolving context.

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuites name="Gleon Tests" tests="6" failures="6">
+<testsuites name="gleon Tests" tests="6" failures="6">
 
   <testsuite name="billing_dashboard_1" tests="1" failures="1">
     

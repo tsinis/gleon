@@ -97,7 +97,7 @@ pub fn init_workspace(
     // Scaffold .gleon/.env.template if it does not exist
     let env_template_path = gleon_dir.join(".env.template");
     if !env_template_path.exists() {
-        let template_content = "# Gleon Storage Configuration\n\
+        let template_content = "# gleon Storage Configuration\n\
             # Copy this file to .env.local and fill in your credentials\n\
             GLEON_STORAGE_URL=\n\
             AWS_ACCESS_KEY_ID=\n\
