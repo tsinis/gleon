@@ -59,3 +59,4 @@ coverage/
 # --- Antigravity & Agent Workspaces ---
 .antigravity/
 .agents/
+.env
