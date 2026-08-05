@@ -74,6 +74,7 @@ fn test_init_workspace_honors_cli_overrides() {
         verbose: false,
         quiet: false,
         config: None,
+        strict: false,
         target_branch: "main".to_string(),
         command: Commands::Init,
     };

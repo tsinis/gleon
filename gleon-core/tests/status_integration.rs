@@ -21,6 +21,7 @@ fn test_status_uninitialized_fails() {
         verbose: false,
         quiet: false,
         config: None,
+        strict: false,
         target_branch: "main".to_string(),
         command: Commands::Status { json: false },
     };
@@ -74,6 +75,7 @@ screenshots:
         verbose: false,
         quiet: false,
         config: None,
+        strict: false,
         target_branch: "main".to_string(),
         command: Commands::Status { json: false },
     };

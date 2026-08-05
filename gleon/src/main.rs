@@ -38,6 +38,10 @@ async fn main() -> anyhow::Result<()> {
     }
     let env = MergedEnv { dotenv };
 
+    // Run License/Compliance Check
+    let license_status = gleon_core::license::LicenseGate::verify(&env);
+    gleon_core::license::enforce_policy(license_status, cli.strict, &env);
+
     let exit_code = run(&cli, &current_dir, &env).await?;
     if exit_code != 0 {
         std::process::exit(exit_code);

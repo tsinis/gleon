@@ -205,6 +205,7 @@ mod tests {
             verbose: false,
             quiet: false,
             config: Some(config_path),
+            strict: false,
             command: Commands::Status { json: false },
         };
 
@@ -231,6 +232,7 @@ mod tests {
             verbose: false,
             quiet: false,
             config: None,
+            strict: false,
             command: Commands::Status { json: false },
         };
 
@@ -267,6 +269,7 @@ mod tests {
             verbose: false,
             quiet: false,
             config: None,
+            strict: false,
             command: Commands::Status { json: false },
         };
 
@@ -293,6 +296,7 @@ mod tests {
             verbose: false,
             quiet: false,
             config: None,
+            strict: false,
             command: Commands::Status { json: false },
         };
         let context = ResolvedContext::from_cli(&cli, dir.path()).unwrap();
@@ -315,6 +319,7 @@ mod tests {
             verbose: false,
             quiet: false,
             config: None,
+            strict: false,
             command: Commands::Status { json: false },
         };
         let platform_env_conflict = PlatformEnv {
@@ -341,6 +346,7 @@ mod tests {
             verbose: false,
             quiet: false,
             config: None,
+            strict: false,
             command: Commands::Status { json: false },
         };
         let result = ResolvedContext::from_cli_impl(
@@ -381,6 +387,7 @@ mod tests {
             verbose: false,
             quiet: false,
             config: None,
+            strict: false,
             command: Commands::Status { json: false },
         };
 
@@ -413,6 +420,7 @@ mod tests {
             verbose: false,
             quiet: false,
             config: None,
+            strict: false,
             command: Commands::Status { json: false },
         };
 
@@ -444,6 +452,7 @@ mod tests {
             verbose: false,
             quiet: false,
             config: None,
+            strict: false,
             command: Commands::Status { json: false },
         };
 
@@ -493,6 +502,7 @@ mod tests {
             verbose: false,
             quiet: false,
             config: None,
+            strict: false,
             command: Commands::Status { json: false },
         };
 

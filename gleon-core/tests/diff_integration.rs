@@ -21,6 +21,7 @@ fn test_diff_uninitialized_fails() {
         verbose: false,
         quiet: false,
         config: None,
+        strict: false,
         target_branch: "main".to_string(),
         command: Commands::Diff {
             auto_pull: false,
@@ -76,6 +77,7 @@ screenshots:
         verbose: false,
         quiet: false,
         config: None,
+        strict: false,
         target_branch: "main".to_string(),
         command: Commands::Diff {
             auto_pull: false,
