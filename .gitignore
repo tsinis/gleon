@@ -60,3 +60,4 @@ coverage/
 .antigravity/
 .agents/
 .env
+.env.local

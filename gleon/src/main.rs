@@ -40,7 +40,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Run License/Compliance Check
     let license_status = gleon_core::license::LicenseGate::verify(&env);
-    gleon_core::license::enforce_policy(license_status, cli.strict, &env);
+    if let gleon_core::license::EnforcementAction::Block =
+        gleon_core::license::enforce_policy(license_status, cli.strict, &env)
+    {
+        std::process::exit(42);
+    }
 
     let exit_code = run(&cli, &current_dir, &env).await?;
     if exit_code != 0 {

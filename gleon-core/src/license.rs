@@ -6,10 +6,31 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use globset::Glob;
 use serde::{Deserialize, Serialize};
 
+#[cfg(not(test))]
 const PUBLIC_KEY_BYTES: &[u8; 32] = &[
     198, 122, 238, 222, 114, 183, 214, 45, 12, 191, 109, 14, 127, 240, 71, 98, 250, 48, 199, 168,
     86, 17, 219, 195, 33, 114, 88, 143, 221, 62, 131, 23,
 ];
+
+#[cfg(test)]
+std::thread_local! {
+    pub static PUBLIC_KEY_BYTES: std::cell::RefCell<[u8; 32]> = const {
+        std::cell::RefCell::new([
+            198, 122, 238, 222, 114, 183, 214, 45, 12, 191, 109, 14, 127, 240, 71, 98, 250, 48, 199, 168,
+            86, 17, 219, 195, 33, 114, 88, 143, 221, 62, 131, 23,
+        ])
+    };
+}
+
+#[cfg(not(test))]
+fn get_public_key_bytes() -> [u8; 32] {
+    *PUBLIC_KEY_BYTES
+}
+
+#[cfg(test)]
+fn get_public_key_bytes() -> [u8; 32] {
+    PUBLIC_KEY_BYTES.with(|b| *b.borrow())
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct LicensePayload {
@@ -51,13 +72,20 @@ struct GithubRepository {
 }
 
 pub fn parse_github_event_payload_is_private(env_provider: &dyn crate::git::EnvProvider) -> bool {
-    env_provider
-        .get_var("GITHUB_EVENT_PATH")
-        .and_then(|path| fs::read_to_string(path).ok())
-        .and_then(|content| serde_json::from_str::<GithubEventPayload>(&content).ok())
+    let Some(path) = env_provider.get_var("GITHUB_EVENT_PATH") else {
+        return false;
+    };
+
+    fs::read_to_string(&path)
+        .map_err(|e| tracing::debug!("Failed to read GitHub event payload at {}: {}", path, e))
+        .and_then(|content| {
+            serde_json::from_str::<GithubEventPayload>(&content)
+                .map_err(|e| tracing::warn!("Failed to parse GitHub event payload: {}", e))
+        })
+        .ok()
         .and_then(|payload| payload.repository)
         .map(|repo| repo.private)
-        .unwrap_or(false)
+        .unwrap_or(true) // Fail closed: if event payload exists but fails to parse, treat as private
 }
 
 pub fn identify_context(env_provider: &dyn crate::git::EnvProvider) -> ExecutionContext {
@@ -66,11 +94,27 @@ pub fn identify_context(env_provider: &dyn crate::git::EnvProvider) -> Execution
         let is_private = parse_github_event_payload_is_private(env_provider);
         return ExecutionContext::GitHubActions { repo, is_private };
     }
-    // 2. GitLab / Generic CI
+    // 2. GitLab / Generic CI with explicit project path
     if let Some(repo) = env_provider.get_var("CI_PROJECT_PATH") {
         return ExecutionContext::GenericCI { repo };
     }
-    // 3. Local Dev
+    // 3. Fallback for other CIs (CircleCI, Travis, Azure, Buildkite, Drone, TeamCity, Bitbucket, generic "CI=true")
+    if env_provider.get_var("CI").is_some()
+        || env_provider.get_var("CONTINUOUS_INTEGRATION").is_some()
+        || env_provider.get_var("CIRCLECI").is_some()
+        || env_provider.get_var("TRAVIS").is_some()
+        || env_provider.get_var("GITLAB_CI").is_some()
+        || env_provider.get_var("TF_BUILD").is_some()
+        || env_provider.get_var("BUILDKITE").is_some()
+        || env_provider.get_var("DRONE").is_some()
+        || env_provider.get_var("TEAMCITY_VERSION").is_some()
+        || env_provider.get_var("BITBUCKET_COMMIT").is_some()
+    {
+        return ExecutionContext::GenericCI {
+            repo: "".to_string(),
+        };
+    }
+    // 4. Local Dev
     ExecutionContext::LocalDev
 }
 
@@ -78,10 +122,19 @@ pub struct LicenseGate;
 
 impl LicenseGate {
     pub fn verify(env_provider: &dyn crate::git::EnvProvider) -> LicenseStatus {
-        let context = identify_context(env_provider);
         let is_official = option_env!("GLEON_OFFICIAL_SECRET").is_some();
         let build_timestamp_str = option_env!("GLEON_BUILD_TIMESTAMP").unwrap_or("0");
         let build_timestamp: u64 = build_timestamp_str.trim().parse().unwrap_or(0);
+
+        Self::verify_internal(env_provider, is_official, build_timestamp)
+    }
+
+    fn verify_internal(
+        env_provider: &dyn crate::git::EnvProvider,
+        is_official: bool,
+        build_timestamp: u64,
+    ) -> LicenseStatus {
+        let context = identify_context(env_provider);
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -116,8 +169,9 @@ impl LicenseGate {
             Ok(LicenseValidity::Valid) => LicenseStatus::Valid,
             Ok(LicenseValidity::GracePeriod { reason }) => LicenseStatus::UnlicensedSoft { reason },
             Err(e) => {
-                // An official binary MUST have both the official secret and a valid non-zero build timestamp.
-                let is_valid_official_build = is_official && build_timestamp > 0;
+                // An official binary MUST have both the official secret and a valid timestamp (not 0 and not in far future).
+                let is_valid_official_build =
+                    is_official && build_timestamp > 0 && build_timestamp <= now + 86400;
 
                 if !is_valid_official_build && is_private_ci {
                     return LicenseStatus::UnofficialBuildInPrivateCI;
@@ -138,9 +192,20 @@ impl LicenseGate {
         context: &ExecutionContext,
         now: u64,
     ) -> Result<LicenseValidity, String> {
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(key)
-            .map_err(|_| "Invalid base64 encoding")?;
+        let mut decoded = None;
+        let engines = [
+            base64::engine::general_purpose::STANDARD,
+            base64::engine::general_purpose::URL_SAFE,
+            base64::engine::general_purpose::STANDARD_NO_PAD,
+            base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        ];
+        for engine in engines {
+            if let Ok(d) = engine.decode(key) {
+                decoded = Some(d);
+                break;
+            }
+        }
+        let decoded = decoded.ok_or_else(|| "Invalid base64 encoding".to_string())?;
         if decoded.len() <= 64 {
             return Err("License key payload too short".to_string());
         }
@@ -149,8 +214,9 @@ impl LicenseGate {
 
         let signature = Signature::from_slice(signature_bytes)
             .map_err(|_| "Invalid Ed25519 signature format")?;
-        let pub_key = VerifyingKey::from_bytes(PUBLIC_KEY_BYTES)
-            .map_err(|_| "Invalid embedded public key")?;
+        let pub_key_bytes = get_public_key_bytes();
+        let pub_key =
+            VerifyingKey::from_bytes(&pub_key_bytes).map_err(|_| "Invalid embedded public key")?;
 
         pub_key
             .verify(payload_bytes, &signature)
@@ -192,13 +258,21 @@ impl LicenseGate {
     }
 }
 
+/// Outcome of enforcing licensing policy.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum EnforcementAction {
+    Allow,
+    Warn,
+    Block,
+}
+
 pub fn enforce_policy(
     status: LicenseStatus,
     strict_mode: bool,
     env_provider: &dyn crate::git::EnvProvider,
-) {
+) -> EnforcementAction {
     match status {
-        LicenseStatus::Valid | LicenseStatus::PublicOrGrantedUse => {}
+        LicenseStatus::Valid | LicenseStatus::PublicOrGrantedUse => EnforcementAction::Allow,
         LicenseStatus::UnlicensedSoft { reason } => {
             eprintln!("====================================================");
             eprintln!("[GLEON COMPLIANCE NOTICE] Unlicensed production use detected.");
@@ -208,11 +282,21 @@ pub fn enforce_policy(
             eprintln!("====================================================");
 
             if env_provider.get_var("GITHUB_ACTIONS").is_some() {
-                println!("::warning title=Gleon Compliance::Unlicensed usage detected ({reason}).");
+                if strict_mode {
+                    eprintln!(
+                        "::error title=Gleon Compliance::Unlicensed usage detected ({reason})."
+                    );
+                } else {
+                    eprintln!(
+                        "::warning title=Gleon Compliance::Unlicensed usage detected ({reason})."
+                    );
+                }
             }
 
             if strict_mode {
-                std::process::exit(42);
+                EnforcementAction::Block
+            } else {
+                EnforcementAction::Warn
             }
         }
         LicenseStatus::UnofficialBuildInPrivateCI | LicenseStatus::ExpiredUnlicensedBinary => {
@@ -223,7 +307,14 @@ pub fn enforce_policy(
             );
             eprintln!("Get a valid commercial license at https://gleon.rs");
             eprintln!("====================================================");
-            std::process::exit(42);
+
+            if env_provider.get_var("GITHUB_ACTIONS").is_some() {
+                eprintln!(
+                    "::error title=Gleon Compliance::Execution blocked. Self-compiled or expired official binaries cannot run in unlicensed private CI."
+                );
+            }
+
+            EnforcementAction::Block
         }
     }
 }
@@ -280,5 +371,235 @@ mod tests {
         };
         let ctx = identify_context(&env);
         assert_eq!(ctx, ExecutionContext::LocalDev);
+    }
+
+    #[test]
+    fn test_identify_context_other_ci() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("CIRCLECI".to_string(), "true".to_string());
+        let env = MockEnv { vars };
+        assert_eq!(
+            identify_context(&env),
+            ExecutionContext::GenericCI {
+                repo: "".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_github_event_payload_is_private() {
+        use std::io::Write;
+        let temp = tempfile::tempdir().unwrap();
+        let payload_path = temp.path().join("event.json");
+        let mut file = std::fs::File::create(&payload_path).unwrap();
+        file.write_all(b"{\"repository\": {\"private\": true}}")
+            .unwrap();
+
+        let mut vars = std::collections::HashMap::new();
+        vars.insert(
+            "GITHUB_EVENT_PATH".to_string(),
+            payload_path.to_string_lossy().into_owned(),
+        );
+        let env = MockEnv { vars };
+
+        assert!(parse_github_event_payload_is_private(&env));
+    }
+
+    fn generate_test_license(repo_pattern: &str, expires_at: u64) -> String {
+        use ed25519_dalek::{Signer, SigningKey};
+        let secret = [42u8; 32];
+        let signing_key = SigningKey::from_bytes(&secret);
+        let public_key = signing_key.verifying_key();
+
+        PUBLIC_KEY_BYTES.with(|b| *b.borrow_mut() = public_key.to_bytes());
+
+        let payload = LicensePayload {
+            owner: "test".to_string(),
+            repo_pattern: repo_pattern.to_string(),
+            expires_at,
+            license_id: "test-id".to_string(),
+        };
+
+        let payload_bytes = serde_json::to_vec(&payload).unwrap();
+        let signature = signing_key.sign(&payload_bytes);
+
+        let mut combined = payload_bytes;
+        combined.extend_from_slice(&signature.to_bytes());
+
+        base64::engine::general_purpose::STANDARD.encode(combined)
+    }
+
+    #[test]
+    fn test_verify_key_valid() {
+        let now = 1000;
+        let token = generate_test_license("foo/*", now + 100);
+        let ctx = ExecutionContext::GenericCI {
+            repo: "foo/bar".to_string(),
+        };
+        let res = LicenseGate::verify_key(&token, &ctx, now).unwrap();
+        assert!(matches!(res, LicenseValidity::Valid));
+    }
+
+    #[test]
+    fn test_verify_key_grace_period() {
+        let now = 20 * 24 * 60 * 60;
+        let expires_at = now - (5 * 24 * 60 * 60); // Expired 5 days ago (within 14 days)
+        let token = generate_test_license("foo/*", expires_at);
+        let ctx = ExecutionContext::GenericCI {
+            repo: "foo/bar".to_string(),
+        };
+        let res = LicenseGate::verify_key(&token, &ctx, now).unwrap();
+        assert!(matches!(res, LicenseValidity::GracePeriod { .. }));
+    }
+
+    #[test]
+    fn test_verify_key_expired() {
+        let now = 20 * 24 * 60 * 60;
+        let expires_at = now - (15 * 24 * 60 * 60); // Expired 15 days ago (> 14 days)
+        let token = generate_test_license("foo/*", expires_at);
+        let ctx = ExecutionContext::GenericCI {
+            repo: "foo/bar".to_string(),
+        };
+        let res = LicenseGate::verify_key(&token, &ctx, now);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_verify_key_wrong_repo() {
+        let now = 1000;
+        let token = generate_test_license("baz/*", now + 100);
+        let ctx = ExecutionContext::GenericCI {
+            repo: "foo/bar".to_string(),
+        };
+        let res = LicenseGate::verify_key(&token, &ctx, now);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_enforce_policy_outcomes() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("GITHUB_ACTIONS".to_string(), "true".to_string());
+        let env = MockEnv { vars };
+
+        assert_eq!(
+            enforce_policy(LicenseStatus::Valid, false, &env),
+            EnforcementAction::Allow
+        );
+        assert_eq!(
+            enforce_policy(LicenseStatus::PublicOrGrantedUse, false, &env),
+            EnforcementAction::Allow
+        );
+        assert_eq!(
+            enforce_policy(
+                LicenseStatus::UnlicensedSoft {
+                    reason: "soft test".to_string()
+                },
+                false,
+                &env
+            ),
+            EnforcementAction::Warn
+        );
+        assert_eq!(
+            enforce_policy(
+                LicenseStatus::UnlicensedSoft {
+                    reason: "strict test".to_string()
+                },
+                true,
+                &env
+            ),
+            EnforcementAction::Block
+        );
+        assert_eq!(
+            enforce_policy(LicenseStatus::UnofficialBuildInPrivateCI, false, &env),
+            EnforcementAction::Block
+        );
+        assert_eq!(
+            enforce_policy(LicenseStatus::ExpiredUnlicensedBinary, false, &env),
+            EnforcementAction::Block
+        );
+    }
+
+    #[test]
+    fn test_verify_internal_local_dev() {
+        let env = MockEnv {
+            vars: std::collections::HashMap::new(),
+        };
+        let status = LicenseGate::verify_internal(&env, false, 0);
+        assert_eq!(status, LicenseStatus::Valid);
+    }
+
+    #[test]
+    fn test_verify_internal_public_ci() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("GITHUB_REPOSITORY".to_string(), "foo/bar".to_string());
+        // Since GITHUB_EVENT_PATH is absent, parse_github_event_payload_is_private returns false
+        let env = MockEnv { vars };
+
+        let status = LicenseGate::verify_internal(&env, false, 0);
+        assert_eq!(status, LicenseStatus::PublicOrGrantedUse);
+    }
+
+    #[test]
+    fn test_verify_internal_unofficial_private_ci() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("CI".to_string(), "true".to_string());
+        let env = MockEnv { vars };
+
+        let status = LicenseGate::verify_internal(&env, false, 0); // is_official = false
+        assert_eq!(status, LicenseStatus::UnofficialBuildInPrivateCI);
+    }
+
+    #[test]
+    fn test_verify_internal_official_valid_timestamp() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("CI".to_string(), "true".to_string());
+        let env = MockEnv { vars };
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Valid if timestamp is within last 24h (e.g. now - 1 hour)
+        let build_timestamp = now - 3600;
+
+        let status = LicenseGate::verify_internal(&env, true, build_timestamp);
+        assert!(matches!(status, LicenseStatus::UnlicensedSoft { .. }));
+    }
+
+    #[test]
+    fn test_verify_internal_official_expired_timestamp() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("CI".to_string(), "true".to_string());
+        let env = MockEnv { vars };
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Expired if timestamp is older than 90 days (e.g. now - 100 days)
+        let build_timestamp = now.saturating_sub(100 * 24 * 60 * 60);
+
+        let status = LicenseGate::verify_internal(&env, true, build_timestamp);
+        assert_eq!(status, LicenseStatus::ExpiredUnlicensedBinary);
+    }
+
+    #[test]
+    fn test_verify_internal_official_future_timestamp_blocked() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("CI".to_string(), "true".to_string());
+        let env = MockEnv { vars };
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Invalid if timestamp is > 24h in the future
+        let build_timestamp = now + 48 * 3600;
+
+        let status = LicenseGate::verify_internal(&env, true, build_timestamp);
+        assert_eq!(status, LicenseStatus::UnofficialBuildInPrivateCI);
     }
 }

@@ -47,7 +47,12 @@ pub struct Cli {
     pub config: Option<std::path::PathBuf>,
 
     /// Enforce strict licensing compliance (hard fail with exit code 42 on violations)
-    #[arg(long = "strict", global = true, env = "GLEON_STRICT")]
+    #[arg(
+        long = "strict",
+        global = true,
+        env = "GLEON_STRICT",
+        value_parser = clap::builder::FalseyValueParser::new()
+    )]
     pub strict: bool,
 
     /// The target branch to compare against (defaults to 'main')
