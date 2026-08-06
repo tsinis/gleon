@@ -6,9 +6,8 @@ branding:
 
 inputs:
   version:
-    description: "Gleon version tag to download (e.g. 'v1.0.0' or 'latest')"
-    required: false
-    default: "latest"
+    description: "Gleon version tag to download (e.g. 'v1.0.0')"
+    required: true
   license-key:
     description: "Gleon BSL License Key for private repositories"
     required: false
@@ -29,6 +28,9 @@ inputs:
     description: "GitHub token to prevent API rate limits when downloading releases (optional)"
     required: false
     default: ""
+  checksum:
+    description: "Expected SHA256 checksum of the binary for independent trust verification"
+    required: true
 
 runs:
   using: "composite"
@@ -76,50 +78,50 @@ runs:
 
     - name: Fetch and Verify Gleon Binary
       shell: bash
+      env:
+        GLEON_VERSION: ${{ inputs.version }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        CHECKSUM: ${{ inputs.checksum }}
+        BIN_PATH: "${{ steps.resolve.outputs.setup_dir }}/${{ steps.resolve.outputs.bin_name }}"
       run: |
-        VERSION="${{ inputs.version }}"
-        if [ "$VERSION" = "latest" ]; then
-          BASE_URL="https://github.com/tsinis/gleon/releases/latest/download"
-        else
-          if [[ "$VERSION" =~ ^[0-9] ]]; then
-            VERSION="v${VERSION}"
-          fi
-          BASE_URL="https://github.com/tsinis/gleon/releases/download/${VERSION}"
+        VERSION="$GLEON_VERSION"
+        if [[ "$VERSION" =~ ^[0-9] ]]; then
+          VERSION="v${VERSION}"
         fi
+        BASE_URL="https://github.com/tsinis/gleon/releases/download/${VERSION}"
 
         ASSET_NAME="gleon-${{ steps.resolve.outputs.target }}"
         SETUP_DIR="${{ steps.resolve.outputs.setup_dir }}"
         BIN_PATH="${SETUP_DIR}/${{ steps.resolve.outputs.bin_name }}"
-        SHA_PATH="${SETUP_DIR}/gleon_bin.sha256"
 
         echo "Downloading ${BASE_URL}/${ASSET_NAME}..."
 
         CURL_ARGS=("-fsSL")
-        if [ -n "${{ inputs.github-token }}" ]; then
-          CURL_ARGS+=("-H" "Authorization: token ${{ inputs.github-token }}")
+        if [ -n "$GITHUB_TOKEN" ]; then
+          CURL_ARGS+=("-H" "Authorization: token $GITHUB_TOKEN")
         fi
 
         curl "${CURL_ARGS[@]}" "${BASE_URL}/${ASSET_NAME}" -o "$BIN_PATH"
-        curl "${CURL_ARGS[@]}" "${BASE_URL}/${ASSET_NAME}.sha256" -o "$SHA_PATH"
 
         node -e "
         const fs = require('fs');
         const crypto = require('crypto');
 
         const binPath = process.env.BIN_PATH;
-        const shaPath = process.env.SHA_PATH;
+        const expected = process.env.CHECKSUM ? process.env.CHECKSUM.trim() : '';
 
-        const expected = fs.readFileSync(shaPath, 'utf8').trim().split(/\s+/)[0];
+        if (!expected) {
+          console.error('Independent SHA256 checksum is required for verification. Please provide the checksum input.');
+          process.exit(1);
+        }
+
         const actual = crypto.createHash('sha256').update(fs.readFileSync(binPath)).digest('hex');
 
-        if (expected !== actual) {
+        if (expected.toLowerCase() !== actual.toLowerCase()) {
           console.error(\`SHA256 mismatch! Expected: \${expected}, Got: \${actual}\`);
           process.exit(1);
         }
         "
-      env:
-        BIN_PATH: "${{ steps.resolve.outputs.setup_dir }}/${{ steps.resolve.outputs.bin_name }}"
-        SHA_PATH: "${{ steps.resolve.outputs.setup_dir }}/gleon_bin.sha256"
 
     - name: Add Gleon Binary to PATH
       shell: bash

@@ -33,8 +33,9 @@ steps:
       fetch-depth: 0 # Required for merge-base resolution
 
   - name: Run Gleon Visual Regression
-    uses: tsinis/gleon@v1
+    uses: tsinis/gleon@a1b2c3d4e5f67890123456789012345678901234 # Pin full commit SHA for action immutability
     with:
+      version: "v1.0.0" # Immutable release version tag
       license-key: ${{ secrets.GLEON_LICENSE_KEY }}
       strict: "false"
 ```
@@ -43,8 +44,9 @@ steps:
 
 | Input | Description | Default |
 | :--- | :--- | :--- |
-| `version` | Gleon release version to download (`'latest'` or specific tag) | `'latest'` |
+| `version` | Gleon release version tag to download (e.g. `'v1.0.0'`) | **Required** |
 | `github-token` | GitHub token (`${{ secrets.GITHUB_TOKEN }}`) to prevent API rate limits when downloading the binary. **Highly recommended** for active CI pipelines | `''` |
+| `checksum` | Expected SHA256 digest of the binary for independent trust root verification | **Required** |
 | `license-key` | Commercial BSL license key for private repositories | `''` |
 | `strict` | Fail build on license violation (`'true'` / `'false'`) | `'false'` |
 | `target-branch` | Target branch for baseline comparison | PR base ref or default branch |

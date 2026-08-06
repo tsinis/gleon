@@ -40,6 +40,7 @@ pub struct LicensePayload {
     pub license_id: String,
 }
 
+#[derive(Debug)]
 enum LicenseValidity {
     Valid,
     GracePeriod { reason: String },
@@ -88,31 +89,37 @@ pub fn parse_github_event_payload_is_private(env_provider: &dyn crate::git::EnvP
         .unwrap_or(true) // Fail closed: if event payload exists but fails to parse, treat as private
 }
 
+fn get_trimmed_var(env_provider: &dyn crate::git::EnvProvider, key: &str) -> Option<String> {
+    env_provider
+        .get_var(key)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 pub fn identify_context(env_provider: &dyn crate::git::EnvProvider) -> ExecutionContext {
     // 1. GitHub Actions
-    if let Some(repo) = env_provider.get_var("GITHUB_REPOSITORY") {
+    if let Some(repo) = get_trimmed_var(env_provider, "GITHUB_REPOSITORY") {
         let is_private = parse_github_event_payload_is_private(env_provider);
         return ExecutionContext::GitHubActions { repo, is_private };
     }
-    // 2. Try to get project path explicitly provided or from generic CI variables
-    let explicit_repo = env_provider
-        .get_var("GLEON_PROJECT_PATH")
-        .or_else(|| env_provider.get_var("CI_PROJECT_PATH"))
-        .or_else(|| env_provider.get_var("TRAVIS_REPO_SLUG"))
-        .or_else(|| env_provider.get_var("BITBUCKET_REPO_FULL_NAME"))
+
+    // 2. Resolve provider repository from trusted CI provider metadata
+    let provider_repo = get_trimmed_var(env_provider, "CI_PROJECT_PATH")
+        .or_else(|| get_trimmed_var(env_provider, "TRAVIS_REPO_SLUG"))
+        .or_else(|| get_trimmed_var(env_provider, "BITBUCKET_REPO_FULL_NAME"))
         .or_else(|| {
-            // CircleCI splits username and reponame
-            let user = env_provider.get_var("CIRCLE_PROJECT_USERNAME")?;
-            let repo = env_provider.get_var("CIRCLE_PROJECT_REPONAME")?;
+            let user = get_trimmed_var(env_provider, "CIRCLE_PROJECT_USERNAME")?;
+            let repo = get_trimmed_var(env_provider, "CIRCLE_PROJECT_REPONAME")?;
             Some(format!("{}/{}", user, repo))
         });
 
-    if let Some(repo) = explicit_repo {
-        return ExecutionContext::GenericCI { repo };
-    }
+    let override_repo = get_trimmed_var(env_provider, "GLEON_PROJECT_PATH");
 
-    // 3. Fallback for other CIs (CircleCI, Travis, Azure, Buildkite, Drone, TeamCity, Bitbucket, generic "CI=true")
-    if env_provider.get_var("CI").is_some()
+    let repo = provider_repo.unwrap_or_else(|| override_repo.unwrap_or_default());
+
+    // 3. Fallback for other CIs
+    if !repo.is_empty()
+        || env_provider.get_var("CI").is_some()
         || env_provider.get_var("CONTINUOUS_INTEGRATION").is_some()
         || env_provider.get_var("CIRCLECI").is_some()
         || env_provider.get_var("TRAVIS").is_some()
@@ -123,10 +130,9 @@ pub fn identify_context(env_provider: &dyn crate::git::EnvProvider) -> Execution
         || env_provider.get_var("TEAMCITY_VERSION").is_some()
         || env_provider.get_var("BITBUCKET_COMMIT").is_some()
     {
-        return ExecutionContext::GenericCI {
-            repo: "".to_string(),
-        };
+        return ExecutionContext::GenericCI { repo };
     }
+
     // 4. Local Dev
     ExecutionContext::LocalDev
 }
@@ -244,7 +250,7 @@ impl LicenseGate {
         let repo_to_check = match context {
             ExecutionContext::GitHubActions { repo, .. } => Some(repo),
             ExecutionContext::GenericCI { repo } => {
-                if repo.is_empty() {
+                if repo.trim().is_empty() {
                     return Err("Repository name could not be automatically detected for this CI. Please set GLEON_PROJECT_PATH environment variable.".to_string());
                 }
                 Some(repo)
@@ -426,24 +432,120 @@ mod tests {
     }
 
     #[test]
-    fn test_identify_context_other_ci() {
+    fn test_identify_context_generic_ci_providers_and_precedence() {
+        // CI_PROJECT_PATH
         let mut vars = std::collections::HashMap::new();
-        vars.insert("CIRCLECI".to_string(), "true".to_string());
-        let env1 = MockEnv { vars: vars.clone() };
+        vars.insert("CI_PROJECT_PATH".to_string(), "gitlab/project".to_string());
         assert_eq!(
-            identify_context(&env1),
+            identify_context(&MockEnv { vars: vars.clone() }),
+            ExecutionContext::GenericCI {
+                repo: "gitlab/project".to_string()
+            }
+        );
+
+        // TRAVIS_REPO_SLUG
+        let mut vars_travis = std::collections::HashMap::new();
+        vars_travis.insert("TRAVIS_REPO_SLUG".to_string(), "travis/project".to_string());
+        assert_eq!(
+            identify_context(&MockEnv { vars: vars_travis }),
+            ExecutionContext::GenericCI {
+                repo: "travis/project".to_string()
+            }
+        );
+
+        // BITBUCKET_REPO_FULL_NAME
+        let mut vars_bb = std::collections::HashMap::new();
+        vars_bb.insert(
+            "BITBUCKET_REPO_FULL_NAME".to_string(),
+            "bitbucket/project".to_string(),
+        );
+        assert_eq!(
+            identify_context(&MockEnv { vars: vars_bb }),
+            ExecutionContext::GenericCI {
+                repo: "bitbucket/project".to_string()
+            }
+        );
+
+        // CircleCI two-part path
+        let mut vars_circle = std::collections::HashMap::new();
+        vars_circle.insert(
+            "CIRCLE_PROJECT_USERNAME".to_string(),
+            "circle_user".to_string(),
+        );
+        vars_circle.insert(
+            "CIRCLE_PROJECT_REPONAME".to_string(),
+            "circle_repo".to_string(),
+        );
+        assert_eq!(
+            identify_context(&MockEnv {
+                vars: vars_circle.clone()
+            }),
+            ExecutionContext::GenericCI {
+                repo: "circle_user/circle_repo".to_string()
+            }
+        );
+
+        // CircleCI incomplete (one component blank) falls back
+        vars_circle.insert("CIRCLE_PROJECT_REPONAME".to_string(), "   ".to_string());
+        vars_circle.insert("CI".to_string(), "true".to_string());
+        assert_eq!(
+            identify_context(&MockEnv { vars: vars_circle }),
             ExecutionContext::GenericCI {
                 repo: "".to_string()
             }
         );
 
-        vars.insert("GLEON_PROJECT_PATH".to_string(), "org/repo".to_string());
-        let env2 = MockEnv { vars };
+        // Blank higher-priority GLEON_PROJECT_PATH falls back to provider repo
+        let mut vars_blank_override = std::collections::HashMap::new();
+        vars_blank_override.insert("GLEON_PROJECT_PATH".to_string(), "   ".to_string());
+        vars_blank_override.insert("CI_PROJECT_PATH".to_string(), "fallback/repo".to_string());
         assert_eq!(
-            identify_context(&env2),
+            identify_context(&MockEnv {
+                vars: vars_blank_override
+            }),
             ExecutionContext::GenericCI {
-                repo: "org/repo".to_string()
+                repo: "fallback/repo".to_string()
             }
+        );
+
+        // Override mismatch against provider repo prefers provider repo for security
+        let mut vars_mismatch = std::collections::HashMap::new();
+        vars_mismatch.insert("GLEON_PROJECT_PATH".to_string(), "spoofed/repo".to_string());
+        vars_mismatch.insert("CI_PROJECT_PATH".to_string(), "authentic/repo".to_string());
+        assert_eq!(
+            identify_context(&MockEnv {
+                vars: vars_mismatch
+            }),
+            ExecutionContext::GenericCI {
+                repo: "authentic/repo".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_generic_ci_verify_key_empty_and_whitespace_repo_fails() {
+        let token = generate_test_license("foo/*", 2000);
+
+        let empty_ctx = ExecutionContext::GenericCI {
+            repo: "".to_string(),
+        };
+        let res_empty = LicenseGate::verify_key(&token, &empty_ctx, 100);
+        assert!(res_empty.is_err());
+        assert!(
+            res_empty
+                .unwrap_err()
+                .contains("Repository name could not be automatically detected")
+        );
+
+        let whitespace_ctx = ExecutionContext::GenericCI {
+            repo: "   ".to_string(),
+        };
+        let res_ws = LicenseGate::verify_key(&token, &whitespace_ctx, 100);
+        assert!(res_ws.is_err());
+        assert!(
+            res_ws
+                .unwrap_err()
+                .contains("Repository name could not be automatically detected")
         );
     }
 
