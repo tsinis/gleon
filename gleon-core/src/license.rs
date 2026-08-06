@@ -94,10 +94,23 @@ pub fn identify_context(env_provider: &dyn crate::git::EnvProvider) -> Execution
         let is_private = parse_github_event_payload_is_private(env_provider);
         return ExecutionContext::GitHubActions { repo, is_private };
     }
-    // 2. GitLab / Generic CI with explicit project path
-    if let Some(repo) = env_provider.get_var("CI_PROJECT_PATH") {
+    // 2. Try to get project path explicitly provided or from generic CI variables
+    let explicit_repo = env_provider
+        .get_var("GLEON_PROJECT_PATH")
+        .or_else(|| env_provider.get_var("CI_PROJECT_PATH"))
+        .or_else(|| env_provider.get_var("TRAVIS_REPO_SLUG"))
+        .or_else(|| env_provider.get_var("BITBUCKET_REPO_FULL_NAME"))
+        .or_else(|| {
+            // CircleCI splits username and reponame
+            let user = env_provider.get_var("CIRCLE_PROJECT_USERNAME")?;
+            let repo = env_provider.get_var("CIRCLE_PROJECT_REPONAME")?;
+            Some(format!("{}/{}", user, repo))
+        });
+
+    if let Some(repo) = explicit_repo {
         return ExecutionContext::GenericCI { repo };
     }
+
     // 3. Fallback for other CIs (CircleCI, Travis, Azure, Buildkite, Drone, TeamCity, Bitbucket, generic "CI=true")
     if env_provider.get_var("CI").is_some()
         || env_provider.get_var("CONTINUOUS_INTEGRATION").is_some()
@@ -160,7 +173,10 @@ impl LicenseGate {
             return LicenseStatus::PublicOrGrantedUse;
         }
 
-        let has_valid_license = match env_provider.get_var("GLEON_LICENSE_KEY") {
+        let has_valid_license = match env_provider
+            .get_var("GLEON_LICENSE_KEY")
+            .filter(|k| !k.trim().is_empty())
+        {
             Some(key) => Self::verify_key(&key, &context, now),
             None => Err("No GLEON_LICENSE_KEY environment variable provided".to_string()),
         };
@@ -227,7 +243,12 @@ impl LicenseGate {
 
         let repo_to_check = match context {
             ExecutionContext::GitHubActions { repo, .. } => Some(repo),
-            ExecutionContext::GenericCI { repo } => Some(repo),
+            ExecutionContext::GenericCI { repo } => {
+                if repo.is_empty() {
+                    return Err("Repository name could not be automatically detected for this CI. Please set GLEON_PROJECT_PATH environment variable.".to_string());
+                }
+                Some(repo)
+            }
             ExecutionContext::LocalDev => None,
         };
 
@@ -408,11 +429,20 @@ mod tests {
     fn test_identify_context_other_ci() {
         let mut vars = std::collections::HashMap::new();
         vars.insert("CIRCLECI".to_string(), "true".to_string());
-        let env = MockEnv { vars };
+        let env1 = MockEnv { vars: vars.clone() };
         assert_eq!(
-            identify_context(&env),
+            identify_context(&env1),
             ExecutionContext::GenericCI {
                 repo: "".to_string()
+            }
+        );
+
+        vars.insert("GLEON_PROJECT_PATH".to_string(), "org/repo".to_string());
+        let env2 = MockEnv { vars };
+        assert_eq!(
+            identify_context(&env2),
+            ExecutionContext::GenericCI {
+                repo: "org/repo".to_string()
             }
         );
     }

@@ -21,6 +21,36 @@
 >
 > If a shallow clone is detected, gleon will fail immediately returning a hard `GitError::ShallowClone`.
 
+## GitHub Action Usage
+
+Gleon provides a Composite GitHub Action (`tsinis/gleon`) for running visual regression testing in CI:
+
+```yaml
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
+    with:
+      fetch-depth: 0 # Required for merge-base resolution
+
+  - name: Run Gleon Visual Regression
+    uses: tsinis/gleon@v1
+    with:
+      license-key: ${{ secrets.GLEON_LICENSE_KEY }}
+      strict: "false"
+```
+
+### Action Inputs
+
+| Input | Description | Default |
+| :--- | :--- | :--- |
+| `version` | Gleon release version to download (`'latest'` or specific tag) | `'latest'` |
+| `github-token` | GitHub token (`${{ secrets.GITHUB_TOKEN }}`) to prevent API rate limits when downloading the binary. **Highly recommended** for active CI pipelines | `''` |
+| `license-key` | Commercial BSL license key for private repositories | `''` |
+| `strict` | Fail build on license violation (`'true'` / `'false'`) | `'false'` |
+| `target-branch` | Target branch for baseline comparison | PR base ref or default branch |
+| `args` | Additional flags for `gleon diff` | `''` |
+
+
 ## How to Build and Run Locally
 
 ### Prerequisites

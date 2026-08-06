@@ -148,12 +148,18 @@ impl ResolvedContext {
             }
         };
 
+        let target_branch = if cli.target_branch.trim().is_empty() {
+            "main".to_string()
+        } else {
+            cli.target_branch.clone()
+        };
+
         Ok(Self {
             config,
             platform,
             fallback_platform_key,
             branch,
-            target_branch: cli.target_branch.clone(),
+            target_branch,
             base_dir: resolved_base_dir,
         })
     }
