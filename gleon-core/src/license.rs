@@ -73,7 +73,7 @@ struct GithubRepository {
 
 pub fn parse_github_event_payload_is_private(env_provider: &dyn crate::git::EnvProvider) -> bool {
     let Some(path) = env_provider.get_var("GITHUB_EVENT_PATH") else {
-        return false;
+        return true;
     };
 
     fs::read_to_string(&path)
@@ -337,6 +337,17 @@ mod tests {
     fn test_identify_context_github_actions_public() {
         let mut vars = std::collections::HashMap::new();
         vars.insert("GITHUB_REPOSITORY".to_string(), "foo/bar".to_string());
+
+        let path = std::env::temp_dir().join(format!(
+            "github_payload_ctx_{:?}.json",
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, r#"{"repository":{"private":false}}"#).unwrap();
+        vars.insert(
+            "GITHUB_EVENT_PATH".to_string(),
+            path.to_string_lossy().into_owned(),
+        );
+
         let env = MockEnv { vars };
 
         let ctx = identify_context(&env);
@@ -347,10 +358,30 @@ mod tests {
                 is_private: false
             }
         );
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
-    fn test_identify_context_generic_ci() {
+    fn test_identify_context_github_actions_missing_payload() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("GITHUB_REPOSITORY".to_string(), "foo/bar".to_string());
+        // Do not insert GITHUB_EVENT_PATH
+        let env = MockEnv { vars };
+
+        let ctx = identify_context(&env);
+        // Should fail-closed to private: true
+        assert_eq!(
+            ctx,
+            ExecutionContext::GitHubActions {
+                repo: "foo/bar".to_string(),
+                is_private: true
+            }
+        );
+    }
+
+    #[test]
+    fn test_identify_context_gitlab() {
         let mut vars = std::collections::HashMap::new();
         vars.insert("CI_PROJECT_PATH".to_string(), "foo/bar".to_string());
         let env = MockEnv { vars };
@@ -532,11 +563,23 @@ mod tests {
     fn test_verify_internal_public_ci() {
         let mut vars = std::collections::HashMap::new();
         vars.insert("GITHUB_REPOSITORY".to_string(), "foo/bar".to_string());
-        // Since GITHUB_EVENT_PATH is absent, parse_github_event_payload_is_private returns false
+
+        let path = std::env::temp_dir().join(format!(
+            "github_payload_{:?}.json",
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, r#"{"repository":{"private":false}}"#).unwrap();
+        vars.insert(
+            "GITHUB_EVENT_PATH".to_string(),
+            path.to_string_lossy().into_owned(),
+        );
+
         let env = MockEnv { vars };
 
         let status = LicenseGate::verify_internal(&env, false, 0);
         assert_eq!(status, LicenseStatus::PublicOrGrantedUse);
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

@@ -11,6 +11,7 @@ fn test_cli_blocks_execution_in_private_ci_without_valid_license_or_timestamp() 
     // In a generic private CI context, this must trigger an exit 42 with compliance error.
 
     let mut cmd = Command::cargo_bin("gleon").unwrap();
+    cmd.env_clear();
 
     // Mock Generic CI environment (private repository)
     cmd.env("CI", "true");
@@ -23,7 +24,7 @@ fn test_cli_blocks_execution_in_private_ci_without_valid_license_or_timestamp() 
     cmd.env("GLEON_LICENSE_KEY", "invalid_base64_or_signature");
 
     // Attempt to run the CLI (e.g. status)
-    let assert = cmd.arg("status").assert();
+    let assert = cmd.arg("--strict").arg("status").assert();
 
     // The CLI should fail with exit code 42 due to UnofficialBuildInPrivateCI
     // or ExpiredUnlicensedBinary
