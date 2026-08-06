@@ -98,7 +98,9 @@ fn get_trimmed_var(env_provider: &dyn crate::git::EnvProvider, key: &str) -> Opt
 
 pub fn identify_context(env_provider: &dyn crate::git::EnvProvider) -> ExecutionContext {
     // 1. GitHub Actions
-    if let Some(repo) = get_trimmed_var(env_provider, "GITHUB_REPOSITORY") {
+    if get_trimmed_var(env_provider, "GITHUB_ACTIONS").as_deref() == Some("true")
+        && let Some(repo) = get_trimmed_var(env_provider, "GITHUB_REPOSITORY")
+    {
         let is_private = parse_github_event_payload_is_private(env_provider);
         return ExecutionContext::GitHubActions { repo, is_private };
     }
@@ -363,6 +365,7 @@ mod tests {
     #[test]
     fn test_identify_context_github_actions_public() {
         let mut vars = std::collections::HashMap::new();
+        vars.insert("GITHUB_ACTIONS".to_string(), "true".to_string());
         vars.insert("GITHUB_REPOSITORY".to_string(), "foo/bar".to_string());
 
         let path = std::env::temp_dir().join(format!(
@@ -392,6 +395,7 @@ mod tests {
     #[test]
     fn test_identify_context_github_actions_missing_payload() {
         let mut vars = std::collections::HashMap::new();
+        vars.insert("GITHUB_ACTIONS".to_string(), "true".to_string());
         vars.insert("GITHUB_REPOSITORY".to_string(), "foo/bar".to_string());
         // Do not insert GITHUB_EVENT_PATH
         let env = MockEnv { vars };
@@ -405,6 +409,39 @@ mod tests {
                 is_private: true
             }
         );
+    }
+
+    #[test]
+    fn test_identify_context_github_actions_requires_marker() {
+        let mut vars = std::collections::HashMap::new();
+        // Simulate a fake GITHUB_REPOSITORY set in another CI
+        vars.insert("GITHUB_REPOSITORY".to_string(), "foo/bar".to_string());
+        // And a generic CI provider variable
+        vars.insert("CI_PROJECT_PATH".to_string(), "gitlab/project".to_string());
+
+        // Create a fake public event payload
+        let path = std::env::temp_dir().join(format!(
+            "github_payload_fake_{:?}.json",
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, r#"{"repository":{"private":false}}"#).unwrap();
+        vars.insert(
+            "GITHUB_EVENT_PATH".to_string(),
+            path.to_string_lossy().into_owned(),
+        );
+
+        let env = MockEnv { vars };
+
+        let ctx = identify_context(&env);
+        // It must NOT match GitHubActions and should fall through to GenericCI
+        assert_eq!(
+            ctx,
+            ExecutionContext::GenericCI {
+                repo: "gitlab/project".to_string()
+            }
+        );
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -568,6 +605,44 @@ mod tests {
         assert!(parse_github_event_payload_is_private(&env));
     }
 
+    #[test]
+    fn test_parse_github_event_payload_edge_cases() {
+        let temp = tempfile::tempdir().unwrap();
+
+        // 1. Non-existent file path returns true (fail closed)
+        let mut vars = std::collections::HashMap::new();
+        vars.insert(
+            "GITHUB_EVENT_PATH".to_string(),
+            temp.path()
+                .join("missing.json")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        assert!(parse_github_event_payload_is_private(&MockEnv {
+            vars: vars.clone()
+        }));
+
+        // 2. Malformed JSON returns true (fail closed)
+        let bad_json_path = temp.path().join("bad.json");
+        std::fs::write(&bad_json_path, "{ invalid json }").unwrap();
+        vars.insert(
+            "GITHUB_EVENT_PATH".to_string(),
+            bad_json_path.to_string_lossy().into_owned(),
+        );
+        assert!(parse_github_event_payload_is_private(&MockEnv {
+            vars: vars.clone()
+        }));
+
+        // 3. JSON without repository returns true (fail closed)
+        let no_repo_path = temp.path().join("norepo.json");
+        std::fs::write(&no_repo_path, "{}").unwrap();
+        vars.insert(
+            "GITHUB_EVENT_PATH".to_string(),
+            no_repo_path.to_string_lossy().into_owned(),
+        );
+        assert!(parse_github_event_payload_is_private(&MockEnv { vars }));
+    }
+
     fn generate_test_license(repo_pattern: &str, expires_at: u64) -> String {
         use ed25519_dalek::{Signer, SigningKey};
         let secret = [42u8; 32];
@@ -639,6 +714,75 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_key_error_branches() {
+        let ctx = ExecutionContext::GenericCI {
+            repo: "foo/bar".to_string(),
+        };
+
+        // 1. Invalid base64
+        let err_b64 = LicenseGate::verify_key("not_valid_b64!@#$", &ctx, 1000);
+        assert!(err_b64.is_err());
+        assert!(err_b64.unwrap_err().contains("Invalid base64 encoding"));
+
+        // 2. Payload too short (<= 64 bytes)
+        let short_b64 = base64::engine::general_purpose::STANDARD.encode([0u8; 32]);
+        let err_short = LicenseGate::verify_key(&short_b64, &ctx, 1000);
+        assert!(err_short.is_err());
+        assert!(err_short.unwrap_err().contains("payload too short"));
+
+        // 3. Cryptographic signature verification failed & Invalid license payload JSON
+        // Initialize PUBLIC_KEY_BYTES for current thread
+        let _valid_token = generate_test_license("foo/*", 2000);
+
+        // Signature mismatch with valid signature format (signed with a different key)
+        use ed25519_dalek::{Signer, SigningKey};
+        let payload = LicensePayload {
+            owner: "test".to_string(),
+            repo_pattern: "foo/*".to_string(),
+            expires_at: 2000,
+            license_id: "test-id".to_string(),
+        };
+        let payload_bytes = serde_json::to_vec(&payload).unwrap();
+        let other_key = SigningKey::from_bytes(&[99u8; 32]);
+        let sig = other_key.sign(&payload_bytes);
+        let mut invalid_sig_payload = payload_bytes.clone();
+        invalid_sig_payload.extend_from_slice(&sig.to_bytes());
+        let invalid_token = base64::engine::general_purpose::STANDARD.encode(invalid_sig_payload);
+        let err_sig_verify = LicenseGate::verify_key(&invalid_token, &ctx, 1000);
+        assert!(err_sig_verify.is_err());
+        assert!(
+            err_sig_verify
+                .unwrap_err()
+                .contains("Cryptographic signature verification failed")
+        );
+
+        // Invalid license payload JSON (signed with matching key but bad JSON)
+        let matching_key = SigningKey::from_bytes(&[42u8; 32]);
+        let bad_json = b"{ not valid json }";
+        let bad_json_sig = matching_key.sign(bad_json);
+        let mut bad_json_payload = bad_json.to_vec();
+        bad_json_payload.extend_from_slice(&bad_json_sig.to_bytes());
+        let bad_json_token = base64::engine::general_purpose::STANDARD.encode(bad_json_payload);
+        let err_json = LicenseGate::verify_key(&bad_json_token, &ctx, 1000);
+        assert!(err_json.is_err());
+        assert!(
+            err_json
+                .unwrap_err()
+                .contains("Invalid license payload JSON")
+        );
+
+        // 4. Invalid glob pattern in repo_pattern
+        let token_bad_glob = generate_test_license("[invalid", 2000);
+        let err_glob = LicenseGate::verify_key(&token_bad_glob, &ctx, 1000);
+        assert!(err_glob.is_err());
+        assert!(
+            err_glob
+                .unwrap_err()
+                .contains("Invalid license repo pattern")
+        );
+    }
+
+    #[test]
     fn test_enforce_policy_outcomes() {
         let mut vars = std::collections::HashMap::new();
         vars.insert("GITHUB_ACTIONS".to_string(), "true".to_string());
@@ -680,6 +824,29 @@ mod tests {
             enforce_policy(LicenseStatus::ExpiredUnlicensedBinary, false, &env),
             EnforcementAction::Block
         );
+
+        // Non-GitHub environment printing checks
+        let env_non_gh = MockEnv {
+            vars: std::collections::HashMap::new(),
+        };
+        assert_eq!(
+            enforce_policy(
+                LicenseStatus::UnlicensedSoft {
+                    reason: "soft test non gh".to_string()
+                },
+                false,
+                &env_non_gh
+            ),
+            EnforcementAction::Warn
+        );
+        assert_eq!(
+            enforce_policy(
+                LicenseStatus::UnofficialBuildInPrivateCI,
+                false,
+                &env_non_gh
+            ),
+            EnforcementAction::Block
+        );
     }
 
     #[test]
@@ -694,6 +861,7 @@ mod tests {
     #[test]
     fn test_verify_internal_public_ci() {
         let mut vars = std::collections::HashMap::new();
+        vars.insert("GITHUB_ACTIONS".to_string(), "true".to_string());
         vars.insert("GITHUB_REPOSITORY".to_string(), "foo/bar".to_string());
 
         let path = std::env::temp_dir().join(format!(
@@ -776,5 +944,20 @@ mod tests {
 
         let status = LicenseGate::verify_internal(&env, true, build_timestamp);
         assert_eq!(status, LicenseStatus::UnofficialBuildInPrivateCI);
+    }
+
+    #[test]
+    fn test_verify_public_api_and_get_trimmed_var() {
+        let env = MockEnv {
+            vars: std::collections::HashMap::new(),
+        };
+        // Verify public LicenseGate::verify entrypoint
+        let status = LicenseGate::verify(&env);
+        assert_eq!(status, LicenseStatus::Valid);
+
+        // Test get_trimmed_var whitespace filter
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("BLANK".to_string(), "   ".to_string());
+        assert_eq!(get_trimmed_var(&MockEnv { vars }, "BLANK"), None);
     }
 }

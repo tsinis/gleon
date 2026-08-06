@@ -3,6 +3,8 @@ debug/
 target/
 *.rs.bk
 *.pdb
+*.profraw
+*.profdata
 Cargo.lock.sub
 **/*.rs.bk
 **/*.rs.bk~

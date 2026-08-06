@@ -18,6 +18,7 @@ words = [
     "Jalr",
     "Licensor",
     "RAII",
+    "REPONAME",
     "RUSTFLAGS",
     "RUSTSEC",
     "SOURCEBRANCHNAME",
