@@ -824,7 +824,7 @@ mod tests {
         gix::init(dir.path()).expect("gix init should succeed");
         std::fs::write(
             dir.path().join(".git/config"),
-            "[user]\n\tname = gleon Test\n\temail = test@gleon.dev\n",
+            "[user]\n\tname = gleon Test\n\temail = test@gleon.rs\n",
         )
         .expect("write .git/config should succeed");
         let repo = gix::open(dir.path()).expect("gix open should succeed");
@@ -1011,7 +1011,12 @@ mod tests {
             .unwrap();
         std::process::Command::new("git")
             .current_dir(dir.path())
-            .args(["config", "user.email", "author@gleon.dev"])
+            .args(["config", "user.email", "author@gleon.rs"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["config", "commit.gpgsign", "false"])
             .output()
             .unwrap();
 
@@ -1032,7 +1037,7 @@ mod tests {
         let sha = head_commit.id.to_string();
 
         let author = GitResolver::get_commit_author(dir.path(), &sha).unwrap();
-        assert_eq!(author, "gleon Author <author@gleon.dev>");
+        assert_eq!(author, "gleon Author <author@gleon.rs>");
     }
 
     #[test]
@@ -1117,6 +1122,21 @@ mod tests {
         std::process::Command::new("git")
             .current_dir(dir.path())
             .args(["config", "user.email", "test@test.com"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["config", "user.name", "gleon Author"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["config", "user.email", "author@gleon.rs"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["config", "commit.gpgsign", "false"])
             .output()
             .unwrap();
 

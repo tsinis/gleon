@@ -7,6 +7,7 @@ pub mod engine;
 pub mod env;
 pub mod git;
 pub mod io;
+pub mod license;
 pub mod manifest;
 pub mod masking;
 pub mod ops;

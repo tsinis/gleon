@@ -22,6 +22,7 @@ fn test_stage_uninitialized_fails() {
         verbose: false,
         quiet: false,
         config: None,
+        strict: false,
         target_branch: "main".to_string(),
         command: Commands::Stage { paths: vec![] },
     };
@@ -74,6 +75,7 @@ screenshots:
         verbose: false,
         quiet: false,
         config: None,
+        strict: false,
         target_branch: "main".to_string(),
         command: Commands::Stage { paths: vec![] },
     };
