@@ -83,8 +83,14 @@ jobs:
             echo "Branch successfully deleted."
             exit 0
           elif [ "$STATUS" = "422" ]; then
-            echo "Branch reference does not exist (422), ignoring error."
-            exit 0
+            if echo "$RESPONSE" | grep -q "Reference does not exist"; then
+              echo "Branch reference does not exist (422), ignoring error."
+              exit 0
+            else
+              echo "Failed to delete branch (422) due to validation or other error:"
+              echo "$RESPONSE"
+              exit 1
+            fi
           else
             echo "Failed to delete branch ($STATUS):"
             echo "$RESPONSE"

@@ -37,7 +37,15 @@ pub async fn run_report(
 
         if let Ok(adapter) = gleon_core::storage::ObjectStoreAdapter::from_config(cfg) {
             let expires_in = std::time::Duration::from_secs(7 * 24 * 3600);
-            for tc in &report_data {
+
+            let failed_tests: Vec<_> = report_data.iter().filter(|tc| !tc.passed()).collect();
+            let limit = ReportGenerator::MAX_MARKDOWN_DIFF_ROWS;
+            let to_sign: Vec<_> = failed_tests.into_iter().take(limit).collect();
+
+            let mut join_set = tokio::task::JoinSet::new();
+            let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(adapter.concurrency()));
+
+            for tc in to_sign {
                 let paths: Vec<&std::path::Path> = match &tc.result {
                     gleon_core::scanner::TestImageResult::Mismatch {
                         baseline_path,
@@ -58,17 +66,35 @@ pub async fn run_report(
                     } => {
                         vec![baseline_path.as_path(), actual_path.as_path()]
                     }
+                    gleon_core::scanner::TestImageResult::MissingBaseline {
+                        relative_path, ..
+                    }
+                    | gleon_core::scanner::TestImageResult::DecodeError { relative_path, .. } => {
+                        vec![relative_path.as_path()]
+                    }
                     _ => vec![],
                 };
 
                 for p in paths {
-                    let path_str = match p.to_str() {
-                        Some(s) => s,
-                        None => continue,
-                    };
-                    if let Ok(Some(signed)) = adapter.sign_blob_url(path_str, expires_in).await {
-                        let _ = signed_urls.insert(p.to_path_buf(), signed);
+                    if let Some(path_str) = p.to_str() {
+                        let path_buf = p.to_path_buf();
+                        let path_string = path_str.to_string();
+                        let adapter = adapter.clone();
+                        let sem = semaphore.clone();
+                        join_set.spawn(async move {
+                            let _permit = sem.acquire_owned().await.expect("Semaphore closed");
+                            adapter
+                                .sign_blob_url(&path_string, expires_in)
+                                .await
+                                .map(|signed| (path_buf, signed))
+                        });
                     }
+                }
+            }
+
+            while let Some(res) = join_set.join_next().await {
+                if let Ok(Some((p, signed))) = res {
+                    let _ = signed_urls.insert(p, signed);
                 }
             }
         }
@@ -77,11 +103,16 @@ pub async fn run_report(
     let artifact_env = env.get_var("GLEON_HTML_ARTIFACT_URL");
     let html_artifact_url = artifact_env.as_deref().filter(|s| !s.is_empty());
 
-    let resolver = move |p: &std::path::Path| signed_urls.get(p).cloned();
+    let has_signed_urls = !signed_urls.is_empty();
+    let resolver = |p: &std::path::Path| signed_urls.get(p).cloned();
     let options = MarkdownReportOptions {
         base_image_url,
         html_artifact_url,
-        image_url_resolver: Some(&resolver),
+        image_url_resolver: if has_signed_urls {
+            Some(&resolver)
+        } else {
+            None
+        },
     };
 
     let md_content = ReportGenerator::render_pr_comment(&report_data, &options);
