@@ -95,6 +95,7 @@ words = [
     "mkdir",
     "mysecretpassword",
     "nextest",
+    "norepo",
     "oninput",
     "oob",
     "phash",
