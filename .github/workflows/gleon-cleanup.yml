@@ -1,0 +1,18 @@
+name: Gleon Cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  cleanup-ephemeral-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete PR diffs branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH_NAME="gleon/diffs/pr-${{ github.event.number }}"
+          echo "Attempting to delete ephemeral branch: $BRANCH_NAME"
+          # We use gh api to delete the reference. We allow this to fail if the branch doesn't exist.
+          gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/$BRANCH_NAME" || true

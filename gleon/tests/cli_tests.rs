@@ -710,3 +710,59 @@ fn test_dotenv_loading_integration() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[test]
+fn test_cli_report_markdown_stdout_and_file() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let json_report_path = dir.path().join("gleon-report.json");
+    let out_report_path = dir.path().join("out-report.md");
+
+    // Write sample json report
+    let sample_json = r#"[
+        {
+            "name": "login_button",
+            "result": {
+                "Mismatch": {
+                    "relative_path": "login.png",
+                    "detail": { "Pixel": { "diff_count": 42 } },
+                    "diff_path": "diffs/login.png",
+                    "baseline_path": "goldens/login.png",
+                    "actual_path": "actual/login.png"
+                }
+            }
+        }
+    ]"#;
+    std::fs::write(&json_report_path, sample_json)?;
+
+    // Test stdout output
+    let mut cmd_stdout = Command::cargo_bin("gleon")?;
+    cmd_stdout
+        .current_dir(dir.path())
+        .arg("report")
+        .arg("markdown")
+        .arg("--report")
+        .arg(&json_report_path)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("login_button"))
+        .stdout(predicates::str::contains("42 px"));
+
+    // Test --out file output
+    let mut cmd_out = Command::cargo_bin("gleon")?;
+    cmd_out
+        .current_dir(dir.path())
+        .arg("report")
+        .arg("markdown")
+        .arg("--report")
+        .arg(&json_report_path)
+        .arg("--out")
+        .arg(&out_report_path)
+        .assert()
+        .success();
+
+    let out_content = std::fs::read_to_string(out_report_path)?;
+    assert!(out_content.contains("login_button"));
+    assert!(out_content.contains("42 px"));
+
+    Ok(())
+}

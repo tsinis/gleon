@@ -140,12 +140,13 @@ pub fn save_file_atomically<P: AsRef<Path>>(path: P, content: &[u8]) -> Result<(
     })
 }
 
-pub fn save_json_atomically<T: serde::Serialize, P: AsRef<Path>>(
+pub fn save_json_atomically<T: serde::Serialize + ?Sized, P: AsRef<Path>>(
     path: P,
     value: &T,
 ) -> Result<(), IoError> {
-    let content = serde_json::to_vec_pretty(value)?;
-    save_file_atomically(path, &content)
+    write_file_atomically(path, |writer| {
+        serde_json::to_writer_pretty(writer, value).map_err(IoError::JsonParse)
+    })
 }
 
 #[cfg(test)]

@@ -137,4 +137,4 @@ runs:
         GLEON_TARGET_BRANCH: ${{ inputs.target-branch }}
         GLEON_ARGS: ${{ inputs.args }}
       run: |
-        printf '%s\n' "$GLEON_ARGS" | xargs gleon diff
+        eval "gleon diff $GLEON_ARGS"

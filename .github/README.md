@@ -52,6 +52,33 @@ steps:
 | `target-branch` | Target branch for baseline comparison | PR base ref or default branch |
 | `args` | Additional flags for `gleon diff` | `''` |
 
+### Ephemeral Diff Branch Cleanup Workflow
+
+When visual diffs are detected in a PR, ephemeral branches (`gleon/diffs/pr-<PR_NUMBER>`) are pushed to store diff artifacts.
+
+To prevent orphan branches from accumulating in consumer repositories, add `.github/workflows/gleon-cleanup.yml` to your repository:
+
+```yaml
+name: Gleon Ephemeral Branch Cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete PR diffs branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH_NAME="gleon/diffs/pr-${{ github.event.number }}"
+          gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/$BRANCH_NAME" || true
+```
+
+When a Pull Request is closed or merged, this workflow automatically deletes the ephemeral `gleon/diffs/pr-<PR_NUMBER>` branch from your repository.
+
 
 ## How to Build and Run Locally
 

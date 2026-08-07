@@ -206,6 +206,27 @@ async fn run(
         Commands::Gc => {
             info!("Subcommand gc is not fully implemented yet");
         }
+        Commands::Report {
+            format,
+            report,
+            pr_number,
+            out,
+        } => {
+            let ctx =
+                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            let storage_cfg = get_storage_config(env);
+            return commands::report::run_report(
+                &ctx,
+                env,
+                storage_cfg,
+                format,
+                report,
+                *pr_number,
+                out.as_deref(),
+            )
+            .await;
+        }
     }
     Ok(0)
 }

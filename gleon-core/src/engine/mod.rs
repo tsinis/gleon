@@ -12,7 +12,7 @@ use crate::config::{DiffConfig, Mode};
 use image::RgbaImage;
 
 /// Detailed breakdown of a mismatch between baseline and actual images.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum MismatchDetail {
     /// Pixel difference count.

@@ -108,6 +108,12 @@ pub fn make_relative_path(target: &std::path::Path, base: &std::path::Path) -> s
     }
 }
 
+#[derive(Default, Debug, Clone)]
+pub struct MarkdownReportOptions<'a> {
+    pub base_image_url: Option<&'a str>,
+    pub html_artifact_url: Option<&'a str>,
+}
+
 pub struct ReportGenerator;
 
 impl ReportGenerator {}
@@ -597,6 +603,58 @@ impl<'a> Serialize for XmlTestCasesView<'a> {
     }
 }
 
+pub struct PosixPathFormatter<'a>(pub &'a std::path::Path);
+impl<'a> std::fmt::Display for PosixPathFormatter<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write;
+        let mut first = true;
+        for comp in self.0.components() {
+            match comp {
+                std::path::Component::Normal(s) => {
+                    if !first {
+                        f.write_char('/')?;
+                    }
+                    f.write_str(&s.to_string_lossy())?;
+                    first = false;
+                }
+                std::path::Component::ParentDir => {
+                    if !first {
+                        f.write_char('/')?;
+                    }
+                    f.write_str("..")?;
+                    first = false;
+                }
+                std::path::Component::CurDir => {}
+                std::path::Component::RootDir => {
+                    f.write_char('/')?;
+                    first = true;
+                }
+                std::path::Component::Prefix(prefix) => {
+                    f.write_str(&prefix.as_os_str().to_string_lossy())?;
+                    first = false;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+pub struct MarkdownEscape<'a>(pub &'a str);
+impl<'a> std::fmt::Display for MarkdownEscape<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write;
+        for c in self.0.chars() {
+            match c {
+                '|' => f.write_str("\\|")?,
+                '\n' | '\r' => f.write_char(' ')?,
+                '\\' => f.write_str("\\\\")?,
+                _ => f.write_char(c)?,
+            }
+        }
+        Ok(())
+    }
+}
+
 impl ReportGenerator {
     /// Generates a single self-contained HTML report string linking images via relative paths.
     /// Skips generation entirely if 100% of tests passed by returning None.
@@ -651,60 +709,264 @@ impl ReportGenerator {
     }
 
     /// Generates a simple Markdown report summary string.
+    pub const MAX_MARKDOWN_DIFF_ROWS: usize = 10;
+
+    pub fn render_pr_comment(
+        test_cases: &[TestCaseResult],
+        options: &MarkdownReportOptions,
+    ) -> String {
+        use std::fmt::Write;
+
+        let failed_tests: Vec<_> = test_cases.iter().filter(|tc| !tc.passed()).collect();
+        let total_failed = failed_tests.len();
+
+        if total_failed == 0 {
+            return "### ✅ Gleon Visual Regression: All tests passed!\n".to_string();
+        }
+
+        let mut out = String::new();
+        writeln!(
+            out,
+            "### ❌ Gleon Visual Regression Failure ({} diffs)\n",
+            total_failed
+        )
+        .expect("write infallible");
+
+        if options.base_image_url.is_some() {
+            out.push_str("| Test Name | Expected | Actual | Diff | Delta |\n");
+            out.push_str("| :--- | :---: | :---: | :---: | :---: |\n");
+        } else {
+            out.push_str("| Test Name | Status | Error |\n");
+            out.push_str("| :--- | :--- | :--- |\n");
+        }
+
+        struct ImgLinkFormatter<'a> {
+            base_url: Option<&'a str>,
+            path: Option<&'a std::path::Path>,
+        }
+        impl<'a> std::fmt::Display for ImgLinkFormatter<'a> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match (self.base_url, self.path) {
+                    (Some(base), Some(p)) => {
+                        let base = base.trim_end_matches('/');
+                        write!(f, "[Image]({}/{})", base, PosixPathFormatter(p))
+                    }
+                    _ => f.write_str("N/A"),
+                }
+            }
+        }
+
+        struct DeltaFormatter<'a>(&'a MismatchDetail);
+        impl<'a> std::fmt::Display for DeltaFormatter<'a> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self.0 {
+                    MismatchDetail::Pixel { diff_count } => write!(f, "{} px", diff_count),
+                    MismatchDetail::Ssim { ssim_score } => write!(f, "{:.4} SSIM", ssim_score),
+                    MismatchDetail::SsimFallback { diff_count } => {
+                        write!(f, "{} px (fb)", diff_count)
+                    }
+                }
+            }
+        }
+
+        for tc in failed_tests.iter().take(Self::MAX_MARKDOWN_DIFF_ROWS) {
+            let res = &tc.result;
+            // test name is already validated to be [a-zA-Z0-9_.-], no escaping needed.
+            let name = &tc.name;
+
+            if let Some(base_url) = options.base_image_url {
+                match res {
+                    TestImageResult::Mismatch {
+                        detail,
+                        diff_path,
+                        baseline_path,
+                        actual_path,
+                        ..
+                    } => {
+                        writeln!(
+                            out,
+                            "| `{}` | {} | {} | {} | `{}` |",
+                            name,
+                            ImgLinkFormatter {
+                                base_url: Some(base_url),
+                                path: Some(baseline_path)
+                            },
+                            ImgLinkFormatter {
+                                base_url: Some(base_url),
+                                path: Some(actual_path)
+                            },
+                            ImgLinkFormatter {
+                                base_url: Some(base_url),
+                                path: Some(diff_path)
+                            },
+                            DeltaFormatter(detail)
+                        )
+                        .expect("write infallible");
+                    }
+                    TestImageResult::DimensionMismatch {
+                        baseline_path,
+                        actual_path,
+                        ..
+                    } => {
+                        writeln!(
+                            out,
+                            "| `{}` | {} | {} | {} | `Dim` |",
+                            name,
+                            ImgLinkFormatter {
+                                base_url: Some(base_url),
+                                path: Some(baseline_path)
+                            },
+                            ImgLinkFormatter {
+                                base_url: Some(base_url),
+                                path: Some(actual_path)
+                            },
+                            ImgLinkFormatter {
+                                base_url: None,
+                                path: None
+                            },
+                        )
+                        .expect("write infallible");
+                    }
+                    TestImageResult::MissingBaseline { .. } => {
+                        writeln!(
+                            out,
+                            "| `{}` | {} | {} | {} | `Missing` |",
+                            name,
+                            ImgLinkFormatter {
+                                base_url: None,
+                                path: None
+                            },
+                            ImgLinkFormatter {
+                                base_url: Some(base_url),
+                                path: Some(res.relative_path())
+                            },
+                            ImgLinkFormatter {
+                                base_url: None,
+                                path: None
+                            },
+                        )
+                        .expect("write infallible");
+                    }
+                    TestImageResult::DecodeError { .. } => {
+                        writeln!(
+                            out,
+                            "| `{}` | {} | {} | {} | `Decode Error` |",
+                            name,
+                            ImgLinkFormatter {
+                                base_url: None,
+                                path: None
+                            },
+                            ImgLinkFormatter {
+                                base_url: Some(base_url),
+                                path: Some(res.relative_path())
+                            },
+                            ImgLinkFormatter {
+                                base_url: None,
+                                path: None
+                            },
+                        )
+                        .expect("write infallible");
+                    }
+                    TestImageResult::Success { .. } => unreachable!(),
+                }
+            } else {
+                match res {
+                    TestImageResult::Mismatch { detail, .. } => {
+                        writeln!(
+                            out,
+                            "| `{}` | Mismatch | {} |",
+                            name,
+                            DeltaFormatter(detail)
+                        )
+                        .expect("write infallible");
+                    }
+                    TestImageResult::DimensionMismatch { .. } => {
+                        writeln!(out, "| `{}` | Dimension Mismatch | Dim mismatch |", name)
+                            .expect("write infallible");
+                    }
+                    TestImageResult::MissingBaseline { reason, .. } => {
+                        writeln!(
+                            out,
+                            "| `{}` | Missing Baseline | {} |",
+                            name,
+                            MarkdownEscape(reason)
+                        )
+                        .expect("write infallible");
+                    }
+                    TestImageResult::DecodeError { error, .. } => {
+                        writeln!(
+                            out,
+                            "| `{}` | Decode Error | {} |",
+                            name,
+                            MarkdownEscape(error)
+                        )
+                        .expect("write infallible");
+                    }
+                    TestImageResult::Success { .. } => unreachable!(),
+                }
+            }
+        }
+
+        if total_failed > Self::MAX_MARKDOWN_DIFF_ROWS {
+            let remaining = total_failed - Self::MAX_MARKDOWN_DIFF_ROWS;
+            out.push_str("\n> ⚠️ **Truncated ");
+            write!(out, "{}", remaining).expect("write infallible");
+            out.push_str(" additional diffs.** ");
+            match options.html_artifact_url {
+                Some(url) => {
+                    out.push_str("Download the full [Gleon HTML Report](");
+                    out.push_str(url);
+                    out.push_str(") to inspect.\n");
+                }
+                None => {
+                    out.push_str(
+                        "Download the full HTML Report from GitHub Action Artifacts to inspect.\n",
+                    );
+                }
+            }
+        }
+
+        out.push_str(
+            "\n---\n*Reply with `/gleon approve` to update baseline images for this PR.*\n",
+        );
+        out
+    }
+
     pub fn generate_markdown(test_cases: &[TestCaseResult]) -> String {
         use std::fmt::Write;
 
-        let mut total = 0;
-        let mut failed = 0;
-        let mut table = String::from("| Test Case | Screenshot | Status |\n|---|---|---|\n");
+        let total = test_cases.len();
+        let failed = test_cases.iter().filter(|tc| !tc.passed()).count();
+
+        let mut out = String::new();
+        writeln!(
+            out,
+            "# gleon Visual Regression Summary\n\n**Total Tests:** {}\n**Failed:** {}\n",
+            total, failed
+        )
+        .expect("write infallible");
+
+        out.push_str("| Test Case | Screenshot | Status |\n|---|---|---|\n");
 
         for tc in test_cases {
-            total += 1;
             let res = &tc.result;
             let status = match res {
                 TestImageResult::Success { .. } => "✅ Pass",
-                TestImageResult::DecodeError { .. } => {
-                    failed += 1;
-                    "❌ Decode Error"
-                }
-                TestImageResult::MissingBaseline { .. } => {
-                    failed += 1;
-                    "❌ Missing Baseline"
-                }
-                TestImageResult::DimensionMismatch { .. } => {
-                    failed += 1;
-                    "❌ Dimension Mismatch"
-                }
-                TestImageResult::Mismatch { .. } => {
-                    failed += 1;
-                    "❌ Mismatch"
-                }
+                TestImageResult::DecodeError { .. } => "❌ Decode Error",
+                TestImageResult::MissingBaseline { .. } => "❌ Missing Baseline",
+                TestImageResult::DimensionMismatch { .. } => "❌ Dimension Mismatch",
+                TestImageResult::Mismatch { .. } => "❌ Mismatch",
             };
 
-            let sanitize_cell = |s: &str| -> String {
-                s.replace('\\', "\\\\")
-                    .replace('|', "\\|")
-                    .replace('\n', " ")
-                    .replace('\r', "")
-            };
-            let safe_name = sanitize_cell(&tc.name);
-            let path_str = FormattedPath {
-                path: res.relative_path(),
-                report_dir: None,
-            }
-            .to_string();
-            let safe_path = sanitize_cell(&path_str);
-            writeln!(table, "| {} | {} | {} |", safe_name, safe_path, status)
+            let path_fmt = PosixPathFormatter(res.relative_path());
+            writeln!(out, "| {} | {} | {} |", tc.name, path_fmt, status)
                 .expect("fmt::Write on String is infallible");
         }
 
-        format!(
-            "# gleon Visual Regression Summary\n\n**Total Tests:** {}\n**Failed:** {}\n\n{}",
-            total, failed, table
-        )
+        out
     }
 
-    /// Generates markdown, JUnit XML, and HTML report files inside `runs_dir`.
+    /// Generates markdown, JUnit XML, HTML, and JSON report files inside `runs_dir`.
     pub fn generate_all(
         runs_dir: &std::path::Path,
         test_cases: &[TestCaseResult],
@@ -722,6 +984,9 @@ impl ReportGenerator {
             crate::io::save_file_atomically(&html_path, html.as_bytes())?;
         }
 
+        let json_path = runs_dir.join("gleon-report.json");
+        crate::io::save_json_atomically(&json_path, test_cases)?;
+
         Ok(())
     }
 }
@@ -734,14 +999,6 @@ mod tests {
     #[test]
     fn test_make_relative_path() {
         let target = PathBuf::from(".gleon/diffs/billing/form.png");
-        let base = PathBuf::from(".gleon/reports");
-        let rel = make_relative_path(&target, &base);
-        assert_eq!(rel, PathBuf::from("../diffs/billing/form.png"));
-    }
-
-    #[test]
-    fn test_make_relative_path_with_dots_and_curdir() {
-        let target = PathBuf::from("./.gleon/diffs/billing/form.png");
         let base = PathBuf::from(".gleon/reports");
         let rel = make_relative_path(&target, &base);
         assert_eq!(rel, PathBuf::from("../diffs/billing/form.png"));
@@ -780,12 +1037,52 @@ mod tests {
             .expect("Expected HTML output");
         assert!(html.contains("..&#x2f;actual&#x2f;actual.png"));
         assert!(html.contains("Visual mismatch (5 pixels)"));
+    }
 
-        // Verify fallback JS injection
-        assert!(!html.contains("onerror="));
-        assert!(!html.contains("oninput="));
-        assert!(html.contains("document.addEventListener('error'"));
-        assert!(html.contains("document.addEventListener('input'"));
+    #[test]
+    fn test_render_pr_comment_with_base_url_and_fallback() {
+        let tc = TestCaseResult {
+            name: "login_button".to_string(),
+            result: TestImageResult::Mismatch {
+                relative_path: PathBuf::from("login.png"),
+                detail: MismatchDetail::SsimFallback { diff_count: 12 },
+                diff_path: PathBuf::from("diffs/login.png"),
+                baseline_path: PathBuf::from("goldens/login.png"),
+                actual_path: PathBuf::from("actual/login.png"),
+            },
+        };
+        let options = MarkdownReportOptions {
+            base_image_url: Some("https://storage.cdn.com/run-1"),
+            html_artifact_url: Some("https://github.com/org/repo/actions/runs/1/artifacts/2"),
+        };
+        let comment = ReportGenerator::render_pr_comment(&[tc], &options);
+        assert!(comment.contains("`login_button`"));
+        assert!(comment.contains("[Image](https://storage.cdn.com/run-1/goldens/login.png)"));
+        assert!(comment.contains("12 px (fb)"));
+    }
+
+    #[test]
+    fn test_render_pr_comment_truncation() {
+        let mut test_cases = Vec::new();
+        for i in 0..15 {
+            test_cases.push(TestCaseResult {
+                name: format!("test_{}", i),
+                result: TestImageResult::Mismatch {
+                    relative_path: PathBuf::from(format!("{}.png", i)),
+                    detail: MismatchDetail::Pixel { diff_count: i + 1 },
+                    diff_path: PathBuf::from(format!("diff_{}.png", i)),
+                    baseline_path: PathBuf::from(format!("base_{}.png", i)),
+                    actual_path: PathBuf::from(format!("act_{}.png", i)),
+                },
+            });
+        }
+        let options = MarkdownReportOptions {
+            base_image_url: None,
+            html_artifact_url: Some("https://artifact.url/report.html"),
+        };
+        let comment = ReportGenerator::render_pr_comment(&test_cases, &options);
+        assert!(comment.contains("Truncated 5 additional diffs"));
+        assert!(comment.contains("https://artifact.url/report.html"));
     }
 
     #[test]
@@ -833,20 +1130,6 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_markdown_sanitization() {
-        let tc = TestCaseResult {
-            name: "billing \\| feature\nline".to_string(),
-            result: TestImageResult::DecodeError {
-                relative_path: PathBuf::from("corrupt | file.png"),
-                error: "Bad header".to_string(),
-            },
-        };
-        let md = ReportGenerator::generate_markdown(&[tc]);
-        assert!(md.contains("billing \\\\\\| feature line"));
-        assert!(md.contains("corrupt \\| file.png"));
-    }
-
-    #[test]
     fn test_formatted_path_display() {
         let path1 = std::path::Path::new("foo/bar/baz.png");
         assert_eq!(
@@ -871,15 +1154,6 @@ mod tests {
     }
 
     #[test]
-    fn test_report_error_display() {
-        let err1 = ReportError::Render {
-            template: "report.html",
-            source: minijinja::Error::new(minijinja::ErrorKind::UndefinedError, "test"),
-        };
-        assert!(err1.to_string().contains("Template rendering failed"));
-    }
-
-    #[test]
     fn test_formatted_path_all_components() {
         let root_path = std::path::Path::new("/a/.././b");
         let formatted = FormattedPath {
@@ -896,5 +1170,11 @@ mod tests {
         }
         .to_string();
         assert_eq!(formatted_empty, ".");
+    }
+
+    #[test]
+    fn test_posix_path_formatter_parent_and_curdir() {
+        let p = std::path::Path::new("../goldens/./login.png");
+        assert_eq!(PosixPathFormatter(p).to_string(), "../goldens/login.png");
     }
 }

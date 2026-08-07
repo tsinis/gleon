@@ -169,6 +169,21 @@ pub enum Commands {
     },
     /// Clean up unreferenced baseline blobs
     Gc,
+    /// Generate a PR comment from a JSON report
+    Report {
+        /// Format of the report (e.g., markdown)
+        #[arg(value_name = "FORMAT")]
+        format: String,
+        /// Path to the JSON report file
+        #[arg(long)]
+        report: String,
+        /// Pull Request number
+        #[arg(long)]
+        pr_number: Option<u64>,
+        /// Output file path
+        #[arg(short = 'o', long)]
+        out: Option<String>,
+    },
 }
 
 #[cfg(test)]
