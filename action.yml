@@ -1,0 +1,140 @@
+name: "Gleon Visual Regression"
+description: "Runs visual diff checks and handles approval pipelines"
+branding:
+  color: "orange"
+  icon: "image"
+
+inputs:
+  version:
+    description: "Gleon version tag to download (e.g. 'v1.0.0')"
+    required: true
+  license-key:
+    description: "Gleon BSL License Key for private repositories"
+    required: false
+    default: ""
+  strict:
+    description: "Fail build on license violation ('true' or 'false')"
+    required: false
+    default: "false"
+  target-branch:
+    description: "Target branch for baseline comparison (defaults to PR base ref or default branch)"
+    required: false
+    default: "${{ github.base_ref || github.event.repository.default_branch || 'main' }}"
+  args:
+    description: "Additional flags for gleon diff"
+    required: false
+    default: ""
+  github-token:
+    description: "GitHub token to prevent API rate limits when downloading releases (optional)"
+    required: false
+    default: ""
+  checksum:
+    description: "Expected SHA256 checksum of the binary for independent trust verification"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Resolve OS, Architecture and Binary Name
+      id: resolve
+      shell: bash
+      run: |
+        OS="${{ runner.os }}"
+        ARCH="${{ runner.arch }}"
+
+        case "$OS" in
+          Linux)
+            case "$ARCH" in
+              X64)   TARGET="linux-x86_64" ;;
+              ARM64) TARGET="linux-aarch64" ;;
+              *) echo "::error::Unsupported Linux architecture: $ARCH"; exit 1 ;;
+            esac
+            BIN_NAME="gleon"
+            ;;
+          macOS)
+            case "$ARCH" in
+              ARM64) TARGET="macos-aarch64" ;;
+              X64)   TARGET="macos-x86_64" ;;
+              *) echo "::error::Unsupported macOS architecture: $ARCH"; exit 1 ;;
+            esac
+            BIN_NAME="gleon"
+            ;;
+          Windows)
+            case "$ARCH" in
+              X64)   TARGET="windows-x86_64.exe" ;;
+              *) echo "::error::Unsupported Windows architecture: $ARCH"; exit 1 ;;
+            esac
+            BIN_NAME="gleon.exe"
+            ;;
+          *) echo "::error::Unsupported OS: $OS"; exit 1 ;;
+        esac
+
+        SETUP_DIR="${{ runner.temp }}/gleon_setup"
+        mkdir -p "$SETUP_DIR"
+
+        echo "target=$TARGET" >> $GITHUB_OUTPUT
+        echo "bin_name=$BIN_NAME" >> $GITHUB_OUTPUT
+        echo "setup_dir=$SETUP_DIR" >> $GITHUB_OUTPUT
+
+    - name: Fetch and Verify Gleon Binary
+      shell: bash
+      env:
+        GLEON_VERSION: ${{ inputs.version }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        CHECKSUM: ${{ inputs.checksum }}
+        BIN_PATH: "${{ steps.resolve.outputs.setup_dir }}/${{ steps.resolve.outputs.bin_name }}"
+      run: |
+        VERSION="$GLEON_VERSION"
+        if [[ "$VERSION" =~ ^[0-9] ]]; then
+          VERSION="v${VERSION}"
+        fi
+        BASE_URL="https://github.com/tsinis/gleon/releases/download/${VERSION}"
+
+        ASSET_NAME="gleon-${{ steps.resolve.outputs.target }}"
+        SETUP_DIR="${{ steps.resolve.outputs.setup_dir }}"
+        BIN_PATH="${SETUP_DIR}/${{ steps.resolve.outputs.bin_name }}"
+
+        echo "Downloading ${BASE_URL}/${ASSET_NAME}..."
+
+        CURL_ARGS=("-fsSL")
+        if [ -n "$GITHUB_TOKEN" ]; then
+          CURL_ARGS+=("-H" "Authorization: token $GITHUB_TOKEN")
+        fi
+
+        curl "${CURL_ARGS[@]}" "${BASE_URL}/${ASSET_NAME}" -o "$BIN_PATH"
+
+        node -e "
+        const fs = require('fs');
+        const crypto = require('crypto');
+
+        const binPath = process.env.BIN_PATH;
+        const expected = process.env.CHECKSUM ? process.env.CHECKSUM.trim() : '';
+
+        if (!expected) {
+          console.error('Independent SHA256 checksum is required for verification. Please provide the checksum input.');
+          process.exit(1);
+        }
+
+        const actual = crypto.createHash('sha256').update(fs.readFileSync(binPath)).digest('hex');
+
+        if (expected.toLowerCase() !== actual.toLowerCase()) {
+          console.error(\`SHA256 mismatch! Expected: \${expected}, Got: \${actual}\`);
+          process.exit(1);
+        }
+        "
+
+    - name: Add Gleon Binary to PATH
+      shell: bash
+      run: |
+        chmod +x "${{ steps.resolve.outputs.setup_dir }}/${{ steps.resolve.outputs.bin_name }}"
+        echo "${{ steps.resolve.outputs.setup_dir }}" >> $GITHUB_PATH
+
+    - name: Execute Gleon Engine
+      shell: bash
+      env:
+        GLEON_LICENSE_KEY: ${{ inputs.license-key }}
+        GLEON_STRICT: ${{ inputs.strict }}
+        GLEON_TARGET_BRANCH: ${{ inputs.target-branch }}
+        GLEON_ARGS: ${{ inputs.args }}
+      run: |
+        printf '%s\n' "$GLEON_ARGS" | xargs gleon diff

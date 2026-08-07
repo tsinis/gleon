@@ -18,7 +18,7 @@ concurrency:
 jobs:
   cla-assistant:
     name: 📝 CLA Assistant
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - name: 🖋️ CLA Assistant Check
         if: (github.event.issue.pull_request != null && (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA')) || github.event_name == 'pull_request_target'

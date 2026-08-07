@@ -148,12 +148,18 @@ impl ResolvedContext {
             }
         };
 
+        let target_branch = if cli.target_branch.trim().is_empty() {
+            "main".to_string()
+        } else {
+            cli.target_branch.clone()
+        };
+
         Ok(Self {
             config,
             platform,
             fallback_platform_key,
             branch,
-            target_branch: cli.target_branch.clone(),
+            target_branch,
             base_dir: resolved_base_dir,
         })
     }
@@ -539,5 +545,56 @@ mod tests {
             err_cfg,
             ContextError::Config(_) | ContextError::Platform(_)
         ));
+    }
+
+    #[test]
+    fn test_target_branch_defaulting_and_retention() {
+        let temp = tempdir().unwrap();
+        let root_dir = temp.path();
+
+        let make_cli = |tb: &str| Cli {
+            os: None,
+            arch: None,
+            renderer: None,
+            labels: vec![],
+            platform: None,
+            branch: None,
+            target_branch: tb.to_string(),
+            verbose: false,
+            quiet: false,
+            config: None,
+            strict: false,
+            command: Commands::Status { json: false },
+        };
+
+        // Empty string defaults to "main"
+        let ctx_empty = ResolvedContext::from_cli_impl(
+            &make_cli(""),
+            root_dir,
+            &EmptyEnv,
+            &PlatformEnv::default(),
+        )
+        .unwrap();
+        assert_eq!(ctx_empty.target_branch, "main");
+
+        // Whitespace-only defaults to "main"
+        let ctx_spaces = ResolvedContext::from_cli_impl(
+            &make_cli("   "),
+            root_dir,
+            &EmptyEnv,
+            &PlatformEnv::default(),
+        )
+        .unwrap();
+        assert_eq!(ctx_spaces.target_branch, "main");
+
+        // Explicit non-empty target branch retained
+        let ctx_develop = ResolvedContext::from_cli_impl(
+            &make_cli("develop"),
+            root_dir,
+            &EmptyEnv,
+            &PlatformEnv::default(),
+        )
+        .unwrap();
+        assert_eq!(ctx_develop.target_branch, "develop");
     }
 }
