@@ -85,37 +85,51 @@ pub fn init_workspace(
         } else {
             ""
         };
-        let full_append = format!("{prefix}{to_append}");
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&gitignore_path)?;
-        file.write_all(full_append.as_bytes())?;
+        if !prefix.is_empty() {
+            file.write_all(prefix.as_bytes())?;
+        }
+        file.write_all(to_append.as_bytes())?;
     }
 
     // Scaffold .gleon/.env.template if it does not exist
     let env_template_path = gleon_dir.join(".env.template");
-    if !env_template_path.exists() {
-        let template_content = "# gleon Storage Configuration\n\
-            # Copy this file to .env.local and fill in your credentials\n\
-            GLEON_STORAGE_URL=\n\
-            AWS_ACCESS_KEY_ID=\n\
-            AWS_SECRET_ACCESS_KEY=\n\
-            # For Cloudflare R2:\n\
-            # R2_ACCOUNT_ID=\n";
-        crate::io::save_file_atomically(&env_template_path, template_content.as_bytes())
-            .map_err(InitError::from)?;
+    let template_content = "# gleon Storage Configuration\n\
+        # Copy this file to .env.local and fill in your credentials\n\
+        GLEON_STORAGE_URL=\n\
+        AWS_ACCESS_KEY_ID=\n\
+        AWS_SECRET_ACCESS_KEY=\n\
+        # For Cloudflare R2:\n\
+        # R2_ACCOUNT_ID=\n";
+    let env_create_res = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&env_template_path);
+    if let Ok(mut f) = env_create_res {
+        use std::io::Write;
+        let _ = f.write_all(template_content.as_bytes());
+        let _ = f.sync_all();
     }
 
     let internal_config = gleon_dir.join("gleon.yaml");
 
     let mut config_created = None;
-    if !internal_config.exists() {
-        let default_config = GleonConfig::default();
-        let yaml_content = serde_yaml::to_string(&default_config).map_err(InitError::Yaml)?;
-        crate::io::save_file_atomically(&internal_config, yaml_content.as_bytes())
+    let default_config = GleonConfig::default();
+    let yaml_content = serde_yaml::to_string(&default_config).map_err(InitError::Yaml)?;
+
+    let config_create_res = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&internal_config);
+    if let Ok(mut f) = config_create_res {
+        use std::io::Write;
+        f.write_all(yaml_content.as_bytes())
             .map_err(InitError::from)?;
+        f.sync_all().map_err(InitError::from)?;
         config_created = Some(internal_config);
     }
 

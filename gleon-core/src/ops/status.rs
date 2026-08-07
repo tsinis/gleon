@@ -149,31 +149,43 @@ pub fn check_status(
                 let baseline_manifest = workspace_index.get(&case.name);
 
                 let img = &case.image;
-                let rel_path = img.relative_path.clone();
 
                 match baseline_manifest {
-                    None => Ok((Some(rel_path), None)),
+                    None => Ok((Some(img.relative_path.clone()), None)),
                     Some(manifest) => {
-                        let matched_zones = case.rule.matched_mask_zones(&rel_path);
-                        let png_bytes = if !matched_zones.is_empty() {
-                            let dynamic_img =
-                                image::open(&img.absolute_path).map_err(StatusError::Image)?;
-                            let mut rgba = dynamic_img.to_rgba8();
-                            crate::masking::apply_masks(&mut rgba, &matched_zones);
-                            let mut encoded = Vec::new();
-                            let mut cursor = std::io::Cursor::new(&mut encoded);
-                            rgba.write_to(&mut cursor, image::ImageFormat::Png)
-                                .map_err(StatusError::Image)?;
-                            encoded
-                        } else {
-                            std::fs::read(&img.absolute_path)?
-                        };
-
-                        let actual_sha256 = hex::encode(sha2::Sha256::digest(&png_bytes));
-                        if actual_sha256 != manifest.hash.value() {
-                            Ok((None, Some(rel_path)))
-                        } else {
+                        let raw_bytes = std::fs::read(&img.absolute_path)?;
+                        let actual_sha256 = hex::encode(sha2::Sha256::digest(&raw_bytes));
+                        if actual_sha256 == manifest.hash.value() {
                             Ok((None, None))
+                        } else {
+                            let matched_zones = case.rule.matched_mask_zones(&img.relative_path);
+                            if !matched_zones.is_empty() {
+                                let baseline_blob_path = gleon_dir
+                                    .join("blobs")
+                                    .join(manifest.hash.scheme())
+                                    .join(manifest.hash.value());
+
+                                let b_bytes_res = std::fs::read(&baseline_blob_path);
+                                let b_bytes = match b_bytes_res {
+                                    Ok(b) => b,
+                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                        return Ok((None, Some(img.relative_path.clone())));
+                                    }
+                                    Err(e) => return Err(StatusError::Io(e)),
+                                };
+
+                                let b_img = image::load_from_memory(&b_bytes)?;
+                                let a_img = image::load_from_memory(&raw_bytes)?;
+
+                                let mut b_rgba = b_img.to_rgba8();
+                                let mut a_rgba = a_img.to_rgba8();
+                                crate::masking::apply_masks(&mut b_rgba, &matched_zones);
+                                crate::masking::apply_masks(&mut a_rgba, &matched_zones);
+                                if b_rgba == a_rgba {
+                                    return Ok((None, None));
+                                }
+                            }
+                            Ok((None, Some(img.relative_path.clone())))
                         }
                     }
                 }
@@ -212,7 +224,7 @@ pub fn check_status(
     // Identify deleted test cases (staged in index but no longer present on disk)
     for staged_name in workspace_index.entries().keys() {
         if !seen_test_cases.contains(staged_name.as_str()) {
-            deleted.push(PathBuf::from(format!("{staged_name}.png")));
+            deleted.push(PathBuf::from(staged_name).with_extension("png"));
         }
     }
 

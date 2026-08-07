@@ -223,6 +223,12 @@ async fn run(
             )
             .await;
         }
+        Commands::Approve { paths, from } => {
+            let ctx =
+                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            return commands::approve::run_approve(&ctx, paths, from.as_ref());
+        }
     }
     Ok(0)
 }

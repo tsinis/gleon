@@ -8,6 +8,9 @@ use std::path::Path;
 /// Supported schema version for individual test manifests.
 pub const SUPPORTED_SINGLE_MANIFEST_SCHEMA_VERSION: u32 = 1;
 
+/// Maximum allowed width or height in pixels to prevent OOM allocations.
+pub const MAX_DIMENSION: u32 = 16384;
+
 /// Deterministic, noise-free manifest for a single visual regression test case.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SingleTestManifest {
@@ -93,8 +96,15 @@ impl SingleTestManifest {
 
         if self.width == 0 || self.height == 0 {
             return Err(ManifestError::Validation(format!(
-                "Invalid image dimensions: {}x{}",
+                "Invalid image dimensions: {}x{} (must be > 0)",
                 self.width, self.height
+            )));
+        }
+
+        if self.width > MAX_DIMENSION || self.height > MAX_DIMENSION {
+            return Err(ManifestError::Validation(format!(
+                "Image dimensions {}x{} exceed the maximum allowed {}x{}",
+                self.width, self.height, MAX_DIMENSION, MAX_DIMENSION
             )));
         }
 
@@ -153,11 +163,19 @@ mod tests {
         );
 
         let invalid_phash_val = ImageHash::new("dhash", "short").unwrap();
-        assert!(SingleTestManifest::new(valid_hash, invalid_phash_val, 100, 100).is_err());
+        assert!(SingleTestManifest::new(valid_hash.clone(), invalid_phash_val, 100, 100).is_err());
 
         let uppercase_hash = ImageHash::new("sha256", "A".repeat(64)).unwrap();
         let valid_phash = ImageHash::new("dhash", "0000000000000000").unwrap();
-        assert!(SingleTestManifest::new(uppercase_hash, valid_phash, 100, 100).is_err());
+        let manifest_uppercase =
+            SingleTestManifest::new(uppercase_hash, valid_phash.clone(), 100, 100).unwrap();
+        assert_eq!(manifest_uppercase.hash.value(), "a".repeat(64));
+
+        // Zero dimensions
+        assert!(SingleTestManifest::new(valid_hash.clone(), valid_phash.clone(), 0, 100).is_err());
+
+        // Exceeds max dimensions
+        assert!(SingleTestManifest::new(valid_hash, valid_phash, MAX_DIMENSION + 1, 100).is_err());
     }
 
     #[test]

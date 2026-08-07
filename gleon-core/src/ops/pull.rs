@@ -142,7 +142,8 @@ pub async fn pull_blobs(
 
         for entry in index.entries().values() {
             let hash_value = entry.hash.value();
-            if referenced_hashes.insert(hash_value.to_string()) {
+            if !referenced_hashes.contains(hash_value) {
+                referenced_hashes.insert(hash_value.to_string());
                 let blob_path = blobs_dir.join(hash_value);
                 if blob_path.is_file() {
                     skipped_blobs += 1;

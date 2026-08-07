@@ -65,7 +65,10 @@ impl ImageHash {
         if scheme_str.chars().any(|c| c.is_ascii_uppercase()) {
             scheme_str.make_ascii_lowercase();
         }
-        let value_str = value.into();
+        let mut value_str = value.into();
+        if value_str.chars().any(|c| c.is_ascii_uppercase()) {
+            value_str.make_ascii_lowercase();
+        }
         validate_hash_parts(&scheme_str, &value_str)
             .map_err(ManifestError::Validation)
             .map(|_| Self {
@@ -98,11 +101,18 @@ impl std::str::FromStr for ImageHash {
         } else {
             std::borrow::Cow::Borrowed(scheme)
         };
-        validate_hash_parts(&scheme_cow, value)
+
+        let value_cow = if value.chars().any(|c| c.is_ascii_uppercase()) {
+            std::borrow::Cow::Owned(value.to_ascii_lowercase())
+        } else {
+            std::borrow::Cow::Borrowed(value)
+        };
+
+        validate_hash_parts(&scheme_cow, &value_cow)
             .map_err(ManifestError::Validation)
             .map(|()| ImageHash {
                 scheme: scheme_cow.into_owned(),
-                value: value.to_string(),
+                value: value_cow.into_owned(),
             })
     }
 }
@@ -142,5 +152,16 @@ mod tests {
         assert_eq!(hash.scheme(), "sha256");
         assert_eq!(hash.value(), "a1b2c3d4e5f67890");
         assert_eq!(hash.to_string(), "sha256:a1b2c3d4e5f67890");
+    }
+
+    #[test]
+    fn test_image_hash_uppercase_normalization() {
+        let hash = "SHA256:A1B2C3D4E5F67890".parse::<ImageHash>().unwrap();
+        assert_eq!(hash.scheme(), "sha256");
+        assert_eq!(hash.value(), "a1b2c3d4e5f67890");
+
+        let hash_new = ImageHash::new("SHA256", "A1B2C3D4E5F67890").unwrap();
+        assert_eq!(hash_new.scheme(), "sha256");
+        assert_eq!(hash_new.value(), "a1b2c3d4e5f67890");
     }
 }

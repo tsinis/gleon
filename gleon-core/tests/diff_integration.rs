@@ -269,6 +269,16 @@ screenshots:
         let _ = fs::remove_file(path);
     }
 
+    // Modify actual screenshot so it doesn't match the manifest hash, forcing diff engine to load the missing blob
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    fs::copy(
+        fixtures_dir.join("diff_16px_corners_100x100.png"),
+        screenshot_dir.join("form.png"),
+    )
+    .unwrap();
+
     let report_missing_blob = run_diff(&ctx, base_path).unwrap();
     assert!(!report_missing_blob.passed);
     let md_missing = fs::read_to_string(report_missing_blob.runs_dir.join("report.md")).unwrap();
@@ -514,4 +524,60 @@ fn test_diff_fallback_platform_integration() {
     assert!(diff_res.passed);
     assert_eq!(diff_res.total_tests, 1);
     assert_eq!(diff_res.failed_tests, 0);
+}
+
+#[test]
+fn test_diff_nested_test_name_directory_creation() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let baseline_bytes = fs::read(fixtures_dir.join("baseline_100x100.png")).unwrap();
+    let diff_bytes = fs::read(fixtures_dir.join("diff_16px_corners_100x100.png")).unwrap();
+
+    let nested_dir = base_path.join("auth").join("login");
+    fs::create_dir_all(&nested_dir).unwrap();
+    let screenshot_file = nested_dir.join("form.png");
+    fs::write(&screenshot_file, &baseline_bytes).unwrap();
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "auth/login/*.png"
+"#;
+    fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
+
+    let cli = Cli::for_test(Commands::Diff {
+        auto_pull: false,
+        resolve: false,
+    });
+    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    // Stage baseline
+    stage_workspace(&ctx, base_path, None).unwrap();
+
+    // Replace with diff image
+    fs::write(&screenshot_file, &diff_bytes).unwrap();
+
+    // Run diff -> must create auth/login directory inside runs/latest/diffs/
+    let report = run_diff(&ctx, base_path).unwrap();
+    assert!(!report.passed);
+    assert_eq!(report.failed_tests, 1);
+
+    let expected_diff_file = report
+        .runs_dir
+        .join("diffs")
+        .join("auth/login/form")
+        .join("diff_form.png");
+    assert!(
+        expected_diff_file.is_file(),
+        "Diff image must be created at {:?}",
+        expected_diff_file
+    );
 }

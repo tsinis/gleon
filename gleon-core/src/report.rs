@@ -260,6 +260,23 @@ impl<'a> Serialize for XmlDecodeErrorView<'a> {
     }
 }
 
+struct XmlIoErrorView<'a>(&'a str);
+
+impl<'a> std::fmt::Display for XmlIoErrorView<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IO error: {}", self.0)
+    }
+}
+
+impl<'a> Serialize for XmlIoErrorView<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
 struct XmlMissingBaselineView<'a>(&'a str);
 
 impl<'a> std::fmt::Display for XmlMissingBaselineView<'a> {
@@ -347,6 +364,10 @@ impl<'a> Serialize for HtmlFailureView<'a> {
             TestImageResult::DecodeError {
                 relative_path,
                 error,
+            }
+            | TestImageResult::IoError {
+                relative_path,
+                error,
             } => {
                 state.serialize_field(
                     "image",
@@ -355,7 +376,12 @@ impl<'a> Serialize for HtmlFailureView<'a> {
                         report_dir: None,
                     },
                 )?;
-                state.serialize_field("type", "DecodeError")?;
+                let error_type = if matches!(self.res, TestImageResult::DecodeError { .. }) {
+                    "DecodeError"
+                } else {
+                    "IoError"
+                };
+                state.serialize_field("type", error_type)?;
                 state.serialize_field("error", error)?;
                 state.serialize_field("actual_path", &None::<String>)?;
                 state.serialize_field("baseline_path", &None::<String>)?;
@@ -528,6 +554,10 @@ impl<'a> Serialize for XmlTestImageResultView<'a> {
             TestImageResult::DecodeError { error, .. } => {
                 state.serialize_field("status", "DecodeError")?;
                 state.serialize_field("failure_message", &Some(XmlDecodeErrorView(error)))?;
+            }
+            TestImageResult::IoError { error, .. } => {
+                state.serialize_field("status", "IoError")?;
+                state.serialize_field("failure_message", &Some(XmlIoErrorView(error)))?;
             }
             TestImageResult::MissingBaseline { reason, .. } => {
                 state.serialize_field("status", "MissingBaseline")?;
@@ -889,7 +919,7 @@ impl ReportGenerator {
                         )
                         .expect("write infallible");
                     }
-                    TestImageResult::DecodeError { .. } => {
+                    TestImageResult::DecodeError { .. } | TestImageResult::IoError { .. } => {
                         writeln!(
                             out,
                             "| `{}` | {} | {} | {} | `Decode Error` |",
@@ -951,6 +981,15 @@ impl ReportGenerator {
                         )
                         .expect("write infallible");
                     }
+                    TestImageResult::IoError { error, .. } => {
+                        writeln!(
+                            out,
+                            "| `{}` | IO Error | {} |",
+                            CodeSpanEscape(name),
+                            MarkdownEscape(error)
+                        )
+                        .expect("write infallible");
+                    }
                     TestImageResult::Success { .. } => unreachable!(),
                 }
             }
@@ -1003,6 +1042,7 @@ impl ReportGenerator {
             let status = match res {
                 TestImageResult::Success { .. } => "✅ Pass",
                 TestImageResult::DecodeError { .. } => "❌ Decode Error",
+                TestImageResult::IoError { .. } => "❌ IO Error",
                 TestImageResult::MissingBaseline { .. } => "❌ Missing Baseline",
                 TestImageResult::DimensionMismatch { .. } => "❌ Dimension Mismatch",
                 TestImageResult::Mismatch { .. } => "❌ Mismatch",

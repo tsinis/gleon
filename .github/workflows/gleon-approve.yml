@@ -1,0 +1,60 @@
+name: Gleon Baseline Approval
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  approve:
+    if: ${{ github.event.issue.pull_request }} && startsWith(github.event.comment.body, '/gleon approve')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Validate User Permissions
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const user = context.payload.comment.user.login;
+            const repo = context.repo;
+            const perm = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: repo.owner,
+              repo: repo.repo,
+              username: user
+            });
+            if (!['admin', 'write'].includes(perm.data.permission)) {
+              core.setFailed(`User ${user} is not authorized to approve baseline changes.`);
+            }
+
+      - name: Checkout PR Branch
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.issue.number }}/head
+
+      - name: Download Diffs from Ephemeral Branch
+        run: |
+          EPHEMERAL_BRANCH="gleon/diffs/pr-${{ github.event.issue.number }}"
+          if git fetch origin "$EPHEMERAL_BRANCH"; then
+            git checkout "origin/$EPHEMERAL_BRANCH" -- .gleon/diffs/ || true
+          fi
+
+      - name: Update Baselines & Commit
+        run: |
+          if [ -d ".gleon/diffs" ]; then
+            gleon approve --from=.gleon/diffs
+          else
+            gleon approve
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .gleon/manifests/ .gleon/blobs/
+          if git diff --staged --quiet; then
+            echo "No baseline changes to commit."
+          else
+            git commit -m "chore(gleon): approve visual diffs via PR comment [skip ci]"
+            git push || {
+              echo "::error::Failed to push approved baselines. Check write permissions."
+              exit 1
+            }
+          fi

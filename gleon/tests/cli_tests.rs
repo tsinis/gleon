@@ -1002,3 +1002,46 @@ fn test_cli_report_with_s3_storage_pre_signed_urls() -> Result<(), Box<dyn std::
 
     Ok(())
 }
+
+#[test]
+fn test_approve_command() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let base_path = dir.path();
+    let fixtures_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("gleon-core")
+        .join("tests")
+        .join("fixtures");
+
+    // Create actual screenshots to approve
+    let actual_dir = base_path
+        .join(".gleon")
+        .join("runs")
+        .join("latest")
+        .join("actual");
+    let login_dir = actual_dir.join("login");
+    std::fs::create_dir_all(&login_dir)?;
+    std::fs::copy(
+        fixtures_dir.join("baseline_100x100.png"),
+        login_dir.join("button.png"),
+    )?;
+
+    // Run approve command
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.current_dir(base_path)
+        .arg("approve")
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("Approved 1 screenshot(s)"));
+
+    // Check that manifest and blob are created
+    let manifests_dir = base_path.join(".gleon").join("manifests");
+    let entries: Vec<_> = std::fs::read_dir(&manifests_dir)?.collect();
+    assert!(
+        !entries.is_empty(),
+        "Expected a platform manifest directory to be created"
+    );
+
+    Ok(())
+}

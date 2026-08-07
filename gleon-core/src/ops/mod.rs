@@ -1,5 +1,4 @@
-//! Core CLI operations library module.
-
+pub mod approve;
 pub mod diff;
 pub mod init;
 pub mod lint;
@@ -9,6 +8,7 @@ pub mod resolve;
 pub mod stage;
 pub mod status;
 
+pub use approve::{ApproveError, ApproveResult, approve_workspace};
 pub use diff::{DiffOpError, DiffReportResult, run_diff};
 pub use init::{InitError, InitResult, init_workspace};
 pub use lint::{LintError, LintReport, lint_workspace_manifests};

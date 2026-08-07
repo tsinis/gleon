@@ -4,10 +4,8 @@ use crate::config::ConfigError;
 use crate::context::{ContextError, ResolvedContext};
 use crate::engine::phash::compute_phash;
 use crate::manifest::{ImageHash, ManifestError, SingleTestManifest, WorkspaceIndex};
-use crate::masking::apply_masks;
 use crate::scanner::{FileScanner, ScannerError};
 use sha2::{Digest, Sha256};
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -131,41 +129,15 @@ pub fn stage_workspace(
             }
         })
         .map(|case| {
-            let matched_zones = case.rule.matched_mask_zones(&case.image.relative_path);
-
-            let (png_bytes, width, height, rgba_img) = if !matched_zones.is_empty() {
-                let dynamic_img = image::open(&case.image.absolute_path).map_err(|source| {
-                    StageError::ImageDecode {
-                        path: case.image.relative_path.clone(),
-                        source,
-                    }
+            let png_bytes = std::fs::read(&case.image.absolute_path).map_err(StageError::Io)?;
+            let dynamic_img =
+                image::load_from_memory(&png_bytes).map_err(|source| StageError::ImageDecode {
+                    path: case.image.relative_path.clone(),
+                    source,
                 })?;
-                let mut rgba = dynamic_img.to_rgba8();
-                apply_masks(&mut rgba, &matched_zones);
-                let w = rgba.width();
-                let h = rgba.height();
-
-                let mut encoded = Vec::new();
-                let mut cursor = Cursor::new(&mut encoded);
-                rgba.write_to(&mut cursor, image::ImageFormat::Png)
-                    .map_err(|source| StageError::ImageEncode {
-                        path: case.image.relative_path.clone(),
-                        source,
-                    })?;
-                (encoded, w, h, rgba)
-            } else {
-                let raw_bytes = std::fs::read(&case.image.absolute_path).map_err(StageError::Io)?;
-                let dynamic_img = image::load_from_memory(&raw_bytes).map_err(|source| {
-                    StageError::ImageDecode {
-                        path: case.image.relative_path.clone(),
-                        source,
-                    }
-                })?;
-                let w = dynamic_img.width();
-                let h = dynamic_img.height();
-                let rgba = dynamic_img.to_rgba8();
-                (raw_bytes, w, h, rgba)
-            };
+            let width = dynamic_img.width();
+            let height = dynamic_img.height();
+            let rgba_img = dynamic_img.to_rgba8();
 
             let phash_str = compute_phash(&rgba_img);
             let sha256_hex = hex::encode(Sha256::digest(&png_bytes));

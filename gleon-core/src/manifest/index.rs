@@ -42,10 +42,9 @@ pub fn validate_test_path(test_path: &str) -> Result<(), ManifestError> {
                 segment, test_path
             )));
         }
-        if !segment
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
-        {
+        if !segment.chars().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.' || c == '-'
+        }) {
             return Err(ManifestError::Validation(format!(
                 "Test path segment '{}' contains invalid characters",
                 segment
@@ -195,7 +194,7 @@ impl WorkspaceIndex {
 
         let manifest_dir = manifest_dir.as_ref();
         let canonical_key = normalized.as_ref();
-        let target_path = manifest_dir.join(format!("{canonical_key}.json"));
+        let target_path = manifest_dir.join(canonical_key).with_extension("json");
 
         match manifest.save(&target_path) {
             Ok(()) => {}
@@ -208,7 +207,7 @@ impl WorkspaceIndex {
             .get(canonical_key)
             .filter(|s| *s != canonical_key)
         {
-            let old_path = manifest_dir.join(format!("{old_source}.json"));
+            let old_path = manifest_dir.join(old_source).with_extension("json");
             let is_same_file = match (fs::canonicalize(&old_path), fs::canonicalize(&target_path)) {
                 (Ok(p1), Ok(p2)) => p1 == p2,
                 _ => false,
@@ -242,7 +241,7 @@ impl WorkspaceIndex {
         let canonical_key = normalized.as_ref();
 
         if let Some(old_source) = self.source_paths.remove(canonical_key) {
-            let old_path = manifest_dir.join(format!("{old_source}.json"));
+            let old_path = manifest_dir.join(old_source).with_extension("json");
             match fs::remove_file(&old_path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -250,7 +249,7 @@ impl WorkspaceIndex {
             }
         }
 
-        let target_path = manifest_dir.join(format!("{canonical_key}.json"));
+        let target_path = manifest_dir.join(canonical_key).with_extension("json");
         match fs::remove_file(&target_path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -359,6 +358,7 @@ mod tests {
         assert!(validate_test_path("").is_err());
         assert!(validate_test_path("invalid/../path").is_err());
         assert!(validate_test_path("invalid/path!").is_err());
+        assert!(validate_test_path("Auth/Login").is_err());
 
         let mut index2 = WorkspaceIndex::new();
         index2.insert(

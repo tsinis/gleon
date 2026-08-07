@@ -69,7 +69,8 @@ pub async fn run_report(
                     gleon_core::scanner::TestImageResult::MissingBaseline {
                         relative_path, ..
                     }
-                    | gleon_core::scanner::TestImageResult::DecodeError { relative_path, .. } => {
+                    | gleon_core::scanner::TestImageResult::DecodeError { relative_path, .. }
+                    | gleon_core::scanner::TestImageResult::IoError { relative_path, .. } => {
                         vec![relative_path.as_path()]
                     }
                     _ => vec![],
@@ -93,8 +94,16 @@ pub async fn run_report(
             }
 
             while let Some(res) = join_set.join_next().await {
-                if let Ok(Some((p, signed))) = res {
-                    let _ = signed_urls.insert(p, signed);
+                match res {
+                    Ok(Some((p, signed))) => {
+                        let _ = signed_urls.insert(p, signed);
+                    }
+                    Ok(None) => {
+                        tracing::warn!("Failed to generate pre-signed URL for blob path");
+                    }
+                    Err(e) => {
+                        tracing::warn!("URL signing task panicked or was cancelled: {}", e);
+                    }
                 }
             }
         }

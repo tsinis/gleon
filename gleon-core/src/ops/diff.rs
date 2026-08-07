@@ -7,6 +7,7 @@ use crate::manifest::{ManifestError, WorkspaceIndex};
 use crate::masking::apply_masks;
 use crate::report::{ReportError, ReportGenerator};
 use crate::scanner::{FileScanner, ScannerError, TestCaseResult, TestImageResult};
+use sha2::Digest;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -92,8 +93,11 @@ pub fn run_diff(
     }
 
     let runs_dir = gleon_dir.join("runs").join("latest");
+    let _ = std::fs::remove_dir_all(&runs_dir);
     let diffs_dir = runs_dir.join("diffs");
+    let actual_dir = runs_dir.join("actual");
     std::fs::create_dir_all(&diffs_dir).map_err(DiffOpError::Io)?;
+    std::fs::create_dir_all(&actual_dir).map_err(DiffOpError::Io)?;
 
     use rayon::prelude::*;
 
@@ -129,6 +133,25 @@ pub fn run_diff(
                     .join(baseline_entry.hash.scheme())
                     .join(baseline_entry.hash.value());
 
+                let actual_bytes = match std::fs::read(&case.image.absolute_path) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return TestImageResult::DecodeError {
+                            relative_path: case.image.relative_path,
+                            error: format!("Failed to read actual screenshot file: {}", e),
+                        };
+                    }
+                };
+
+                let actual_sha256 = hex::encode(sha2::Sha256::digest(&actual_bytes));
+                if actual_sha256 == baseline_entry.hash.value() {
+                    // Fast path: images are byte-for-byte identical. Matches unconditionally.
+                    return TestImageResult::Success {
+                        relative_path: case.image.relative_path,
+                    };
+                }
+
+                // If not identical, load both and compare pixels
                 let baseline_bytes = match std::fs::read(&baseline_blob_path) {
                     Ok(b) => b,
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -159,7 +182,7 @@ pub fn run_diff(
                 };
                 let mut baseline_rgba = baseline_dyn_img.to_rgba8();
 
-                let actual_dyn_img = match image::open(&case.image.absolute_path) {
+                let actual_dyn_img = match image::load_from_memory(&actual_bytes) {
                     Ok(img) => img,
                     Err(e) => {
                         return TestImageResult::DecodeError {
@@ -185,6 +208,37 @@ pub fn run_diff(
                     &case.rule.diff,
                 );
 
+                let raw_file_name = case
+                    .image
+                    .relative_path
+                    .file_name()
+                    .unwrap_or_else(|| std::ffi::OsStr::new("screenshot.png"))
+                    .to_string_lossy();
+
+                // Save actual screenshot on non-matching test runs for approval workflows
+                if !matches!(comp_result, ComparisonResult::Match) {
+                    let actual_dest_path = actual_dir.join(&case.image.relative_path);
+                    if let Some(parent) = actual_dest_path.parent()
+                        && let Err(e) = std::fs::create_dir_all(parent)
+                    {
+                        return TestImageResult::IoError {
+                            relative_path: case.image.relative_path,
+                            error: format!(
+                                "Failed to create directory for actual screenshot: {}",
+                                e
+                            ),
+                        };
+                    }
+                    if let Err(e) =
+                        crate::io::save_file_atomically(&actual_dest_path, &actual_bytes)
+                    {
+                        return TestImageResult::IoError {
+                            relative_path: case.image.relative_path,
+                            error: format!("Failed to save actual screenshot: {}", e),
+                        };
+                    }
+                }
+
                 match comp_result {
                     ComparisonResult::Match => TestImageResult::Success {
                         relative_path: case.image.relative_path,
@@ -202,27 +256,28 @@ pub fn run_diff(
                     ComparisonResult::Mismatch { detail, diff_image } => {
                         // Write diff visualization image to .gleon/runs/latest/diffs/<case_name>/<file_name>
                         let case_diff_dir = diffs_dir.join(&test_name);
-                        let raw_file_name = case
-                            .image
-                            .relative_path
-                            .file_name()
-                            .unwrap_or_else(|| std::ffi::OsStr::new("diff.png"))
-                            .to_string_lossy();
+                        if let Err(e) = std::fs::create_dir_all(&case_diff_dir) {
+                            return TestImageResult::IoError {
+                                relative_path: case.image.relative_path,
+                                error: format!("Failed to create diff directory: {}", e),
+                            };
+                        }
                         let diff_file_name = format!("diff_{raw_file_name}");
                         let diff_file_path = case_diff_dir.join(&diff_file_name);
 
                         let mut encoded = Vec::new();
                         let mut cursor = std::io::Cursor::new(&mut encoded);
                         if let Err(e) = diff_image.write_to(&mut cursor, image::ImageFormat::Png) {
-                            tracing::warn!("Failed to encode diff image to PNG: {}", e);
-                        } else if let Err(e) =
-                            crate::io::save_file_atomically(&diff_file_path, &encoded)
-                        {
-                            tracing::warn!(
-                                "Failed to save diff image atomically to {:?}: {}",
-                                diff_file_path,
-                                e
-                            );
+                            return TestImageResult::IoError {
+                                relative_path: case.image.relative_path,
+                                error: format!("Failed to encode diff image to PNG: {}", e),
+                            };
+                        }
+                        if let Err(e) = crate::io::save_file_atomically(&diff_file_path, &encoded) {
+                            return TestImageResult::IoError {
+                                relative_path: case.image.relative_path,
+                                error: format!("Failed to save diff visualization: {}", e),
+                            };
                         }
 
                         TestImageResult::Mismatch {

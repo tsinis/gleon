@@ -98,6 +98,13 @@ pub enum TestImageResult {
         /// Reason/details for the missing baseline.
         reason: String,
     },
+    /// An I/O error occurred while reading or saving the image.
+    IoError {
+        /// Relative path of the screenshot file.
+        relative_path: PathBuf,
+        /// The I/O error message.
+        error: String,
+    },
 }
 
 impl TestImageResult {
@@ -109,6 +116,7 @@ impl TestImageResult {
             Self::MissingBaseline { relative_path, .. } => relative_path,
             Self::DimensionMismatch { relative_path, .. } => relative_path,
             Self::Mismatch { relative_path, .. } => relative_path,
+            Self::IoError { relative_path, .. } => relative_path,
         }
     }
 }
@@ -384,8 +392,13 @@ impl FileScanner {
 
     /// Normalizes path separators to forward slashes for cross-platform manifest key consistency.
     pub fn normalize_path_str(path: &Path) -> Cow<'_, str> {
-        let lossy = path.to_string_lossy();
-        Cow::Owned(crate::manifest::normalize_test_name(&lossy).into_owned())
+        match path.to_string_lossy() {
+            Cow::Borrowed(s) => crate::manifest::normalize_test_name(s),
+            Cow::Owned(s) => match crate::manifest::normalize_test_name(&s) {
+                Cow::Borrowed(_) => Cow::Owned(s),
+                Cow::Owned(new_s) => Cow::Owned(new_s),
+            },
+        }
     }
 
     /// Parses a directory entry and returns the parsed paths if it's a valid matching PNG.
@@ -975,10 +988,12 @@ screenshots:
         let p1 = Path::new("billing/stripe/form.png");
         let res1 = FileScanner::normalize_path_str(p1);
         assert_eq!(res1, "billing/stripe/form.png");
+        assert!(matches!(res1, std::borrow::Cow::Borrowed(_)));
 
         let p2 = Path::new("clean_path.png");
         let res2 = FileScanner::normalize_path_str(p2);
         assert_eq!(res2, "clean_path.png");
+        assert!(matches!(res2, std::borrow::Cow::Borrowed(_)));
     }
 
     #[test]

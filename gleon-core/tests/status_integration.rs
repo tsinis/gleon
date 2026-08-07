@@ -316,3 +316,59 @@ fn test_status_fallback_platform_integration() {
     let status_res = check_status(&ctx_macos, base_path).unwrap();
     assert!(status_res.is_clean());
 }
+
+#[test]
+fn test_status_missing_baseline_blob_returns_modified() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let baseline_bytes = fs::read(fixtures_dir.join("baseline_100x100.png")).unwrap();
+
+    let screenshot_dir = base_path.join("masked_app");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    let screenshot_file = screenshot_dir.join("form.png");
+    fs::write(&screenshot_file, &baseline_bytes).unwrap();
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "masked_app/*.png"
+    masks:
+      - path: "*.png"
+        zones:
+          - x: 0
+            y: 0
+            width: 10
+            height: 10
+"#;
+    fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
+
+    let cli = Cli::for_test(Commands::Status { json: false });
+    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    stage_workspace(&ctx, base_path, None).unwrap();
+
+    // Modify the screenshot on disk so it triggers mask comparison
+    let diff_bytes = fs::read(fixtures_dir.join("diff_16px_corners_100x100.png")).unwrap();
+    fs::write(&screenshot_file, &diff_bytes).unwrap();
+
+    // Remove the blob file from .gleon/blobs/sha256/
+    let blobs_dir = base_path.join(".gleon").join("blobs").join("sha256");
+    if let Ok(entries) = fs::read_dir(&blobs_dir) {
+        for entry in entries.flatten() {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+
+    // check_status should NOT fail with StatusError::Io, but return modified
+    let res =
+        check_status(&ctx, base_path).expect("check_status should succeed even if blob missing");
+    assert_eq!(res.modified.len(), 1);
+}

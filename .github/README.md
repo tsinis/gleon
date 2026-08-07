@@ -42,15 +42,15 @@ steps:
 
 ### Action Inputs
 
-| Input | Description | Default |
-| :--- | :--- | :--- |
-| `version` | Gleon release version tag to download (e.g. `'v1.0.0'`) | **Required** |
-| `github-token` | GitHub token (`${{ secrets.GITHUB_TOKEN }}`) to prevent API rate limits when downloading the binary. **Highly recommended** for active CI pipelines | `''` |
-| `checksum` | Expected SHA256 digest of the binary for independent trust root verification | **Required** |
-| `license-key` | Commercial BSL license key for private repositories | `''` |
-| `strict` | Fail build on license violation (`'true'` / `'false'`) | `'false'` |
-| `target-branch` | Target branch for baseline comparison | PR base ref or default branch |
-| `args` | Additional flags for `gleon diff` | `''` |
+| Input           | Description                                                                                                                                         | Default                       |
+| :-------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------- |
+| `version`       | Gleon release version tag to download (e.g. `'v1.0.0'`)                                                                                             | **Required**                  |
+| `github-token`  | GitHub token (`${{ secrets.GITHUB_TOKEN }}`) to prevent API rate limits when downloading the binary. **Highly recommended** for active CI pipelines | `''`                          |
+| `checksum`      | Expected SHA256 digest of the binary for independent trust root verification                                                                        | **Required**                  |
+| `license-key`   | Commercial BSL license key for private repositories                                                                                                 | `''`                          |
+| `strict`        | Fail build on license violation (`'true'` / `'false'`)                                                                                              | `'false'`                     |
+| `target-branch` | Target branch for baseline comparison                                                                                                               | PR base ref or default branch |
+| `args`          | Additional flags for `gleon diff`                                                                                                                   | `''`                          |
 
 ### Ephemeral Diff Branch Cleanup Workflow
 
@@ -100,6 +100,59 @@ jobs:
 
 When a Pull Request is closed or merged, this workflow automatically deletes the ephemeral `gleon/diffs/pr-<PR_NUMBER>` branch from your repository.
 
+## 📸 Approving Visual Baseline Changes in Pull Requests
+
+When `gleon` detects visual regressions during a PR CI run, it posts a detailed Markdown report with diff previews in the PR comment section.
+
+To accept the new visual changes as the new baseline:
+
+1. **Approve All Changed Screenshots**:
+   Comment directly on the PR:
+
+   ```text
+   /gleon approve
+   ```
+
+2. **Approve Specific Tests Only**:
+
+   ```text
+   /gleon approve auth/login
+   ```
+
+### GitHub Actions Workflow Setup
+
+To enable `/gleon approve` comments in your repository, add `.github/workflows/gleon-approve.yml`:
+
+```yaml
+name: Gleon Baseline Approval
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  approve:
+    if: github.event.issue.pull_request && contains(github.event.comment.body, '/gleon approve')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR Branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.issue.pull_request.head.ref }}
+
+      - name: Setup Gleon
+        uses: gleon-hq/setup-gleon@v1
+
+      - name: Run Approval
+        run: |
+          gleon approve
+
+      - name: Commit Updated Manifests
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore(gleon): approve visual regression baselines"
+          file_pattern: ".gleon/manifests/*"
+```
 
 ## How to Build and Run Locally
 

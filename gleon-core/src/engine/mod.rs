@@ -71,7 +71,7 @@ fn execute_pixel_comparison(
         if diff_count == 0 {
             ComparisonResult::Match
         } else {
-            let (_, diff_image) = compare_pixels(baseline, actual);
+            let (_, diff_image) = compare_pixels(baseline, actual); // diff_count is already known
             ComparisonResult::Mismatch {
                 detail: if is_fallback {
                     MismatchDetail::SsimFallback { diff_count }
