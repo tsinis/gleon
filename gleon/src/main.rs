@@ -206,6 +206,23 @@ async fn run(
         Commands::Gc => {
             info!("Subcommand gc is not fully implemented yet");
         }
+        Commands::Report {
+            format,
+            report,
+            pr_number,
+            out,
+        } => {
+            let storage_cfg = get_storage_config(env);
+            return commands::report::run_report(
+                env,
+                storage_cfg,
+                format,
+                report,
+                *pr_number,
+                out.as_deref(),
+            )
+            .await;
+        }
     }
     Ok(0)
 }

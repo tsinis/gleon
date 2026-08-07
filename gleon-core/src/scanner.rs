@@ -51,7 +51,7 @@ pub struct TestCase {
 use crate::engine::MismatchDetail;
 
 /// Represents the result of running a test on a single screenshot.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum TestImageResult {
     /// The actual image matches the baseline.
@@ -114,7 +114,7 @@ impl TestImageResult {
 }
 
 /// Represents the final evaluation result of a complete test case.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct TestCaseResult {
     /// The test case name.
     pub name: String,

@@ -19,6 +19,7 @@ futures = { workspace = true }
 gix = { workspace = true }
 globset = { workspace = true }
 hex = { workspace = true }
+http = { workspace = true }
 ignore = { workspace = true }
 image = { workspace = true }
 image-compare = { workspace = true }

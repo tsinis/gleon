@@ -710,3 +710,295 @@ fn test_dotenv_loading_integration() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[test]
+fn test_cli_report_markdown_stdout_and_file() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let json_report_path = dir.path().join("gleon-report.json");
+    let out_report_path = dir.path().join("out-report.md");
+
+    // Write sample json report
+    let sample_json = r#"[
+        {
+            "name": "login_button",
+            "result": {
+                "Mismatch": {
+                    "relative_path": "login.png",
+                    "detail": { "Pixel": { "diff_count": 42 } },
+                    "diff_path": "diffs/login.png",
+                    "baseline_path": "goldens/login.png",
+                    "actual_path": "actual/login.png"
+                }
+            }
+        },
+        {
+            "name": "missing_test",
+            "result": {
+                "MissingBaseline": {
+                    "relative_path": "footer.png",
+                    "reason": "Missing baseline blob"
+                }
+            }
+        },
+        {
+            "name": "corrupt_test",
+            "result": {
+                "DecodeError": {
+                    "relative_path": "sidebar.png",
+                    "error": "corrupt png file"
+                }
+            }
+        }
+    ]"#;
+    std::fs::write(&json_report_path, sample_json)?;
+
+    // Test stdout output
+    let mut cmd_stdout = Command::cargo_bin("gleon")?;
+    cmd_stdout
+        .current_dir(dir.path())
+        .arg("report")
+        .arg("markdown")
+        .arg("--report")
+        .arg(&json_report_path)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("login_button"))
+        .stdout(predicates::str::contains("42 px"))
+        .stdout(predicates::str::contains("Missing baseline blob"))
+        .stdout(predicates::str::contains("corrupt png file"));
+
+    // Test --out file output
+    let mut cmd_out = Command::cargo_bin("gleon")?;
+    cmd_out
+        .current_dir(dir.path())
+        .arg("report")
+        .arg("markdown")
+        .arg("--report")
+        .arg(&json_report_path)
+        .arg("--out")
+        .arg(&out_report_path)
+        .assert()
+        .success();
+
+    let out_content = std::fs::read_to_string(out_report_path)?;
+    assert!(out_content.contains("login_button"));
+    assert!(out_content.contains("42 px"));
+    assert!(out_content.contains("Missing baseline blob"));
+    assert!(out_content.contains("corrupt png file"));
+
+    Ok(())
+}
+
+#[test]
+fn test_cli_report_invalid_json() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let json_report_path = dir.path().join("invalid.json");
+    std::fs::write(&json_report_path, "{}")?; // Empty object, not an array
+
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.current_dir(dir.path())
+        .arg("report")
+        .arg("markdown")
+        .arg("--report")
+        .arg(&json_report_path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "Failed to parse report JSON from",
+        ));
+
+    Ok(())
+}
+
+#[test]
+fn test_cli_report_unsupported_format() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let json_report_path = dir.path().join("valid.json");
+    std::fs::write(&json_report_path, "[]")?;
+
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.current_dir(dir.path())
+        .arg("report")
+        .arg("unsupported-format")
+        .arg("--report")
+        .arg(&json_report_path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "error: invalid value 'unsupported-format' for '<FORMAT>'",
+        ));
+
+    Ok(())
+}
+
+#[test]
+fn test_cli_report_with_base_url() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let json_report_path = dir.path().join("gleon-report.json");
+    let sample_json = r#"[
+        {
+            "name": "login_button",
+            "result": {
+                "Mismatch": {
+                    "relative_path": "login.png",
+                    "detail": { "Pixel": { "diff_count": 42 } },
+                    "diff_path": "diffs/login.png",
+                    "baseline_path": "goldens/login.png",
+                    "actual_path": "actual/login.png"
+                }
+            }
+        }
+    ]"#;
+    std::fs::write(&json_report_path, sample_json)?;
+
+    let mut cmd_stdout = Command::cargo_bin("gleon")?;
+    cmd_stdout
+        .current_dir(dir.path())
+        .env("GLEON_STORAGE_URL", "https://example.com/bucket")
+        .arg("report")
+        .arg("markdown")
+        .arg("--report")
+        .arg(&json_report_path)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("login_button"))
+        .stdout(predicates::str::contains("https://example.com"));
+
+    Ok(())
+}
+
+#[test]
+fn test_cli_report_invalid_pr_number() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let json_report_path = dir.path().join("gleon-report.json");
+    std::fs::write(&json_report_path, "[]")?;
+
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.current_dir(dir.path())
+        .arg("report")
+        .arg("markdown")
+        .arg("--report")
+        .arg(&json_report_path)
+        .arg("--pr-number")
+        .arg("0")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "PR number must be greater than 0",
+        ));
+
+    Ok(())
+}
+
+#[test]
+fn test_cli_report_valid_pr_number_and_html_url() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let json_report_path = dir.path().join("gleon-report.json");
+    let mut items = Vec::new();
+    for i in 0..11 {
+        items.push(format!(
+            r#"{{
+                "name": "test_{}",
+                "result": {{
+                    "DecodeError": {{
+                        "relative_path": "test_{}.png",
+                        "error": "corrupt"
+                    }}
+                }}
+            }}"#,
+            i, i
+        ));
+    }
+    let sample_json = format!("[{}]", items.join(","));
+    std::fs::write(&json_report_path, sample_json)?;
+
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.current_dir(dir.path())
+        .env(
+            "GLEON_HTML_ARTIFACT_URL",
+            "https://github.com/actions/artifact",
+        )
+        .arg("report")
+        .arg("markdown")
+        .arg("--report")
+        .arg(&json_report_path)
+        .arg("--pr-number")
+        .arg("42")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "https://github.com/actions/artifact",
+        ))
+        .stdout(predicates::str::contains("Truncated 1 additional diffs"));
+
+    Ok(())
+}
+
+#[test]
+#[cfg(not(miri))]
+fn test_cli_report_with_s3_storage_pre_signed_urls() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let json_report_path = dir.path().join("gleon-report.json");
+    let sample_json = r#"[
+        {
+            "name": "mismatch_test",
+            "result": {
+                "Mismatch": {
+                    "relative_path": "login.png",
+                    "detail": { "Pixel": { "diff_count": 42 } },
+                    "diff_path": "diffs/login.png",
+                    "baseline_path": "goldens/login.png",
+                    "actual_path": "actual/login.png"
+                }
+            }
+        },
+        {
+            "name": "dimension_test",
+            "result": {
+                "DimensionMismatch": {
+                    "relative_path": "header.png",
+                    "actual_size": [100, 200],
+                    "baseline_size": [100, 201],
+                    "baseline_path": "goldens/header.png",
+                    "actual_path": "actual/header.png"
+                }
+            }
+        },
+        {
+            "name": "missing_test",
+            "result": {
+                "MissingBaseline": {
+                    "relative_path": "footer.png",
+                    "reason": "Missing baseline blob"
+                }
+            }
+        },
+        {
+            "name": "corrupt_test",
+            "result": {
+                "DecodeError": {
+                    "relative_path": "sidebar.png",
+                    "error": "corrupt png file"
+                }
+            }
+        }
+    ]"#;
+    std::fs::write(&json_report_path, sample_json)?;
+
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.current_dir(dir.path())
+        .env("GLEON_STORAGE_URL", "s3://my-test-bucket/gleon")
+        .env("GLEON_AWS_ACCESS_KEY_ID", "key")
+        .env("GLEON_AWS_SECRET_ACCESS_KEY", "secret")
+        .env("GLEON_AWS_REGION", "us-east-1")
+        .arg("report")
+        .arg("markdown")
+        .arg("--report")
+        .arg(&json_report_path)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("my-test-bucket"))
+        .stdout(predicates::str::contains("X-Amz-Signature"));
+
+    Ok(())
+}

@@ -26,6 +26,9 @@ pub struct StorageConfig {
     /// AWS or S3-compatible Secret Access Key.
     pub aws_secret_access_key: Option<String>,
 
+    /// Google Cloud Storage JSON service account key.
+    pub gcp_service_account_key: Option<String>,
+
     /// AWS region (defaults to `auto` for Cloudflare R2).
     pub aws_region: Option<String>,
 
@@ -47,6 +50,7 @@ impl StorageConfig {
             url: url.into(),
             aws_access_key_id: None,
             aws_secret_access_key: None,
+            gcp_service_account_key: None,
             aws_region: None,
             aws_endpoint: None,
             r2_account_id: None,
@@ -81,6 +85,10 @@ impl StorageConfig {
             url: url.to_string(),
             aws_access_key_id: get_var("GLEON_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"),
             aws_secret_access_key: get_var("GLEON_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"),
+            gcp_service_account_key: get_var(
+                "GLEON_GOOGLE_SERVICE_ACCOUNT_KEY",
+                "GOOGLE_SERVICE_ACCOUNT_KEY",
+            ),
             aws_region: get_var("GLEON_AWS_REGION", "AWS_REGION"),
             aws_endpoint: get_var("GLEON_AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL"),
             r2_account_id: get_var("GLEON_R2_ACCOUNT_ID", "R2_ACCOUNT_ID"),
@@ -111,6 +119,10 @@ impl fmt::Debug for StorageConfig {
                 "aws_secret_access_key",
                 &self.aws_secret_access_key.as_ref().map(|_| "[REDACTED]"),
             )
+            .field(
+                "gcp_service_account_key",
+                &self.gcp_service_account_key.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("aws_region", &self.aws_region)
             .field("aws_endpoint", &self.aws_endpoint)
             .field("r2_account_id", &self.r2_account_id)
@@ -123,6 +135,8 @@ impl fmt::Debug for StorageConfig {
 #[derive(Clone)]
 pub struct ObjectStoreAdapter {
     store: Arc<dyn ObjectStore>,
+    signer: Option<Arc<dyn object_store::signer::Signer>>,
+    prefix: object_store::path::Path,
     concurrency: usize,
 }
 
@@ -133,48 +147,149 @@ impl ObjectStoreAdapter {
     /// Returns [`StorageError::InvalidUrl`] if the URL or parameters cannot be parsed by `object_store`.
     #[instrument(skip(config), level = "debug")]
     pub fn from_config(config: &StorageConfig) -> Result<Self, StorageError> {
-        let mut opts = BTreeMap::new();
-
-        if let Some(key_id) = &config.aws_access_key_id {
-            let _ = opts.insert("aws_access_key_id".to_string(), key_id.clone());
-        }
-        if let Some(secret) = &config.aws_secret_access_key {
-            let _ = opts.insert("aws_secret_access_key".to_string(), secret.clone());
-        }
-
-        if let Some(region) = &config.aws_region {
-            let _ = opts.insert("aws_region".to_string(), region.clone());
-        } else if config.r2_account_id.is_some() {
-            let _ = opts.insert("aws_region".to_string(), "auto".to_string());
-        }
-
-        if let Some(endpoint) = &config.aws_endpoint {
-            let _ = opts.insert("aws_endpoint".to_string(), endpoint.clone());
-        } else if let Some(account_id) = &config.r2_account_id {
-            let r2_endpoint = format!("https://{account_id}.r2.cloudflarestorage.com");
-            let _ = opts.insert("aws_endpoint".to_string(), r2_endpoint);
-        }
-
-        let url = url::Url::parse(&config.url).map_err(|e| StorageError::InvalidUrl {
+        let parsed_url = url::Url::parse(&config.url).map_err(|e| StorageError::InvalidUrl {
             url: config.url.clone(),
             reason: e.to_string(),
         })?;
 
-        let (store, path) = parse_url_opts(&url, opts).map_err(|e| StorageError::InvalidUrl {
-            url: config.url.clone(),
-            reason: e.to_string(),
-        })?;
-
-        let store: Arc<dyn ObjectStore> = if path.as_ref().is_empty() {
-            Arc::from(store)
+        let url_path = parsed_url.path().trim_start_matches('/');
+        let prefix = if url_path.is_empty() {
+            object_store::path::Path::default()
         } else {
-            Arc::new(object_store::prefix::PrefixStore::new(store, path))
+            object_store::path::Path::parse(url_path).map_err(|e| StorageError::InvalidUrl {
+                url: config.url.clone(),
+                reason: e.to_string(),
+            })?
         };
 
+        let (store, signer): (
+            Arc<dyn ObjectStore>,
+            Option<Arc<dyn object_store::signer::Signer>>,
+        ) = match parsed_url.scheme() {
+            "s3" | "r2" => {
+                let mut builder = object_store::aws::AmazonS3Builder::from_env();
+                if parsed_url.scheme() == "r2" {
+                    let r2_as_s3 = config.url.replace("r2://", "s3://");
+                    builder = builder.with_url(&r2_as_s3);
+                } else {
+                    builder = builder.with_url(&config.url);
+                }
+
+                if let Some(key_id) = &config.aws_access_key_id {
+                    builder = builder.with_access_key_id(key_id);
+                }
+                if let Some(secret) = &config.aws_secret_access_key {
+                    builder = builder.with_secret_access_key(secret);
+                }
+                if let Some(region) = &config.aws_region {
+                    builder = builder.with_region(region);
+                } else if config.r2_account_id.is_some() {
+                    builder = builder.with_region("auto");
+                }
+                if let Some(endpoint) = &config.aws_endpoint {
+                    builder = builder.with_endpoint(endpoint);
+                } else if let Some(account_id) = &config.r2_account_id {
+                    let r2_endpoint = format!("https://{account_id}.r2.cloudflarestorage.com");
+                    builder = builder.with_endpoint(r2_endpoint);
+                }
+
+                let s3 = builder.build().map_err(|e| StorageError::InvalidUrl {
+                    url: config.url.clone(),
+                    reason: e.to_string(),
+                })?;
+                let s3_arc = Arc::new(s3);
+                (s3_arc.clone(), Some(s3_arc))
+            }
+            "gs" => {
+                let mut builder = object_store::gcp::GoogleCloudStorageBuilder::from_env();
+                builder = builder.with_url(&config.url);
+                if let Some(sec) = &config.gcp_service_account_key {
+                    builder = builder.with_service_account_key(sec);
+                }
+                let gcs = builder.build().map_err(|e| StorageError::InvalidUrl {
+                    url: config.url.clone(),
+                    reason: e.to_string(),
+                })?;
+                let gcs_arc = Arc::new(gcs);
+                (gcs_arc.clone(), Some(gcs_arc))
+            }
+            _ => {
+                let mut opts = BTreeMap::new();
+                if let Some(key_id) = &config.aws_access_key_id {
+                    let _ = opts.insert("aws_access_key_id".to_string(), key_id.clone());
+                }
+                if let Some(secret) = &config.aws_secret_access_key {
+                    let _ = opts.insert("aws_secret_access_key".to_string(), secret.clone());
+                }
+                if let Some(region) = &config.aws_region {
+                    let _ = opts.insert("aws_region".to_string(), region.clone());
+                }
+                if let Some(endpoint) = &config.aws_endpoint {
+                    let _ = opts.insert("aws_endpoint".to_string(), endpoint.clone());
+                }
+
+                let (raw_store, path) =
+                    parse_url_opts(&parsed_url, opts).map_err(|e| StorageError::InvalidUrl {
+                        url: config.url.clone(),
+                        reason: e.to_string(),
+                    })?;
+
+                let store: Arc<dyn ObjectStore> = if path.as_ref().is_empty() {
+                    Arc::from(raw_store)
+                } else {
+                    Arc::new(object_store::prefix::PrefixStore::new(raw_store, path))
+                };
+
+                return Ok(Self {
+                    store,
+                    signer: None,
+                    prefix: object_store::path::Path::from(""), // Handled internally by PrefixStore
+                    concurrency: std::cmp::max(1, config.concurrency),
+                });
+            }
+        };
+
+        // Note: AmazonS3Builder and GoogleCloudStorageBuilder already configure the path prefix
+        // internally when constructed via with_url. Therefore, we do NOT wrap store in PrefixStore
+        // here to prevent double-prefixing on S3/GCS operations.
         Ok(Self {
             store,
+            signer,
+            prefix,
             concurrency: std::cmp::max(1, config.concurrency),
         })
+    }
+
+    /// Generates a pre-signed URL for a given remote blob path if supported by the storage backend.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn sign_blob_url(
+        &self,
+        relative_path: &str,
+        expires_in: std::time::Duration,
+    ) -> Option<String> {
+        if let Some(signer) = &self.signer {
+            let mut path_str = relative_path.to_string();
+            if !self.prefix.as_ref().is_empty() {
+                path_str = format!("{}/{}", self.prefix.as_ref(), relative_path);
+            }
+            let path = object_store::path::Path::from(path_str);
+            match signer
+                .signed_url(http::Method::GET, &path, expires_in)
+                .await
+            {
+                Ok(url) => Some(url.to_string()),
+                Err(e) => {
+                    tracing::warn!(
+                        path = %relative_path,
+                        error = %e,
+                        "Signing URL failed for backend, falling back"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        }
     }
 
     /// Returns the concurrency limit configured for this adapter.
@@ -370,5 +485,91 @@ mod tests {
         );
         assert_eq!(cfg_override.r2_account_id.as_deref(), Some("gleon_r2"));
         assert_eq!(cfg_override.concurrency, 16);
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_sign_blob_url_memory_store_returns_none() {
+        let cfg = StorageConfig::new("memory://");
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+        let res = adapter
+            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_secs(60))
+            .await;
+        assert!(res.is_none());
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_sign_blob_url_s3_store() {
+        // Use from_env with empty env to ensure hermetic execution
+        let mut cfg = StorageConfig::from_env(&MapEnv(HashMap::new()))
+            .unwrap_or_else(|| StorageConfig::new("s3://mybucket"));
+        cfg.aws_access_key_id = Some("testkey".to_string());
+        cfg.aws_secret_access_key = Some("testsecret".to_string());
+        cfg.aws_region = Some("us-east-1".to_string());
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+        let url = adapter
+            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_secs(60))
+            .await
+            .expect("Expected Some URL for S3 signing");
+        assert!(url.contains("mybucket"));
+        assert!(url.contains("X-Amz-Signature"));
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_sign_blob_url_s3_store_with_prefix() {
+        let mut cfg = StorageConfig::from_env(&MapEnv(HashMap::new()))
+            .unwrap_or_else(|| StorageConfig::new("s3://mybucket/subfolder/prefix"));
+        cfg.aws_access_key_id = Some("testkey".to_string());
+        cfg.aws_secret_access_key = Some("testsecret".to_string());
+        cfg.aws_region = Some("us-east-1".to_string());
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+        let url = adapter
+            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_secs(60))
+            .await
+            .expect("Expected Some URL for S3 signing");
+        assert!(url.contains("mybucket"));
+        assert!(url.contains("subfolder/prefix/blobs/sha256/1234"));
+        assert!(url.contains("X-Amz-Signature"));
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_sign_blob_url_gcs_store() {
+        let cfg = StorageConfig::from_env(&MapEnv(HashMap::new()))
+            .unwrap_or_else(|| StorageConfig::new("gs://mybucket"));
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+        let res = adapter
+            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_secs(60))
+            .await;
+        // Unauthenticated / metadata-less GCS safely falls back to None instead of failing
+        assert!(res.is_none());
+    }
+
+    #[test]
+    fn test_storage_config_invalid_path_syntax() {
+        let cfg = StorageConfig::new("s3://mybucket//invalid//path");
+        let res = ObjectStoreAdapter::from_config(&cfg);
+        assert!(matches!(
+            res,
+            Err(StorageError::InvalidUrl { ref url, ref reason })
+            if url == "s3://mybucket//invalid//path" && !reason.is_empty()
+        ));
+    }
+
+    #[test]
+    fn test_storage_config_invalid_s3_builder_error() {
+        let cfg = StorageConfig::new("s3://");
+        let res = ObjectStoreAdapter::from_config(&cfg);
+        assert!(matches!(res, Err(StorageError::InvalidUrl { .. })));
+    }
+
+    #[test]
+    fn test_storage_config_invalid_gcs_builder_error() {
+        let mut cfg = StorageConfig::new("gs://mybucket");
+        cfg.gcp_service_account_key = Some("not valid json".to_string());
+        let res = ObjectStoreAdapter::from_config(&cfg);
+        assert!(matches!(res, Err(StorageError::InvalidUrl { .. })));
     }
 }

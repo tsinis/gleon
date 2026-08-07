@@ -52,6 +52,54 @@ steps:
 | `target-branch` | Target branch for baseline comparison | PR base ref or default branch |
 | `args` | Additional flags for `gleon diff` | `''` |
 
+### Ephemeral Diff Branch Cleanup Workflow
+
+When visual diffs are detected in a PR, ephemeral branches (`gleon/diffs/pr-<PR_NUMBER>`) are pushed to store diff artifacts.
+
+To prevent orphan branches from accumulating in consumer repositories, add `.github/workflows/gleon-cleanup.yml` to your repository:
+
+```yaml
+name: Gleon Ephemeral Branch Cleanup
+
+on:
+  pull_request_target:
+    types: [closed]
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Delete PR diffs branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH_NAME="gleon/diffs/pr-${{ github.event.number }}"
+          RESPONSE=$(gh api --include -X DELETE "repos/${{ github.repository }}/git/refs/heads/$BRANCH_NAME" 2>&1 || true)
+          STATUS=$(echo "$RESPONSE" | grep -E '^HTTP/' | tail -n1 | awk '{print $2}')
+
+          if [ "$STATUS" = "204" ] || [ "$STATUS" = "200" ]; then
+            echo "Branch successfully deleted."
+            exit 0
+          elif [ "$STATUS" = "422" ]; then
+            if echo "$RESPONSE" | grep -q "Reference does not exist"; then
+              echo "Branch reference does not exist (422), ignoring error."
+              exit 0
+            else
+              echo "Failed to delete branch (422) due to validation or other error:"
+              echo "$RESPONSE"
+              exit 1
+            fi
+          else
+            echo "Failed to delete branch ($STATUS):"
+            echo "$RESPONSE"
+            exit 1
+          fi
+```
+
+When a Pull Request is closed or merged, this workflow automatically deletes the ephemeral `gleon/diffs/pr-<PR_NUMBER>` branch from your repository.
+
 
 ## How to Build and Run Locally
 
