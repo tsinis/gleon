@@ -108,10 +108,13 @@ pub fn make_relative_path(target: &std::path::Path, base: &std::path::Path) -> s
     }
 }
 
-#[derive(Default, Debug, Clone)]
+pub type ImageUrlResolver<'a> = dyn Fn(&std::path::Path) -> Option<String> + Sync + 'a;
+
+#[derive(Default)]
 pub struct MarkdownReportOptions<'a> {
     pub base_image_url: Option<&'a str>,
     pub html_artifact_url: Option<&'a str>,
+    pub image_url_resolver: Option<&'a ImageUrlResolver<'a>>,
 }
 
 pub struct ReportGenerator;
@@ -756,7 +759,10 @@ impl ReportGenerator {
         )
         .expect("write infallible");
 
-        if options.base_image_url.is_some() {
+        let has_image_urls =
+            options.base_image_url.is_some() || options.image_url_resolver.is_some();
+
+        if has_image_urls {
             out.push_str("| Test Name | Expected | Actual | Diff | Delta |\n");
             out.push_str("| :--- | :---: | :---: | :---: | :---: |\n");
         } else {
@@ -767,16 +773,20 @@ impl ReportGenerator {
         struct ImgLinkFormatter<'a> {
             base_url: Option<&'a str>,
             path: Option<&'a std::path::Path>,
+            resolver: Option<&'a ImageUrlResolver<'a>>,
         }
         impl<'a> std::fmt::Display for ImgLinkFormatter<'a> {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                match (self.base_url, self.path) {
-                    (Some(base), Some(p)) => {
-                        let base = base.trim_end_matches('/');
-                        write!(f, "[Image]({}/{})", base, PosixPathFormatter(p))
+                if let Some(p) = self.path {
+                    if let Some(signed_url) = self.resolver.and_then(|res_fn| res_fn(p)) {
+                        return write!(f, "[Image]({})", signed_url);
                     }
-                    _ => f.write_str("N/A"),
+                    if let Some(base) = self.base_url {
+                        let base = base.trim_end_matches('/');
+                        return write!(f, "[Image]({}/{})", base, PosixPathFormatter(p));
+                    }
                 }
+                f.write_str("N/A")
             }
         }
 
@@ -797,7 +807,7 @@ impl ReportGenerator {
             let res = &tc.result;
             let name = &tc.name;
 
-            if let Some(base_url) = options.base_image_url {
+            if has_image_urls {
                 match res {
                     TestImageResult::Mismatch {
                         detail,
@@ -811,16 +821,19 @@ impl ReportGenerator {
                             "| `{}` | {} | {} | {} | `{}` |",
                             CodeSpanEscape(name),
                             ImgLinkFormatter {
-                                base_url: Some(base_url),
-                                path: Some(baseline_path)
+                                base_url: options.base_image_url,
+                                path: Some(baseline_path),
+                                resolver: options.image_url_resolver,
                             },
                             ImgLinkFormatter {
-                                base_url: Some(base_url),
-                                path: Some(actual_path)
+                                base_url: options.base_image_url,
+                                path: Some(actual_path),
+                                resolver: options.image_url_resolver,
                             },
                             ImgLinkFormatter {
-                                base_url: Some(base_url),
-                                path: Some(diff_path)
+                                base_url: options.base_image_url,
+                                path: Some(diff_path),
+                                resolver: options.image_url_resolver,
                             },
                             DeltaFormatter(detail)
                         )
@@ -836,16 +849,19 @@ impl ReportGenerator {
                             "| `{}` | {} | {} | {} | `Dim` |",
                             CodeSpanEscape(name),
                             ImgLinkFormatter {
-                                base_url: Some(base_url),
-                                path: Some(baseline_path)
+                                base_url: options.base_image_url,
+                                path: Some(baseline_path),
+                                resolver: options.image_url_resolver,
                             },
                             ImgLinkFormatter {
-                                base_url: Some(base_url),
-                                path: Some(actual_path)
+                                base_url: options.base_image_url,
+                                path: Some(actual_path),
+                                resolver: options.image_url_resolver,
                             },
                             ImgLinkFormatter {
                                 base_url: None,
-                                path: None
+                                path: None,
+                                resolver: None,
                             },
                         )
                         .expect("write infallible");
@@ -857,15 +873,18 @@ impl ReportGenerator {
                             CodeSpanEscape(name),
                             ImgLinkFormatter {
                                 base_url: None,
-                                path: None
+                                path: None,
+                                resolver: None,
                             },
                             ImgLinkFormatter {
-                                base_url: Some(base_url),
-                                path: Some(res.relative_path())
+                                base_url: options.base_image_url,
+                                path: Some(res.relative_path()),
+                                resolver: options.image_url_resolver,
                             },
                             ImgLinkFormatter {
                                 base_url: None,
-                                path: None
+                                path: None,
+                                resolver: None,
                             },
                         )
                         .expect("write infallible");
@@ -877,15 +896,18 @@ impl ReportGenerator {
                             CodeSpanEscape(name),
                             ImgLinkFormatter {
                                 base_url: None,
-                                path: None
+                                path: None,
+                                resolver: None,
                             },
                             ImgLinkFormatter {
-                                base_url: Some(base_url),
-                                path: Some(res.relative_path())
+                                base_url: options.base_image_url,
+                                path: Some(res.relative_path()),
+                                resolver: options.image_url_resolver,
                             },
                             ImgLinkFormatter {
                                 base_url: None,
-                                path: None
+                                path: None,
+                                resolver: None,
                             },
                         )
                         .expect("write infallible");
@@ -1089,6 +1111,7 @@ mod tests {
         let options = MarkdownReportOptions {
             base_image_url: Some("https://storage.cdn.com/run-1"),
             html_artifact_url: Some("https://github.com/org/repo/actions/runs/1/artifacts/2"),
+            image_url_resolver: None,
         };
         let comment = ReportGenerator::render_pr_comment(&[tc], &options);
         assert!(comment.contains("`login_button`"));
@@ -1114,6 +1137,7 @@ mod tests {
         let options = MarkdownReportOptions {
             base_image_url: None,
             html_artifact_url: Some("https://artifact.url/report.html"),
+            image_url_resolver: None,
         };
         let comment = ReportGenerator::render_pr_comment(&test_cases, &options);
         assert!(comment.contains("Truncated 5 additional diffs"));
@@ -1151,6 +1175,7 @@ mod tests {
         let options = MarkdownReportOptions {
             base_image_url: Some("http://test.com"),
             html_artifact_url: None,
+            image_url_resolver: None,
         };
         let out = ReportGenerator::render_pr_comment(&test_cases, &options);
         assert!(out.contains("`Dim`"));
@@ -1189,6 +1214,7 @@ mod tests {
         let options = MarkdownReportOptions {
             base_image_url: None,
             html_artifact_url: None,
+            image_url_resolver: None,
         };
         let out = ReportGenerator::render_pr_comment(&test_cases, &options);
         assert!(out.contains("Dimension Mismatch"));
@@ -1220,6 +1246,7 @@ mod tests {
         let options = MarkdownReportOptions {
             base_image_url: None,
             html_artifact_url: None,
+            image_url_resolver: None,
         };
         let comment = ReportGenerator::render_pr_comment(&test_cases, &options);
         assert!(comment.contains("All tests passed!"));
@@ -1243,6 +1270,7 @@ mod tests {
         let options = MarkdownReportOptions {
             base_image_url: Some("http://example.com"),
             html_artifact_url: None,
+            image_url_resolver: None,
         };
         let comment = ReportGenerator::render_pr_comment(&test_cases, &options);
         assert!(comment.contains("Truncated 5 additional diffs"));
@@ -1264,11 +1292,40 @@ mod tests {
         let options = MarkdownReportOptions {
             base_image_url: None,
             html_artifact_url: None,
+            image_url_resolver: None,
         };
         let comment = ReportGenerator::render_pr_comment(&[tc], &options);
         // Should contain `test'[foo]\|bar` (pipe escaped, brackets unescaped, backtick replaced)
         assert!(comment.contains("`test'[foo]\\|bar`"));
         assert!(!comment.contains("\\["));
+    }
+
+    #[test]
+    fn test_render_pr_comment_with_image_url_resolver() {
+        let tc = TestCaseResult {
+            name: "login_btn".to_string(),
+            result: TestImageResult::Mismatch {
+                relative_path: PathBuf::from("login.png"),
+                detail: MismatchDetail::Pixel { diff_count: 5 },
+                diff_path: PathBuf::from("diffs/login.png"),
+                baseline_path: PathBuf::from("goldens/login.png"),
+                actual_path: PathBuf::from("actual/login.png"),
+            },
+        };
+        let resolver = |p: &std::path::Path| {
+            if p == std::path::Path::new("goldens/login.png") {
+                Some("https://signed.com/golden.png?token=123".to_string())
+            } else {
+                None
+            }
+        };
+        let options = MarkdownReportOptions {
+            base_image_url: None,
+            html_artifact_url: None,
+            image_url_resolver: Some(&resolver),
+        };
+        let comment = ReportGenerator::render_pr_comment(&[tc], &options);
+        assert!(comment.contains("[Image](https://signed.com/golden.png?token=123)"));
     }
 
     #[test]

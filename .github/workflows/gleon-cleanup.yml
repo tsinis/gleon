@@ -1,7 +1,7 @@
 name: Gleon Cleanup
 
 on:
-  pull_request:
+  pull_request_target:
     types: [closed]
 
 jobs:
@@ -16,14 +16,18 @@ jobs:
         run: |
           BRANCH_NAME="gleon/diffs/pr-${{ github.event.number }}"
           echo "Attempting to delete ephemeral branch: $BRANCH_NAME"
-          # We use gh api to delete the reference. We ignore 404/422 responses for missing branches, but fail on other errors.
-          gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/$BRANCH_NAME" 2> gh_err.log || {
-            EXIT_CODE=$?
-            if grep -qE '(404|422)' gh_err.log; then
-              echo "Branch not found or already deleted (404/422), ignoring error."
-              exit 0
-            else
-              cat gh_err.log
-              exit $EXIT_CODE
-            fi
-          }
+          RESPONSE=$(gh api --include -X DELETE "repos/${{ github.repository }}/git/refs/heads/$BRANCH_NAME" 2>&1 || true)
+          STATUS=$(echo "$RESPONSE" | grep -E '^HTTP/' | tail -n1 | awk '{print $2}')
+          echo "HTTP response status: $STATUS"
+
+          if [ "$STATUS" = "204" ] || [ "$STATUS" = "200" ]; then
+            echo "Branch successfully deleted."
+            exit 0
+          elif [ "$STATUS" = "422" ]; then
+            echo "Branch reference does not exist (422), ignoring error."
+            exit 0
+          else
+            echo "Failed to delete branch ($STATUS):"
+            echo "$RESPONSE"
+            exit 1
+          fi

@@ -62,7 +62,7 @@ To prevent orphan branches from accumulating in consumer repositories, add `.git
 name: Gleon Ephemeral Branch Cleanup
 
 on:
-  pull_request:
+  pull_request_target:
     types: [closed]
 
 jobs:
@@ -76,16 +76,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           BRANCH_NAME="gleon/diffs/pr-${{ github.event.number }}"
-          gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/$BRANCH_NAME" 2> gh_err.log || {
-            EXIT_CODE=$?
-            if grep -qE '(404|422)' gh_err.log; then
-              echo "Branch not found or already deleted (404/422), ignoring error."
-              exit 0
-            else
-              cat gh_err.log
-              exit $EXIT_CODE
-            fi
-          }
+          RESPONSE=$(gh api --include -X DELETE "repos/${{ github.repository }}/git/refs/heads/$BRANCH_NAME" 2>&1 || true)
+          STATUS=$(echo "$RESPONSE" | grep -E '^HTTP/' | tail -n1 | awk '{print $2}')
+
+          if [ "$STATUS" = "204" ] || [ "$STATUS" = "200" ]; then
+            echo "Branch successfully deleted."
+            exit 0
+          elif [ "$STATUS" = "422" ]; then
+            echo "Branch reference does not exist (422), ignoring error."
+            exit 0
+          else
+            echo "Failed to delete branch ($STATUS):"
+            echo "$RESPONSE"
+            exit 1
+          fi
 ```
 
 When a Pull Request is closed or merged, this workflow automatically deletes the ephemeral `gleon/diffs/pr-<PR_NUMBER>` branch from your repository.

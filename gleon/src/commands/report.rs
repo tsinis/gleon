@@ -28,21 +28,60 @@ pub async fn run_report(
     })?;
 
     let mut base_image_url = None;
+    let mut signed_urls = std::collections::HashMap::new();
+
     if let Some(cfg) = &storage_cfg {
-        // TODO: Implement true pre-signed URLs (via AmazonS3 Signer or similar)
-        // For now, if the configured URL is already HTTP/HTTPS (e.g. a public R2 bucket gateway), we use it.
-        // Otherwise, we gracefully fallback to the HTML artifact (Tier C) instead of faking S3 URLs.
         if cfg.url.starts_with("https://") || cfg.url.starts_with("http://") {
             base_image_url = Some(cfg.url.as_str());
+        }
+
+        if let Ok(adapter) = gleon_core::storage::ObjectStoreAdapter::from_config(cfg) {
+            let expires_in = std::time::Duration::from_secs(7 * 24 * 3600);
+            for tc in &report_data {
+                let paths: Vec<&std::path::Path> = match &tc.result {
+                    gleon_core::scanner::TestImageResult::Mismatch {
+                        baseline_path,
+                        actual_path,
+                        diff_path,
+                        ..
+                    } => {
+                        vec![
+                            baseline_path.as_path(),
+                            actual_path.as_path(),
+                            diff_path.as_path(),
+                        ]
+                    }
+                    gleon_core::scanner::TestImageResult::DimensionMismatch {
+                        baseline_path,
+                        actual_path,
+                        ..
+                    } => {
+                        vec![baseline_path.as_path(), actual_path.as_path()]
+                    }
+                    _ => vec![],
+                };
+
+                for p in paths {
+                    let path_str = match p.to_str() {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    if let Ok(Some(signed)) = adapter.sign_blob_url(path_str, expires_in).await {
+                        let _ = signed_urls.insert(p.to_path_buf(), signed);
+                    }
+                }
+            }
         }
     }
 
     let artifact_env = env.get_var("GLEON_HTML_ARTIFACT_URL");
     let html_artifact_url = artifact_env.as_deref().filter(|s| !s.is_empty());
 
+    let resolver = move |p: &std::path::Path| signed_urls.get(p).cloned();
     let options = MarkdownReportOptions {
         base_image_url,
         html_artifact_url,
+        image_url_resolver: Some(&resolver),
     };
 
     let md_content = ReportGenerator::render_pr_comment(&report_data, &options);
