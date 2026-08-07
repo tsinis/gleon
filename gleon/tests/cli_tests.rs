@@ -766,3 +766,139 @@ fn test_cli_report_markdown_stdout_and_file() -> Result<(), Box<dyn std::error::
 
     Ok(())
 }
+
+#[test]
+fn test_cli_report_invalid_json() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let json_report_path = dir.path().join("invalid.json");
+    std::fs::write(&json_report_path, "{}")?; // Empty object, not an array
+
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.current_dir(dir.path())
+        .arg("report")
+        .arg("markdown")
+        .arg("--report")
+        .arg(&json_report_path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "Failed to parse report JSON from",
+        ));
+
+    Ok(())
+}
+
+#[test]
+fn test_cli_report_unsupported_format() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let json_report_path = dir.path().join("valid.json");
+    std::fs::write(&json_report_path, "[]")?;
+
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.current_dir(dir.path())
+        .arg("report")
+        .arg("unsupported-format")
+        .arg("--report")
+        .arg(&json_report_path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "error: invalid value 'unsupported-format' for '<FORMAT>'",
+        ));
+
+    Ok(())
+}
+
+#[test]
+fn test_cli_report_with_base_url() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let json_report_path = dir.path().join("gleon-report.json");
+    let sample_json = r#"[
+        {
+            "name": "login_button",
+            "result": {
+                "Mismatch": {
+                    "relative_path": "login.png",
+                    "detail": { "Pixel": { "diff_count": 42 } },
+                    "diff_path": "diffs/login.png",
+                    "baseline_path": "goldens/login.png",
+                    "actual_path": "actual/login.png"
+                }
+            }
+        }
+    ]"#;
+    std::fs::write(&json_report_path, sample_json)?;
+
+    let mut cmd_stdout = Command::cargo_bin("gleon")?;
+    cmd_stdout
+        .current_dir(dir.path())
+        .env("GLEON_STORAGE_URL", "https://example.com/bucket")
+        .arg("report")
+        .arg("markdown")
+        .arg("--report")
+        .arg(&json_report_path)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("login_button"))
+        .stdout(predicates::str::contains("https://example.com"));
+
+    Ok(())
+}
+
+#[test]
+fn test_cli_report_invalid_pr_number() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let json_report_path = dir.path().join("gleon-report.json");
+    std::fs::write(&json_report_path, "[]")?;
+
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.current_dir(dir.path())
+        .arg("report")
+        .arg("markdown")
+        .arg("--report")
+        .arg(&json_report_path)
+        .arg("--pr-number")
+        .arg("0")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "PR number must be greater than 0",
+        ));
+
+    Ok(())
+}
+
+#[test]
+fn test_cli_report_valid_pr_number_and_html_url() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let json_report_path = dir.path().join("gleon-report.json");
+    let sample_json = r#"[
+        {
+            "name": "login_button",
+            "result": {
+                "DecodeError": {
+                    "relative_path": "login.png",
+                    "error": "corrupt"
+                }
+            }
+        }
+    ]"#;
+    std::fs::write(&json_report_path, sample_json)?;
+
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.current_dir(dir.path())
+        .env(
+            "GLEON_HTML_ARTIFACT_URL",
+            "https://github.com/actions/artifact",
+        )
+        .arg("report")
+        .arg("markdown")
+        .arg("--report")
+        .arg(&json_report_path)
+        .arg("--pr-number")
+        .arg("42")
+        .assert()
+        .success();
+
+    Ok(())
+}

@@ -172,17 +172,17 @@ pub enum Commands {
     /// Generate a PR comment from a JSON report
     Report {
         /// Format of the report (e.g., markdown)
-        #[arg(value_name = "FORMAT")]
+        #[arg(value_name = "FORMAT", value_parser = ["markdown"])]
         format: String,
         /// Path to the JSON report file
         #[arg(long)]
-        report: String,
+        report: std::path::PathBuf,
         /// Pull Request number
         #[arg(long)]
         pr_number: Option<u64>,
         /// Output file path
         #[arg(short = 'o', long)]
-        out: Option<String>,
+        out: Option<std::path::PathBuf>,
     },
 }
 

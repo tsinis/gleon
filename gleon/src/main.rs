@@ -212,12 +212,8 @@ async fn run(
             pr_number,
             out,
         } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
             let storage_cfg = get_storage_config(env);
             return commands::report::run_report(
-                &ctx,
                 env,
                 storage_cfg,
                 format,

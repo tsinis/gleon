@@ -607,6 +607,9 @@ pub struct PosixPathFormatter<'a>(pub &'a std::path::Path);
 impl<'a> std::fmt::Display for PosixPathFormatter<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use std::fmt::Write;
+        if self.0.as_os_str().is_empty() {
+            return f.write_str(".");
+        }
         let mut first = true;
         for comp in self.0.components() {
             match comp {
@@ -648,6 +651,25 @@ impl<'a> std::fmt::Display for MarkdownEscape<'a> {
                 '|' => f.write_str("\\|")?,
                 '\n' | '\r' => f.write_char(' ')?,
                 '\\' => f.write_str("\\\\")?,
+                '`' => f.write_str("\\`")?,
+                '[' => f.write_str("\\[")?,
+                ']' => f.write_str("\\]")?,
+                _ => f.write_char(c)?,
+            }
+        }
+        Ok(())
+    }
+}
+
+pub struct CodeSpanEscape<'a>(pub &'a str);
+impl<'a> std::fmt::Display for CodeSpanEscape<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write;
+        for c in self.0.chars() {
+            match c {
+                '|' => f.write_str("\\|")?,
+                '`' => f.write_char('\'')?,
+                '\n' | '\r' => f.write_char(' ')?,
                 _ => f.write_char(c)?,
             }
         }
@@ -708,9 +730,11 @@ impl ReportGenerator {
         })
     }
 
-    /// Generates a simple Markdown report summary string.
+    /// Maximum number of failure rows rendered in a PR comment table.
     pub const MAX_MARKDOWN_DIFF_ROWS: usize = 10;
 
+    /// Renders a GitHub PR comment in Markdown from the failed test cases.
+    /// Truncates the table to `MAX_MARKDOWN_DIFF_ROWS` rows.
     pub fn render_pr_comment(
         test_cases: &[TestCaseResult],
         options: &MarkdownReportOptions,
@@ -771,7 +795,6 @@ impl ReportGenerator {
 
         for tc in failed_tests.iter().take(Self::MAX_MARKDOWN_DIFF_ROWS) {
             let res = &tc.result;
-            // test name is already validated to be [a-zA-Z0-9_.-], no escaping needed.
             let name = &tc.name;
 
             if let Some(base_url) = options.base_image_url {
@@ -786,7 +809,7 @@ impl ReportGenerator {
                         writeln!(
                             out,
                             "| `{}` | {} | {} | {} | `{}` |",
-                            name,
+                            CodeSpanEscape(name),
                             ImgLinkFormatter {
                                 base_url: Some(base_url),
                                 path: Some(baseline_path)
@@ -811,7 +834,7 @@ impl ReportGenerator {
                         writeln!(
                             out,
                             "| `{}` | {} | {} | {} | `Dim` |",
-                            name,
+                            CodeSpanEscape(name),
                             ImgLinkFormatter {
                                 base_url: Some(base_url),
                                 path: Some(baseline_path)
@@ -831,7 +854,7 @@ impl ReportGenerator {
                         writeln!(
                             out,
                             "| `{}` | {} | {} | {} | `Missing` |",
-                            name,
+                            CodeSpanEscape(name),
                             ImgLinkFormatter {
                                 base_url: None,
                                 path: None
@@ -851,7 +874,7 @@ impl ReportGenerator {
                         writeln!(
                             out,
                             "| `{}` | {} | {} | {} | `Decode Error` |",
-                            name,
+                            CodeSpanEscape(name),
                             ImgLinkFormatter {
                                 base_url: None,
                                 path: None
@@ -875,20 +898,24 @@ impl ReportGenerator {
                         writeln!(
                             out,
                             "| `{}` | Mismatch | {} |",
-                            name,
+                            CodeSpanEscape(name),
                             DeltaFormatter(detail)
                         )
                         .expect("write infallible");
                     }
                     TestImageResult::DimensionMismatch { .. } => {
-                        writeln!(out, "| `{}` | Dimension Mismatch | Dim mismatch |", name)
-                            .expect("write infallible");
+                        writeln!(
+                            out,
+                            "| `{}` | Dimension Mismatch | Dim mismatch |",
+                            CodeSpanEscape(name)
+                        )
+                        .expect("write infallible");
                     }
                     TestImageResult::MissingBaseline { reason, .. } => {
                         writeln!(
                             out,
                             "| `{}` | Missing Baseline | {} |",
-                            name,
+                            CodeSpanEscape(name),
                             MarkdownEscape(reason)
                         )
                         .expect("write infallible");
@@ -897,7 +924,7 @@ impl ReportGenerator {
                         writeln!(
                             out,
                             "| `{}` | Decode Error | {} |",
-                            name,
+                            CodeSpanEscape(name),
                             MarkdownEscape(error)
                         )
                         .expect("write infallible");
@@ -932,6 +959,7 @@ impl ReportGenerator {
         out
     }
 
+    /// Generates a simple Markdown report summary string.
     pub fn generate_markdown(test_cases: &[TestCaseResult]) -> String {
         use std::fmt::Write;
 
@@ -959,8 +987,15 @@ impl ReportGenerator {
             };
 
             let path_fmt = PosixPathFormatter(res.relative_path());
-            writeln!(out, "| {} | {} | {} |", tc.name, path_fmt, status)
-                .expect("fmt::Write on String is infallible");
+            let path_str = path_fmt.to_string();
+            writeln!(
+                out,
+                "| {} | {} | {} |",
+                MarkdownEscape(&tc.name),
+                MarkdownEscape(&path_str),
+                status
+            )
+            .expect("fmt::Write on String is infallible");
         }
 
         out
@@ -1083,6 +1118,157 @@ mod tests {
         let comment = ReportGenerator::render_pr_comment(&test_cases, &options);
         assert!(comment.contains("Truncated 5 additional diffs"));
         assert!(comment.contains("https://artifact.url/report.html"));
+    }
+
+    #[test]
+    fn test_render_pr_comment_all_variants_with_base_url() {
+        let test_cases = vec![
+            TestCaseResult {
+                name: "tc1".to_string(),
+                result: TestImageResult::DimensionMismatch {
+                    relative_path: PathBuf::from("dim.png"),
+                    actual_size: (100, 200),
+                    baseline_size: (101, 200),
+                    baseline_path: PathBuf::from("base.png"),
+                    actual_path: PathBuf::from("act.png"),
+                },
+            },
+            TestCaseResult {
+                name: "tc2".to_string(),
+                result: TestImageResult::MissingBaseline {
+                    relative_path: PathBuf::from("miss.png"),
+                    reason: "No baseline".to_string(),
+                },
+            },
+            TestCaseResult {
+                name: "tc3".to_string(),
+                result: TestImageResult::DecodeError {
+                    relative_path: PathBuf::from("err.png"),
+                    error: "Corrupt".to_string(),
+                },
+            },
+        ];
+        let options = MarkdownReportOptions {
+            base_image_url: Some("http://test.com"),
+            html_artifact_url: None,
+        };
+        let out = ReportGenerator::render_pr_comment(&test_cases, &options);
+        assert!(out.contains("`Dim`"));
+        assert!(out.contains("`Missing`"));
+        assert!(out.contains("`Decode Error`"));
+    }
+
+    #[test]
+    fn test_render_pr_comment_all_variants_no_base_url() {
+        let test_cases = vec![
+            TestCaseResult {
+                name: "tc1".to_string(),
+                result: TestImageResult::DimensionMismatch {
+                    relative_path: PathBuf::from("dim.png"),
+                    actual_size: (100, 200),
+                    baseline_size: (101, 200),
+                    baseline_path: PathBuf::from("base.png"),
+                    actual_path: PathBuf::from("act.png"),
+                },
+            },
+            TestCaseResult {
+                name: "tc2".to_string(),
+                result: TestImageResult::MissingBaseline {
+                    relative_path: PathBuf::from("miss.png"),
+                    reason: "No baseline".to_string(),
+                },
+            },
+            TestCaseResult {
+                name: "tc3".to_string(),
+                result: TestImageResult::DecodeError {
+                    relative_path: PathBuf::from("err.png"),
+                    error: "Corrupt".to_string(),
+                },
+            },
+        ];
+        let options = MarkdownReportOptions {
+            base_image_url: None,
+            html_artifact_url: None,
+        };
+        let out = ReportGenerator::render_pr_comment(&test_cases, &options);
+        assert!(out.contains("Dimension Mismatch"));
+        assert!(out.contains("Missing Baseline"));
+        assert!(out.contains("Decode Error"));
+    }
+
+    #[test]
+    fn test_markdown_escape_and_posix_branches() {
+        let escaped = MarkdownEscape("a|b\\c\n\r`d`[e]").to_string();
+        assert_eq!(escaped, "a\\|b\\\\c  \\`d\\`\\[e\\]");
+
+        let p = PathBuf::from("foo/.././bar");
+        assert_eq!(PosixPathFormatter(&p).to_string(), "foo/../bar");
+    }
+
+    #[test]
+    fn test_posix_path_formatter_special_components() {
+        let empty_path = PathBuf::from("");
+        assert_eq!(PosixPathFormatter(&empty_path).to_string(), ".");
+
+        let root_path = std::path::Path::new("/");
+        assert_eq!(PosixPathFormatter(root_path).to_string(), "/");
+    }
+
+    #[test]
+    fn test_render_pr_comment_pass_path() {
+        let test_cases = vec![];
+        let options = MarkdownReportOptions {
+            base_image_url: None,
+            html_artifact_url: None,
+        };
+        let comment = ReportGenerator::render_pr_comment(&test_cases, &options);
+        assert!(comment.contains("All tests passed!"));
+    }
+
+    #[test]
+    fn test_render_pr_comment_image_truncation_without_url() {
+        let mut test_cases = Vec::new();
+        for i in 0..15 {
+            test_cases.push(TestCaseResult {
+                name: format!("test_{}", i),
+                result: TestImageResult::Mismatch {
+                    relative_path: PathBuf::from(format!("{}.png", i)),
+                    detail: MismatchDetail::Pixel { diff_count: i + 1 },
+                    diff_path: PathBuf::from(format!("diff_{}.png", i)),
+                    baseline_path: PathBuf::from(format!("base_{}.png", i)),
+                    actual_path: PathBuf::from(format!("act_{}.png", i)),
+                },
+            });
+        }
+        let options = MarkdownReportOptions {
+            base_image_url: Some("http://example.com"),
+            html_artifact_url: None,
+        };
+        let comment = ReportGenerator::render_pr_comment(&test_cases, &options);
+        assert!(comment.contains("Truncated 5 additional diffs"));
+        assert!(
+            comment
+                .contains("Download the full HTML Report from GitHub Action Artifacts to inspect.")
+        );
+    }
+
+    #[test]
+    fn test_render_pr_comment_name_escaping_no_bracket_slashes() {
+        let tc = TestCaseResult {
+            name: "test`[foo]|bar".to_string(),
+            result: TestImageResult::DecodeError {
+                relative_path: PathBuf::from("err.png"),
+                error: "Bad header".to_string(),
+            },
+        };
+        let options = MarkdownReportOptions {
+            base_image_url: None,
+            html_artifact_url: None,
+        };
+        let comment = ReportGenerator::render_pr_comment(&[tc], &options);
+        // Should contain `test'[foo]\|bar` (pipe escaped, brackets unescaped, backtick replaced)
+        assert!(comment.contains("`test'[foo]\\|bar`"));
+        assert!(!comment.contains("\\["));
     }
 
     #[test]
