@@ -153,7 +153,14 @@ impl ObjectStoreAdapter {
         })?;
 
         let url_path = parsed_url.path().trim_start_matches('/');
-        let prefix = object_store::path::Path::parse(url_path).unwrap_or_default();
+        let prefix = if url_path.is_empty() {
+            object_store::path::Path::default()
+        } else {
+            object_store::path::Path::parse(url_path).map_err(|e| StorageError::InvalidUrl {
+                url: config.url.clone(),
+                reason: e.to_string(),
+            })?
+        };
 
         let (store, signer): (
             Arc<dyn ObjectStore>,
@@ -538,5 +545,31 @@ mod tests {
             .await;
         // Unauthenticated / metadata-less GCS safely falls back to None instead of failing
         assert!(res.is_none());
+    }
+
+    #[test]
+    fn test_storage_config_invalid_path_syntax() {
+        let cfg = StorageConfig::new("s3://mybucket//invalid//path");
+        let res = ObjectStoreAdapter::from_config(&cfg);
+        assert!(matches!(
+            res,
+            Err(StorageError::InvalidUrl { ref url, ref reason })
+            if url == "s3://mybucket//invalid//path" && !reason.is_empty()
+        ));
+    }
+
+    #[test]
+    fn test_storage_config_invalid_s3_builder_error() {
+        let cfg = StorageConfig::new("s3://");
+        let res = ObjectStoreAdapter::from_config(&cfg);
+        assert!(matches!(res, Err(StorageError::InvalidUrl { .. })));
+    }
+
+    #[test]
+    fn test_storage_config_invalid_gcs_builder_error() {
+        let mut cfg = StorageConfig::new("gs://mybucket");
+        cfg.gcp_service_account_key = Some("not valid json".to_string());
+        let res = ObjectStoreAdapter::from_config(&cfg);
+        assert!(matches!(res, Err(StorageError::InvalidUrl { .. })));
     }
 }

@@ -139,10 +139,11 @@ runs:
       run: |
         args=()
         if [ -n "$GLEON_ARGS" ]; then
-          # Use Python's shlex.split for a lossless decoding of shell arguments
-          # outputting them as null-terminated strings for robust bash array parsing
+          ARGS_FILE=$(mktemp)
+          python3 -c "import os, shlex, sys; args = shlex.split(os.environ.get('GLEON_ARGS', ''), posix=True); open(sys.argv[1], 'wb').write(b'\0'.join(a.encode('utf-8') for a in args) + (b'\0' if args else b''))" "$ARGS_FILE" || exit 1
           while IFS= read -r -d '' arg; do
             args+=("$arg")
-          done < <(python3 -c "import os, shlex, sys; [sys.stdout.buffer.write(a.encode('utf-8') + b'\0') for a in shlex.split(os.environ.get('GLEON_ARGS', ''), posix=True)]" || exit 1)
+          done < "$ARGS_FILE"
+          rm -f "$ARGS_FILE"
         fi
         gleon diff "${args[@]}"

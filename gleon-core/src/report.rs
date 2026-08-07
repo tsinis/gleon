@@ -1420,4 +1420,70 @@ mod tests {
         let p = std::path::Path::new("../goldens/./login.png");
         assert_eq!(PosixPathFormatter(p).to_string(), "../goldens/login.png");
     }
+
+    #[test]
+    fn test_report_error_from_io_error() {
+        let io_err = crate::io::IoError::Io(std::io::Error::other("test io"));
+        let report_err: ReportError = io_err.into();
+        assert!(matches!(report_err, ReportError::Io(_)));
+
+        let json_err: serde_json::Error = serde_json::from_str::<String>("invalid").unwrap_err();
+        let io_json_err = crate::io::IoError::JsonParse(json_err);
+        let report_json_err: ReportError = io_json_err.into();
+        assert!(matches!(report_json_err, ReportError::JsonParse(_)));
+
+        assert_eq!(report_err.to_string(), "IO error: test io");
+    }
+
+    #[test]
+    fn test_render_pr_comment_missing_and_decode_error() {
+        let mut tests = Vec::new();
+        tests.push(TestCaseResult {
+            name: "missing".to_string(),
+            result: TestImageResult::MissingBaseline {
+                relative_path: PathBuf::from("missing.png"),
+                reason: "not found".to_string(),
+            },
+        });
+        tests.push(TestCaseResult {
+            name: "corrupt".to_string(),
+            result: TestImageResult::DecodeError {
+                relative_path: PathBuf::from("corrupt.png"),
+                error: "bad data".to_string(),
+            },
+        });
+        tests.push(TestCaseResult {
+            name: "ssim_fb".to_string(),
+            result: TestImageResult::Mismatch {
+                relative_path: PathBuf::from("fb.png"),
+                detail: MismatchDetail::SsimFallback { diff_count: 10 },
+                diff_path: PathBuf::from("diff.png"),
+                baseline_path: PathBuf::from("base.png"),
+                actual_path: PathBuf::from("actual.png"),
+            },
+        });
+        for i in 0..10 {
+            tests.push(TestCaseResult {
+                name: format!("mismatch_{i}"),
+                result: TestImageResult::Mismatch {
+                    relative_path: PathBuf::from(format!("{i}.png")),
+                    detail: MismatchDetail::Pixel { diff_count: i + 1 },
+                    diff_path: PathBuf::from(format!("diff_{i}.png")),
+                    baseline_path: PathBuf::from(format!("base_{i}.png")),
+                    actual_path: PathBuf::from(format!("actual_{i}.png")),
+                },
+            });
+        }
+
+        let opts = MarkdownReportOptions {
+            base_image_url: Some("https://storage.url"),
+            html_artifact_url: Some("https://artifact.url"),
+            image_url_resolver: None,
+        };
+        let md = ReportGenerator::render_pr_comment(&tests, &opts);
+        assert!(md.contains("`Missing`"));
+        assert!(md.contains("`Decode Error`"));
+        assert!(md.contains("10 px (fb)"));
+        assert!(md.contains("https://artifact.url"));
+    }
 }

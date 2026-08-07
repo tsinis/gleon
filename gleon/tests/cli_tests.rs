@@ -940,6 +940,24 @@ fn test_cli_report_with_s3_storage_pre_signed_urls() -> Result<(), Box<dyn std::
                     "actual_path": "actual/header.png"
                 }
             }
+        },
+        {
+            "name": "missing_test",
+            "result": {
+                "MissingBaseline": {
+                    "relative_path": "footer.png",
+                    "reason": "Missing baseline blob"
+                }
+            }
+        },
+        {
+            "name": "corrupt_test",
+            "result": {
+                "DecodeError": {
+                    "relative_path": "sidebar.png",
+                    "error": "corrupt png file"
+                }
+            }
         }
     ]"#;
     std::fs::write(&json_report_path, sample_json)?;
