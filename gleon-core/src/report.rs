@@ -1042,7 +1042,7 @@ impl ReportGenerator {
         }
 
         let json_path = runs_dir.join("gleon-report.json");
-        crate::io::save_json_atomically(&json_path, test_cases)?;
+        crate::io::save_json_atomically(&json_path, test_cases).map_err(ReportError::from)?;
 
         Ok(())
     }

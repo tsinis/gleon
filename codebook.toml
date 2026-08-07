@@ -94,6 +94,7 @@ words = [
     "minijinja",
     "miri",
     "mkdir",
+    "mktemp",
     "mybucket",
     "mysecretpassword",
     "nextest",

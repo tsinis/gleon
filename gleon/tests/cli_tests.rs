@@ -730,6 +730,24 @@ fn test_cli_report_markdown_stdout_and_file() -> Result<(), Box<dyn std::error::
                     "actual_path": "actual/login.png"
                 }
             }
+        },
+        {
+            "name": "missing_test",
+            "result": {
+                "MissingBaseline": {
+                    "relative_path": "footer.png",
+                    "reason": "Missing baseline blob"
+                }
+            }
+        },
+        {
+            "name": "corrupt_test",
+            "result": {
+                "DecodeError": {
+                    "relative_path": "sidebar.png",
+                    "error": "corrupt png file"
+                }
+            }
         }
     ]"#;
     std::fs::write(&json_report_path, sample_json)?;
@@ -745,7 +763,9 @@ fn test_cli_report_markdown_stdout_and_file() -> Result<(), Box<dyn std::error::
         .assert()
         .success()
         .stdout(predicates::str::contains("login_button"))
-        .stdout(predicates::str::contains("42 px"));
+        .stdout(predicates::str::contains("42 px"))
+        .stdout(predicates::str::contains("Missing baseline blob"))
+        .stdout(predicates::str::contains("corrupt png file"));
 
     // Test --out file output
     let mut cmd_out = Command::cargo_bin("gleon")?;
@@ -763,6 +783,8 @@ fn test_cli_report_markdown_stdout_and_file() -> Result<(), Box<dyn std::error::
     let out_content = std::fs::read_to_string(out_report_path)?;
     assert!(out_content.contains("login_button"));
     assert!(out_content.contains("42 px"));
+    assert!(out_content.contains("Missing baseline blob"));
+    assert!(out_content.contains("corrupt png file"));
 
     Ok(())
 }
@@ -913,6 +935,7 @@ fn test_cli_report_valid_pr_number_and_html_url() -> Result<(), Box<dyn std::err
 }
 
 #[test]
+#[cfg(not(miri))]
 fn test_cli_report_with_s3_storage_pre_signed_urls() -> Result<(), Box<dyn std::error::Error>> {
     let dir = init_temp_dir();
     let json_report_path = dir.path().join("gleon-report.json");
