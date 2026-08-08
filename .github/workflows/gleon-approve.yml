@@ -105,8 +105,10 @@ jobs:
             if git fetch origin "$EPHEMERAL_SHA"; then
               if git checkout "$EPHEMERAL_SHA" -- .gleon/runs/latest/actual/; then
                 echo "Restored actual screenshots from ephemeral branch."
+                echo "APPROVE_FROM=.gleon/runs/latest/actual" >> "$GITHUB_ENV"
               elif git checkout "$EPHEMERAL_SHA" -- .gleon/diffs/; then
                 echo "Restored diff artifacts from ephemeral branch."
+                echo "APPROVE_FROM=.gleon/diffs" >> "$GITHUB_ENV"
               else
                 echo "::warning::No recognized screenshot artifacts found in ephemeral branch."
               fi
@@ -141,11 +143,11 @@ jobs:
             done
           fi
           GLEON_BIN="$HOME/.cargo/bin/gleon"
-          if [ ! -d ".gleon/runs/latest/actual" ]; then
+          if [ -z "$APPROVE_FROM" ] || [ ! -d "$APPROVE_FROM" ]; then
             echo "::error::No actual screenshots found for approval. Run tests first to generate actual screenshots."
             exit 1
           fi
-          "$GLEON_BIN" approve --from=.gleon/runs/latest/actual "${FILTER_ARGS[@]}"
+          "$GLEON_BIN" approve --from="$APPROVE_FROM" "${FILTER_ARGS[@]}"
 
       - name: Commit & Push Baselines
         env:

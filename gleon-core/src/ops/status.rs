@@ -157,7 +157,15 @@ pub fn check_status(
                         let is_unchanged = match manifest.hash.scheme() {
                             "sha256" => {
                                 let actual_sha256 = hex::encode(sha2::Sha256::digest(&raw_bytes));
-                                actual_sha256 == manifest.hash.value()
+                                if actual_sha256 == manifest.hash.value() {
+                                    let baseline_blob_path = crate::storage::local_blob_path(
+                                        &gleon_dir.join("blobs"),
+                                        &manifest.hash,
+                                    );
+                                    crate::storage::is_usable_blob(&baseline_blob_path)
+                                } else {
+                                    false
+                                }
                             }
                             _ => {
                                 let baseline_blob_path = crate::storage::local_blob_path(
@@ -530,7 +538,18 @@ mod tests {
         let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
         std::fs::create_dir_all(&manifests_dir).unwrap();
 
-        let hash_val = "11111111111111111111111111111111";
+        let img = image::RgbaImage::new(10, 10);
+        let mut img_bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut img_bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        std::fs::write(temp.path().join("test.png"), &img_bytes).unwrap();
+
+        use sha2::Digest;
+        let hash_val = hex::encode(sha2::Sha512::digest(&img_bytes));
+
         let mut index = WorkspaceIndex::new();
         index
             .save_test(
@@ -538,13 +557,31 @@ mod tests {
                 "test",
                 &crate::manifest::SingleTestManifest {
                     schema_version: 1,
-                    hash: crate::manifest::ImageHash::new("sha512", hash_val).unwrap(),
+                    hash: crate::manifest::ImageHash::new("sha512", &hash_val).unwrap(),
                     phash: crate::manifest::ImageHash::new("dhash", "2222222222222222").unwrap(),
                     width: 10,
                     height: 10,
                 },
             )
             .unwrap();
+
+        let blob_dir = gleon_dir.join("blobs").join("sha512");
+        std::fs::create_dir_all(&blob_dir).unwrap();
+        std::fs::write(blob_dir.join(&hash_val), &img_bytes).unwrap();
+
+        let res = check_status(&ctx, temp.path()).unwrap();
+        assert!(res.is_clean());
+    }
+
+    #[test]
+    fn test_status_sha256_missing_blob() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        let ctx = ResolvedContext::default();
+
+        let platform_key = ctx.platform.to_key().unwrap();
+        let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
+        std::fs::create_dir_all(&manifests_dir).unwrap();
 
         let img = image::RgbaImage::new(10, 10);
         let mut img_bytes = Vec::new();
@@ -555,11 +592,30 @@ mod tests {
         .unwrap();
         std::fs::write(temp.path().join("test.png"), &img_bytes).unwrap();
 
-        let blob_dir = gleon_dir.join("blobs").join("sha512");
-        std::fs::create_dir_all(&blob_dir).unwrap();
-        std::fs::write(blob_dir.join(hash_val), &img_bytes).unwrap();
+        use sha2::Digest;
+        let hash_val = hex::encode(sha2::Sha256::digest(&img_bytes));
 
+        let mut index = WorkspaceIndex::new();
+        index
+            .save_test(
+                &manifests_dir,
+                "test",
+                &crate::manifest::SingleTestManifest {
+                    schema_version: 1,
+                    hash: crate::manifest::ImageHash::new("sha256", &hash_val).unwrap(),
+                    phash: crate::manifest::ImageHash::new("dhash", "2222222222222222").unwrap(),
+                    width: 10,
+                    height: 10,
+                },
+            )
+            .unwrap();
+
+        // Deliberately do NOT create the blob file.
+        // Even though the actual image matches the sha256 in the manifest,
+        // status should return modified because the baseline blob is unusable.
         let res = check_status(&ctx, temp.path()).unwrap();
-        assert!(res.is_clean());
+        assert!(!res.is_clean());
+        assert_eq!(res.modified.len(), 1);
+        assert_eq!(res.modified[0].to_string_lossy(), "test.png");
     }
 }

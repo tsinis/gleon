@@ -582,6 +582,7 @@ mod tests {
     #[cfg(all(unix, not(miri)))]
     fn test_process_diff_case_io_errors() {
         use std::os::unix::fs::PermissionsExt;
+        // SAFETY: `libc::geteuid()` is a side-effect-free POSIX syscall query that returns the process EUID.
         if unsafe { libc::geteuid() } == 0 {
             return;
         }

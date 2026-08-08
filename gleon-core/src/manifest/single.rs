@@ -67,8 +67,16 @@ impl SingleTestManifest {
             )));
         }
 
-        if self.hash.scheme() == "sha256"
-            && (self.hash.value().len() != 64
+        let expected_len = match self.hash.scheme() {
+            "sha512" => 128,
+            "sha384" => 96,
+            "sha256" | "blake3" => 64,
+            "sha224" => 56,
+            _ => 0,
+        };
+
+        if expected_len > 0
+            && (self.hash.value().len() != expected_len
                 || !self
                     .hash
                     .value()
@@ -76,7 +84,9 @@ impl SingleTestManifest {
                     .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)))
         {
             return Err(ManifestError::Validation(format!(
-                "Invalid sha256 hash value: expected 64 lowercase hex characters, got '{}'",
+                "Invalid {} hash value: expected {} lowercase hex characters, got '{}'",
+                self.hash.scheme(),
+                expected_len,
                 self.hash.value()
             )));
         }
