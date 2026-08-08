@@ -20,7 +20,15 @@ pub enum ManifestError {
 
     /// Standard I/O error.
     #[error("I/O error: {0}")]
-    StdIo(#[source] std::io::Error),
+    StdIo(#[from] std::io::Error),
+
+    /// Directory traversal or walker error.
+    #[error("Walker error: {0}")]
+    Walker(#[from] ignore::Error),
+
+    /// Image processing or format error.
+    #[error("Image error: {0}")]
+    Image(#[from] image::ImageError),
 
     /// Validation error in manifest schema or entry content.
     #[error("Validation error: {0}")]
@@ -49,11 +57,22 @@ fn validate_hash_parts(scheme: &str, value: &str) -> Result<(), String> {
     if value.is_empty() {
         return Err("Hash value cannot be empty".to_string());
     }
-    if !value
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err("Hash value contains invalid characters".to_string());
+
+    // Strict Cryptographic Digest Checks
+    if scheme == "sha256" {
+        if value.len() != 64 {
+            return Err("sha256 hash must be exactly 64 characters long".to_string());
+        }
+        if !value.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err("sha256 hash must contain only ASCII hexadecimal characters".to_string());
+        }
+    } else {
+        if !value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err("Hash value contains invalid characters".to_string());
+        }
     }
     Ok(())
 }
@@ -148,20 +167,40 @@ mod tests {
 
     #[test]
     fn test_image_hash_parse_and_display() {
-        let hash = "sha256:a1b2c3d4e5f67890".parse::<ImageHash>().unwrap();
+        let hash = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            .parse::<ImageHash>()
+            .unwrap();
         assert_eq!(hash.scheme(), "sha256");
-        assert_eq!(hash.value(), "a1b2c3d4e5f67890");
-        assert_eq!(hash.to_string(), "sha256:a1b2c3d4e5f67890");
+        assert_eq!(
+            hash.value(),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+        assert_eq!(
+            hash.to_string(),
+            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
     }
 
     #[test]
     fn test_image_hash_uppercase_normalization() {
-        let hash = "SHA256:A1B2C3D4E5F67890".parse::<ImageHash>().unwrap();
+        let hash = "SHA256:0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+            .parse::<ImageHash>()
+            .unwrap();
         assert_eq!(hash.scheme(), "sha256");
-        assert_eq!(hash.value(), "a1b2c3d4e5f67890");
+        assert_eq!(
+            hash.value(),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
 
-        let hash_new = ImageHash::new("SHA256", "A1B2C3D4E5F67890").unwrap();
+        let hash_new = ImageHash::new(
+            "SHA256",
+            "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+        )
+        .unwrap();
         assert_eq!(hash_new.scheme(), "sha256");
-        assert_eq!(hash_new.value(), "a1b2c3d4e5f67890");
+        assert_eq!(
+            hash_new.value(),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
     }
 }

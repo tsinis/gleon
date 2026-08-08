@@ -127,6 +127,15 @@ pub async fn run_report(
     let md_content = ReportGenerator::render_pr_comment(&report_data, &options);
 
     if let Some(out_path) = out {
+        let parent = out_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "Failed to create parent directory for report output '{}'",
+                parent.display()
+            )
+        })?;
         gleon_core::io::save_file_atomically(out_path, md_content.as_bytes())
             .with_context(|| format!("Failed to write output to '{}'", out_path.display()))?;
         tracing::info!("Generated markdown report at {}", out_path.display());
@@ -135,4 +144,38 @@ pub async fn run_report(
     }
 
     Ok(0)
+}
+
+#[cfg(all(test, not(miri)))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_run_report_creates_nested_parent_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let report_json_path = temp.path().join("report.json");
+        std::fs::write(&report_json_path, "[]").unwrap();
+
+        let nested_out = temp.path().join("nested").join("sub").join("output.md");
+
+        struct DummyEnv;
+        impl gleon_core::git::EnvProvider for DummyEnv {
+            fn get_var(&self, _key: &str) -> Option<String> {
+                None
+            }
+        }
+
+        let res = run_report(
+            &DummyEnv,
+            None,
+            "markdown",
+            &report_json_path,
+            None,
+            Some(&nested_out),
+        )
+        .await;
+
+        assert!(res.is_ok());
+        assert!(nested_out.is_file());
+    }
 }

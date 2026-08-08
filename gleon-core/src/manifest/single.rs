@@ -119,14 +119,8 @@ impl SingleTestManifest {
     /// Safely validates image dimensions from raw bytes before fully decoding the image.
     /// This prevents OOM (Out Of Memory) DoS attacks from decompression bombs.
     pub fn validate_image_bytes(bytes: &[u8]) -> Result<(), ManifestError> {
-        let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-            .with_guessed_format()
-            .map_err(|e| {
-                ManifestError::Validation(format!("Failed to parse image format: {}", e))
-            })?;
-        let (width, height) = reader.into_dimensions().map_err(|e| {
-            ManifestError::Validation(format!("Failed to read image dimensions: {}", e))
-        })?;
+        let reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
+        let (width, height) = reader.into_dimensions()?;
         Self::validate_dimensions(width, height)
     }
 
@@ -176,7 +170,7 @@ mod tests {
         assert!(SingleTestManifest::new(hash, phash, 100, 100).is_err());
 
         let valid_hash = ImageHash::new("sha256", "a".repeat(64)).unwrap();
-        let invalid_phash_scheme = ImageHash::new("sha256", "0000000000000000").unwrap();
+        let invalid_phash_scheme = ImageHash::new("md5", "0000000000000000").unwrap();
         assert!(
             SingleTestManifest::new(valid_hash.clone(), invalid_phash_scheme, 100, 100).is_err()
         );

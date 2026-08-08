@@ -118,7 +118,18 @@ fn test_report_generation_with_real_images_and_durability() {
         },
     };
 
-    let all_tc_res = vec![tc_res1, tc_res2, tc_res3, tc_res4, tc_res5, tc_res6];
+    let tc_res7 = TestCaseResult {
+        name: "billing_dashboard_7".to_string(),
+        result: TestImageResult::EncodeError {
+            relative_path: PathBuf::from("encode_fail.png"),
+            actual_path: PathBuf::from("/tmp/actual.png"),
+            error: "Failed to write PNG chunk".to_string(),
+        },
+    };
+
+    let all_tc_res = vec![
+        tc_res1, tc_res2, tc_res3, tc_res4, tc_res5, tc_res6, tc_res7,
+    ];
 
     // 5. Generate HTML report
     let html_report = ReportGenerator::generate_html(&all_tc_res, Some(&report_dir));
@@ -132,8 +143,10 @@ fn test_report_generation_with_real_images_and_durability() {
     assert!(html.contains("billing_dashboard_4 / sidebar_navigation.png"));
     assert!(html.contains("billing_dashboard_5 / user_avatar.png"));
     assert!(html.contains("billing_dashboard_6 / missing_base.png"));
+    assert!(html.contains("billing_dashboard_7 / encode_fail.png"));
     assert!(html.contains("PNG header corrupted or incomplete"));
     assert!(html.contains("Baseline missing"));
+    assert!(html.contains("Failed to write PNG chunk"));
 
     let html_path = report_dir.join("report.html");
     fs::write(&html_path, &html).expect("Failed to write HTML report");
@@ -151,7 +164,8 @@ fn test_report_generation_with_real_images_and_durability() {
         "<failure message=\"Dimension mismatch (Baseline: 1920x1080, Actual: 1920x1200)\""
     ));
     assert!(xml.contains("<failure message=\"Decode error: PNG header corrupted or incomplete\""));
-    assert!(xml.contains("<failure message=\"Baseline missing: Baseline missing\""));
+    assert!(xml.contains("<failure message=\"Missing baseline: Baseline missing\""));
+    assert!(xml.contains("<failure message=\"Encode error: Failed to write PNG chunk\""));
 
     let xml_path = report_dir.join("junit.xml");
     fs::write(&xml_path, &xml).expect("Failed to write XML report");
@@ -164,6 +178,7 @@ fn test_report_generation_with_real_images_and_durability() {
     assert!(md.contains("❌ Dimension Mismatch"));
     assert!(md.contains("❌ Decode Error"));
     assert!(md.contains("❌ Missing Baseline"));
+    assert!(md.contains("❌ Encode Error"));
 
     let md_path = report_dir.join("report.md");
     fs::write(&md_path, &md).expect("Failed to write MD report");

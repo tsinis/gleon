@@ -1,7 +1,7 @@
 # gleon Visual Regression Summary
 
-**Total Tests:** 6
-**Failed:** 6
+**Total Tests:** 7
+**Failed:** 7
 
 | Test Case | Screenshot | Status |
 |---|---|---|
@@ -11,3 +11,4 @@
 | billing_dashboard_4 | sidebar_navigation.png | ❌ Dimension Mismatch |
 | billing_dashboard_5 | user_avatar.png | ❌ Decode Error |
 | billing_dashboard_6 | missing_base.png | ❌ Missing Baseline |
+| billing_dashboard_7 | encode_fail.png | ❌ Encode Error |

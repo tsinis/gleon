@@ -309,11 +309,33 @@ impl ObjectStoreAdapter {
         src_path: &Path,
     ) -> Result<(), StorageError> {
         let key = blob_key(hash);
-        if tokio::fs::symlink_metadata(src_path)
-            .await
-            .map(|m| m.is_symlink())
-            .unwrap_or(false)
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+
+        #[cfg(unix)]
         {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
+        }
+
+        let std_file = options
+            .open(src_path)
+            .map_err(|source| StorageError::Io { source })?;
+
+        // On Windows, opening a reparse point with FILE_FLAG_OPEN_REPARSE_POINT succeeds.
+        // We must inspect the metadata of the opened handle to reject symlinks.
+        // On Unix, O_NOFOLLOW fails to open symlinks with ELOOP, but this check is a harmless safety net.
+        let metadata = std_file
+            .metadata()
+            .map_err(|source| StorageError::Io { source })?;
+
+        if metadata.is_symlink() {
             return Err(StorageError::Io {
                 source: std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -321,7 +343,10 @@ impl ObjectStoreAdapter {
                 ),
             });
         }
-        let bytes = tokio::fs::read(src_path)
+
+        let mut file = tokio::fs::File::from_std(std_file);
+        let mut bytes = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut file, &mut bytes)
             .await
             .map_err(|source| StorageError::Io { source })?;
         self.store
@@ -594,5 +619,27 @@ mod tests {
         cfg.gcp_service_account_key = Some("not valid json".to_string());
         let res = ObjectStoreAdapter::from_config(&cfg);
         assert!(matches!(res, Err(StorageError::InvalidUrl { .. })));
+    }
+
+    #[tokio::test]
+    #[cfg(all(unix, not(miri)))]
+    async fn test_upload_blob_rejects_symlink() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target.png");
+        std::fs::write(&target, b"fake png").unwrap();
+        let link = temp.path().join("link.png");
+        symlink(&target, &link).unwrap();
+
+        let cfg = StorageConfig::new(format!("file://{}", temp.path().display()));
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+        let hash = crate::manifest::ImageHash::new(
+            "sha256",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .unwrap();
+
+        let result = adapter.upload_blob(&hash, &link).await;
+        assert!(matches!(result, Err(StorageError::Io { .. })));
     }
 }

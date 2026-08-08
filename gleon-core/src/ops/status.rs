@@ -384,7 +384,7 @@ mod tests {
         // Create manifest pointing to a non-existent blob
         let hash = crate::manifest::ImageHash::new(
             "sha256",
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         )
         .unwrap();
         let phash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();

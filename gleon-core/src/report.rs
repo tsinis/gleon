@@ -278,19 +278,23 @@ impl<'a> Serialize for XmlIoErrorView<'a> {
 }
 
 struct XmlMissingBaselineView<'a>(&'a str);
-
-impl<'a> std::fmt::Display for XmlMissingBaselineView<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Baseline missing: {}", self.0)
-    }
-}
-
 impl<'a> Serialize for XmlMissingBaselineView<'a> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        serializer.collect_str(self)
+        serializer.collect_str(&format_args!("Missing baseline: {}", self.0))
+    }
+}
+
+// Lazy view for XML encode error message
+struct XmlEncodeErrorView<'a>(&'a str);
+impl<'a> Serialize for XmlEncodeErrorView<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(&format_args!("Encode error: {}", self.0))
     }
 }
 
@@ -364,12 +368,24 @@ impl<'a> Serialize for HtmlFailureView<'a> {
             TestImageResult::DecodeError {
                 relative_path,
                 error,
+            } => {
+                state.serialize_field(
+                    "image",
+                    &FormattedPath {
+                        path: relative_path,
+                        report_dir: None,
+                    },
+                )?;
+                state.serialize_field("type", "DecodeError")?;
+                state.serialize_field("error", error)?;
+                state.serialize_field("actual_path", &None::<String>)?;
+                state.serialize_field("baseline_path", &None::<String>)?;
+                state.serialize_field("diff_path", &None::<String>)?;
+                state.serialize_field("diff_count", &None::<u64>)?;
+                state.serialize_field("actual_size", &None::<String>)?;
+                state.serialize_field("baseline_size", &None::<String>)?;
             }
-            | TestImageResult::IoError {
-                relative_path,
-                error,
-            }
-            | TestImageResult::EncodeError {
+            TestImageResult::IoError {
                 relative_path,
                 error,
             } => {
@@ -380,14 +396,36 @@ impl<'a> Serialize for HtmlFailureView<'a> {
                         report_dir: None,
                     },
                 )?;
-                let error_type = match self.res {
-                    TestImageResult::DecodeError { .. } => "DecodeError",
-                    TestImageResult::IoError { .. } => "IoError",
-                    _ => "EncodeError",
-                };
-                state.serialize_field("type", error_type)?;
+                state.serialize_field("type", "IoError")?;
                 state.serialize_field("error", error)?;
                 state.serialize_field("actual_path", &None::<String>)?;
+                state.serialize_field("baseline_path", &None::<String>)?;
+                state.serialize_field("diff_path", &None::<String>)?;
+                state.serialize_field("diff_count", &None::<u64>)?;
+                state.serialize_field("actual_size", &None::<String>)?;
+                state.serialize_field("baseline_size", &None::<String>)?;
+            }
+            TestImageResult::EncodeError {
+                relative_path,
+                actual_path,
+                error,
+            } => {
+                state.serialize_field(
+                    "image",
+                    &FormattedPath {
+                        path: relative_path,
+                        report_dir: None,
+                    },
+                )?;
+                state.serialize_field("type", "EncodeError")?;
+                state.serialize_field("error", error)?;
+                state.serialize_field(
+                    "actual_path",
+                    &FormattedPath {
+                        path: actual_path,
+                        report_dir: self.report_dir,
+                    },
+                )?;
                 state.serialize_field("baseline_path", &None::<String>)?;
                 state.serialize_field("diff_path", &None::<String>)?;
                 state.serialize_field("diff_count", &None::<u64>)?;
@@ -565,7 +603,7 @@ impl<'a> Serialize for XmlTestImageResultView<'a> {
             }
             TestImageResult::EncodeError { error, .. } => {
                 state.serialize_field("status", "EncodeError")?;
-                state.serialize_field("failure_message", &Some(XmlIoErrorView(error)))?;
+                state.serialize_field("failure_message", &Some(XmlEncodeErrorView(error)))?;
             }
             TestImageResult::MissingBaseline { reason, .. } => {
                 state.serialize_field("status", "MissingBaseline")?;
@@ -950,15 +988,33 @@ impl ReportGenerator {
                         )
                         .expect("write infallible");
                     }
-                    TestImageResult::IoError { .. } | TestImageResult::EncodeError { .. } => {
-                        let err_label = if matches!(res, TestImageResult::EncodeError { .. }) {
-                            "Encode Error"
-                        } else {
-                            "IO Error"
-                        };
+                    TestImageResult::IoError { .. } => {
                         writeln!(
                             out,
-                            "| `{}` | {} | {} | {} | `{}` |",
+                            "| `{}` | {} | {} | {} | `IO Error` |",
+                            CodeSpanEscape(name),
+                            ImgLinkFormatter {
+                                base_url: None,
+                                path: None,
+                                resolver: None,
+                            },
+                            ImgLinkFormatter {
+                                base_url: None,
+                                path: None,
+                                resolver: None,
+                            },
+                            ImgLinkFormatter {
+                                base_url: None,
+                                path: None,
+                                resolver: None,
+                            },
+                        )
+                        .expect("write infallible");
+                    }
+                    TestImageResult::EncodeError { actual_path, .. } => {
+                        writeln!(
+                            out,
+                            "| `{}` | {} | {} | {} | `Encode Error` |",
                             CodeSpanEscape(name),
                             ImgLinkFormatter {
                                 base_url: None,
@@ -967,7 +1023,7 @@ impl ReportGenerator {
                             },
                             ImgLinkFormatter {
                                 base_url: options.base_image_url,
-                                path: Some(res.relative_path()),
+                                path: Some(actual_path),
                                 resolver: options.image_url_resolver,
                             },
                             ImgLinkFormatter {
@@ -975,7 +1031,6 @@ impl ReportGenerator {
                                 path: None,
                                 resolver: None,
                             },
-                            err_label,
                         )
                         .expect("write infallible");
                     }
@@ -1297,6 +1352,14 @@ mod tests {
                     error: "Corrupt".to_string(),
                 },
             },
+            TestCaseResult {
+                name: "tc4".to_string(),
+                result: TestImageResult::EncodeError {
+                    relative_path: PathBuf::from("encode_err.png"),
+                    actual_path: PathBuf::from("act.png"),
+                    error: "io error".to_string(),
+                },
+            },
         ];
         let options = MarkdownReportOptions {
             base_image_url: None,
@@ -1437,11 +1500,24 @@ mod tests {
                 actual_path: PathBuf::from("actual.png"),
             },
         };
-        let xml = ReportGenerator::generate_junit_xml(&[tc1, tc2]).expect("Render should succeed");
+        let tc3 = TestCaseResult {
+            name: "billing".to_string(),
+            result: TestImageResult::EncodeError {
+                relative_path: PathBuf::from("encode_form.png"),
+                actual_path: PathBuf::from("act.png"),
+                error: "io error".to_string(),
+            },
+        };
+        let xml =
+            ReportGenerator::generate_junit_xml(&[tc1, tc2, tc3]).expect("Render should succeed");
         assert!(xml.contains("<failure message=\"Visual mismatch detected (5 pixels)\">Visual mismatch detected (5 pixels)</failure>"));
         assert!(xml.contains("<failure message=\"Visual mismatch detected (SSIM score: 0.9412)\">Visual mismatch detected (SSIM score: 0.9412)</failure>"));
+        assert!(xml.contains(
+            "<failure message=\"Encode error: io error\">Encode error: io error</failure>"
+        ));
         assert!(xml.contains("classname=\"billing\""));
         assert!(xml.contains("name=\"form.png\""));
+        assert!(xml.contains("name=\"encode_form.png\""));
     }
 
     #[test]

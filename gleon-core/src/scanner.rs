@@ -109,6 +109,8 @@ pub enum TestImageResult {
     EncodeError {
         /// Relative path of the screenshot file.
         relative_path: PathBuf,
+        /// Path to the actual image on disk.
+        actual_path: PathBuf,
         /// The encoding error message.
         error: String,
     },

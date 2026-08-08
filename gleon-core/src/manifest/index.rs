@@ -63,18 +63,14 @@ impl WorkspaceIndex {
             let entry = match entry_res {
                 Ok(e) => e,
                 Err(err) => {
-                    let err_msg = err.to_string();
                     let depth = err.depth();
-                    if let Some(io_err) = err.into_io_error() {
-                        if io_err.kind() == std::io::ErrorKind::NotFound && depth == Some(0) {
-                            return Ok(Self::new());
-                        }
-                        return Err(ManifestError::StdIo(io_err));
+                    if let Some(io_err) = err.io_error()
+                        && io_err.kind() == std::io::ErrorKind::NotFound
+                        && depth == Some(0)
+                    {
+                        return Ok(Self::new());
                     }
-                    return Err(ManifestError::Validation(format!(
-                        "Manifest walker error: {}",
-                        err_msg
-                    )));
+                    return Err(ManifestError::Walker(err));
                 }
             };
             let path = entry.path();
@@ -172,7 +168,7 @@ impl WorkspaceIndex {
 
         let manifest_dir = manifest_dir.as_ref();
         let canonical_key = normalized.as_ref();
-        let target_path = manifest_dir.join(format!("{canonical_key}.json"));
+        let target_path = manifest_dir.join(canonical_key).with_extension("json");
 
         match manifest.save(&target_path) {
             Ok(()) => {}
@@ -185,7 +181,7 @@ impl WorkspaceIndex {
             .get(canonical_key)
             .filter(|s| *s != canonical_key)
         {
-            let old_path = manifest_dir.join(format!("{old_source}.json"));
+            let old_path = manifest_dir.join(old_source).with_extension("json");
             let is_same_file = match (fs::canonicalize(&old_path), fs::canonicalize(&target_path)) {
                 (Ok(p1), Ok(p2)) => p1 == p2,
                 _ => false,
@@ -219,7 +215,7 @@ impl WorkspaceIndex {
         let canonical_key = normalized.as_ref();
 
         if let Some(old_source) = self.source_paths.remove(canonical_key) {
-            let old_path = manifest_dir.join(format!("{old_source}.json"));
+            let old_path = manifest_dir.join(old_source).with_extension("json");
             match fs::remove_file(&old_path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -227,7 +223,7 @@ impl WorkspaceIndex {
             }
         }
 
-        let target_path = manifest_dir.join(format!("{canonical_key}.json"));
+        let target_path = manifest_dir.join(canonical_key).with_extension("json");
         match fs::remove_file(&target_path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

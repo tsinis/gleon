@@ -372,3 +372,76 @@ screenshots:
         check_status(&ctx, base_path).expect("check_status should succeed even if blob missing");
     assert_eq!(res.modified.len(), 1);
 }
+
+#[test]
+fn test_status_with_corrupt_image() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+
+    init_workspace(&ctx_init, base_path).unwrap();
+
+    let screenshot_dir = base_path.join("billing");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    let screenshot_file = screenshot_dir.join("form.png");
+
+    // 1. Write a real image first so we can stage/approve it
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let real_png_bytes = fs::read(fixtures_dir.join("200x100.png")).unwrap();
+    fs::write(&screenshot_file, &real_png_bytes).unwrap();
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+    masks:
+      - path: "**/*.png"
+        zones:
+          - x: 0
+            y: 0
+            width: 100
+            height: 50
+"#;
+    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
+
+    let cli_approve = Cli {
+        branch: Some("main".to_string()),
+        os: None,
+        arch: None,
+        renderer: None,
+        labels: vec![],
+        platform: None,
+        verbose: false,
+        quiet: false,
+        config: None,
+        strict: false,
+        target_branch: "main".to_string(),
+        command: Commands::Approve {
+            from: Some(base_path.to_path_buf()),
+            paths: vec![],
+        },
+    };
+    let ctx_approve = ResolvedContext::from_cli(&cli_approve, base_path).unwrap();
+    gleon_core::ops::approve_workspace(&ctx_approve, base_path, &[], Some(base_path)).unwrap();
+
+    // 2. Corrupt the image (write text instead of PNG)
+    fs::write(&screenshot_file, "this is not a valid png file").unwrap();
+
+    let cli_status = Cli::for_test(Commands::Status { json: false });
+    let ctx_status = ResolvedContext::from_cli(&cli_status, base_path).unwrap();
+
+    // 3. Status should fail when trying to decode the corrupted image to apply masks
+    // Wait, check_status first checks bytes, and since bytes changed, it reads the baseline to apply masks (even if no masks are defined, it loads it to do a pixel comparison in case it's visually identical).
+    let result = check_status(&ctx_status, base_path);
+    assert!(result.is_err());
+
+    assert!(matches!(
+        result,
+        Err(StatusError::Io(ref err)) if err.kind() == std::io::ErrorKind::InvalidData
+    ));
+}

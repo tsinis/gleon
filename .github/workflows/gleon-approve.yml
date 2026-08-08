@@ -33,32 +33,35 @@ jobs:
               repo: repo.repo,
               pull_number: context.issue.number
             });
+            if (pr.data.head.repo.full_name !== pr.data.base.repo.full_name) {
+              core.setFailed(`PR from fork (${pr.data.head.repo.full_name}) is not supported for automatic approval. Base is ${pr.data.base.repo.full_name}.`);
+              return;
+            }
             core.setOutput('head_ref', pr.data.head.ref);
+            core.setOutput('head_sha', pr.data.head.sha);
 
-      - name: Install Rust Toolchain & Build Trusted Gleon
+      - name: Checkout Base Branch
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.event.repository.default_branch }}
-          path: .gleon-trusted-src
+
       - name: Install Trusted Gleon Binary
-        run: |
-          cargo install --path .gleon-trusted-src/gleon
-          rm -rf .gleon-trusted-src
+        run: cargo install --path gleon
 
-      - name: Checkout PR Branch
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: refs/pull/${{ github.event.issue.number }}/head
-          persist-credentials: false
-
-      - name: Download Screenshots from Ephemeral Branch
+      - name: Fetch PR Branch & Screenshots
+        env:
+          HEAD_REF: ${{ steps.pr-info.outputs.head_ref }}
+          PR_NUMBER: ${{ github.event.issue.number }}
         run: |
-          EPHEMERAL_BRANCH="gleon/diffs/pr-${{ github.event.issue.number }}"
+          set -eo pipefail
+          git fetch origin "$HEAD_REF:pr-branch"
+          git checkout pr-branch
+          EPHEMERAL_BRANCH="gleon/diffs/pr-$PR_NUMBER"
           if git fetch origin "$EPHEMERAL_BRANCH"; then
             git checkout "origin/$EPHEMERAL_BRANCH" -- .gleon/runs/latest/actual/ || git checkout "origin/$EPHEMERAL_BRANCH" -- .gleon/diffs/ || true
           fi
 
-      - name: Update Baselines & Commit
+      - name: Update Baselines
         env:
           COMMENT_BODY: ${{ github.event.comment.body }}
           HEAD_REF: ${{ steps.pr-info.outputs.head_ref }}
@@ -86,13 +89,17 @@ jobs:
             done
           fi
           GLEON_BIN="$HOME/.cargo/bin/gleon"
-          if [ -d ".gleon/runs/latest/actual" ]; then
-            "$GLEON_BIN" approve --from=.gleon/runs/latest/actual "${FILTER_ARGS[@]}"
-          elif [ -d ".gleon/diffs" ]; then
-            "$GLEON_BIN" approve --from=.gleon/diffs "${FILTER_ARGS[@]}"
-          else
-            "$GLEON_BIN" approve "${FILTER_ARGS[@]}"
+          if [ ! -d ".gleon/runs/latest/actual" ]; then
+            echo "::error::No actual screenshots found for approval. Run tests first to generate actual screenshots."
+            exit 1
           fi
+          "$GLEON_BIN" approve --from=.gleon/runs/latest/actual "${FILTER_ARGS[@]}"
+
+      - name: Commit & Push Baselines
+        env:
+          HEAD_REF: ${{ steps.pr-info.outputs.head_ref }}
+        run: |
+          set -eo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add .gleon/manifests/ .gleon/blobs/

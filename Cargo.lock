@@ -1587,6 +1587,7 @@ dependencies = [
  "image-compare",
  "image_hasher",
  "indicatif",
+ "libc",
  "minijinja",
  "object_store",
  "rayon",

@@ -118,7 +118,49 @@ pub fn run_diff(
             progress_bar.set_message(case.image.relative_path.display().to_string());
 
             let result = (|| {
+                let actual_bytes = match std::fs::read(&case.image.absolute_path) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return TestImageResult::IoError {
+                            relative_path: case.image.relative_path,
+                            error: format!("Failed to read actual screenshot file: {}", e),
+                        };
+                    }
+                };
+
                 let single_manifest_opt = workspace_index.get(&test_name);
+
+                if let Some(baseline_entry) = single_manifest_opt {
+                    let is_byte_identical = baseline_entry.hash.scheme() == "sha256" && {
+                        let actual_sha256 = hex::encode(sha2::Sha256::digest(&actual_bytes));
+                        actual_sha256 == baseline_entry.hash.value()
+                    };
+                    if is_byte_identical {
+                        // Fast path: images are byte-for-byte identical. Matches unconditionally.
+                        return TestImageResult::Success {
+                            relative_path: case.image.relative_path,
+                        };
+                    }
+                }
+
+                let actual_dest_path = actual_dir.join(&case.image.relative_path);
+
+                // Save actual screenshot on non-matching test runs for approval workflows
+                let parent = actual_dest_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."));
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    return TestImageResult::IoError {
+                        relative_path: case.image.relative_path,
+                        error: format!("Failed to create directory for actual screenshot: {}", e),
+                    };
+                }
+                if let Err(e) = crate::io::save_file_atomically(&actual_dest_path, &actual_bytes) {
+                    return TestImageResult::IoError {
+                        relative_path: case.image.relative_path,
+                        error: format!("Failed to save actual screenshot: {}", e),
+                    };
+                }
 
                 let baseline_entry = match single_manifest_opt {
                     Some(entry) => entry,
@@ -134,27 +176,6 @@ pub fn run_diff(
                     .join("blobs")
                     .join(baseline_entry.hash.scheme())
                     .join(baseline_entry.hash.value());
-
-                let actual_bytes = match std::fs::read(&case.image.absolute_path) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        return TestImageResult::IoError {
-                            relative_path: case.image.relative_path,
-                            error: format!("Failed to read actual screenshot file: {}", e),
-                        };
-                    }
-                };
-
-                let is_byte_identical = baseline_entry.hash.scheme() == "sha256" && {
-                    let actual_sha256 = hex::encode(sha2::Sha256::digest(&actual_bytes));
-                    actual_sha256 == baseline_entry.hash.value()
-                };
-                if is_byte_identical {
-                    // Fast path: images are byte-for-byte identical. Matches unconditionally.
-                    return TestImageResult::Success {
-                        relative_path: case.image.relative_path,
-                    };
-                }
 
                 // If not identical, load both and compare pixels
                 let baseline_bytes = match std::fs::read(&baseline_blob_path) {
@@ -238,31 +259,6 @@ pub fn run_diff(
                     .unwrap_or_else(|| std::ffi::OsStr::new("screenshot.png"))
                     .to_string_lossy();
 
-                let actual_dest_path = actual_dir.join(&case.image.relative_path);
-
-                // Save actual screenshot on non-matching test runs for approval workflows
-                if !matches!(comp_result, ComparisonResult::Match) {
-                    if let Some(parent) = actual_dest_path.parent()
-                        && let Err(e) = std::fs::create_dir_all(parent)
-                    {
-                        return TestImageResult::IoError {
-                            relative_path: case.image.relative_path,
-                            error: format!(
-                                "Failed to create directory for actual screenshot: {}",
-                                e
-                            ),
-                        };
-                    }
-                    if let Err(e) =
-                        crate::io::save_file_atomically(&actual_dest_path, &actual_bytes)
-                    {
-                        return TestImageResult::IoError {
-                            relative_path: case.image.relative_path,
-                            error: format!("Failed to save actual screenshot: {}", e),
-                        };
-                    }
-                }
-
                 match comp_result {
                     ComparisonResult::Match => TestImageResult::Success {
                         relative_path: case.image.relative_path,
@@ -293,6 +289,7 @@ pub fn run_diff(
                         if let Err(e) = diff_image.write_to(&mut cursor, image::ImageFormat::Png) {
                             return TestImageResult::EncodeError {
                                 relative_path: case.image.relative_path,
+                                actual_path: actual_dest_path,
                                 error: format!("Failed to encode diff visualization: {}", e),
                             };
                         }

@@ -135,3 +135,57 @@ fn test_approve_mixed_case_path_normalization() {
         "Manifest must be saved with canonical lowercase path"
     );
 }
+
+#[test]
+fn test_approve_with_corrupt_image() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    init_workspace(&ctx_init, base_path).unwrap();
+
+    let screenshot_dir = base_path.join(".gleon/runs/latest/actual/billing");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    let screenshot_file = screenshot_dir.join("form.png");
+
+    // Write corrupt image
+    fs::write(&screenshot_file, "this is not a valid png file").unwrap();
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
+
+    let cli_approve = Cli {
+        branch: Some("main".to_string()),
+        os: None,
+        arch: None,
+        renderer: None,
+        labels: vec![],
+        platform: None,
+        verbose: false,
+        quiet: false,
+        config: None,
+        strict: false,
+        target_branch: "main".to_string(),
+        command: Commands::Approve {
+            from: None,
+            paths: vec![],
+        },
+    };
+    let ctx_approve = ResolvedContext::from_cli(&cli_approve, base_path).unwrap();
+
+    let result = approve_workspace(&ctx_approve, base_path, &[], None);
+    assert!(result.is_err());
+
+    assert!(matches!(
+        result,
+        Err(ApproveError::Manifest(
+            gleon_core::manifest::ManifestError::Image(_)
+        ))
+    ));
+}
