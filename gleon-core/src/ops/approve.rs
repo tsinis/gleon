@@ -400,6 +400,7 @@ mod tests {
         assert!(SingleTestManifest::validate_dimensions(100, 0).is_err());
         assert!(SingleTestManifest::validate_dimensions(16385, 100).is_err());
         assert!(SingleTestManifest::validate_dimensions(100, 16385).is_err());
-        assert!(SingleTestManifest::validate_dimensions(16384, 16384).is_ok());
+        assert!(SingleTestManifest::validate_dimensions(16384, 4000).is_ok());
+        assert!(SingleTestManifest::validate_dimensions(16384, 16384).is_err());
     }
 }

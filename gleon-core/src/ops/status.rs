@@ -159,6 +159,7 @@ pub fn check_status(
                             actual_sha256 == manifest.hash.value()
                         };
                         if is_unchanged {
+                            crate::manifest::SingleTestManifest::validate_image_bytes(&raw_bytes)?;
                             Ok((None, None))
                         } else {
                             let matched_zones = case.rule.matched_mask_zones(&img.relative_path);

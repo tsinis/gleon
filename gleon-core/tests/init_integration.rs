@@ -116,16 +116,18 @@ fn test_gitignore_append_no_newline() {
 fn test_env_template_already_exists() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
-    let env_path = base_path.join(".env.gleon");
+    let gleon_dir = base_path.join(".gleon");
+    fs::create_dir_all(&gleon_dir).unwrap();
+    let env_template_path = gleon_dir.join(".env.template");
 
-    fs::write(&env_path, "EXISTING_VAR=1\n").unwrap();
+    fs::write(&env_template_path, "EXISTING_VAR=1\n").unwrap();
 
     let cli = Cli::for_test(Commands::Init);
     let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
 
     init_workspace(&ctx, base_path).unwrap();
 
-    // The .env.gleon shouldn't be overwritten
-    let content = fs::read_to_string(&env_path).unwrap();
+    // The .gleon/.env.template shouldn't be overwritten
+    let content = fs::read_to_string(&env_template_path).unwrap();
     assert_eq!(content, "EXISTING_VAR=1\n");
 }

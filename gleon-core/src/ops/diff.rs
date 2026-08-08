@@ -136,6 +136,14 @@ pub fn run_diff(
                         actual_sha256 == baseline_entry.hash.value()
                     };
                     if is_byte_identical {
+                        if let Err(e) =
+                            crate::manifest::SingleTestManifest::validate_image_bytes(&actual_bytes)
+                        {
+                            return TestImageResult::DecodeError {
+                                relative_path: case.image.relative_path,
+                                error: format!("Invalid actual image dimensions/format: {}", e),
+                            };
+                        }
                         // Fast path: images are byte-for-byte identical. Matches unconditionally.
                         return TestImageResult::Success {
                             relative_path: case.image.relative_path,

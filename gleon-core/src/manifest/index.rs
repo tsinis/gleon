@@ -168,7 +168,7 @@ impl WorkspaceIndex {
 
         let manifest_dir = manifest_dir.as_ref();
         let canonical_key = normalized.as_ref();
-        let target_path = manifest_dir.join(canonical_key).with_extension("json");
+        let target_path = manifest_file_path(manifest_dir, canonical_key);
 
         match manifest.save(&target_path) {
             Ok(()) => {}
@@ -181,7 +181,7 @@ impl WorkspaceIndex {
             .get(canonical_key)
             .filter(|s| *s != canonical_key)
         {
-            let old_path = manifest_dir.join(old_source).with_extension("json");
+            let old_path = manifest_file_path(manifest_dir, old_source);
             let is_same_file = match (fs::canonicalize(&old_path), fs::canonicalize(&target_path)) {
                 (Ok(p1), Ok(p2)) => p1 == p2,
                 _ => false,
@@ -215,7 +215,7 @@ impl WorkspaceIndex {
         let canonical_key = normalized.as_ref();
 
         if let Some(old_source) = self.source_paths.remove(canonical_key) {
-            let old_path = manifest_dir.join(old_source).with_extension("json");
+            let old_path = manifest_file_path(manifest_dir, &old_source);
             match fs::remove_file(&old_path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -223,7 +223,7 @@ impl WorkspaceIndex {
             }
         }
 
-        let target_path = manifest_dir.join(canonical_key).with_extension("json");
+        let target_path = manifest_file_path(manifest_dir, canonical_key);
         match fs::remove_file(&target_path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -233,11 +233,46 @@ impl WorkspaceIndex {
     }
 }
 
+fn manifest_file_path(dir: &Path, key: &str) -> std::path::PathBuf {
+    let mut file_name = std::ffi::OsString::from(key);
+    file_name.push(".json");
+    dir.join(file_name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::manifest::ImageHash;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_save_and_load_dotted_test_name() {
+        let temp = tempdir().unwrap();
+        let manifest_dir = temp.path().join("manifests");
+        fs::create_dir_all(&manifest_dir).unwrap();
+
+        let mut index = WorkspaceIndex::new();
+        let hash = ImageHash::new(
+            "sha256",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .unwrap();
+        let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
+        let manifest = SingleTestManifest::new(hash, phash, 10, 10).unwrap();
+
+        let dotted_test_name = "billing.v2";
+        index
+            .save_test(&manifest_dir, dotted_test_name, &manifest)
+            .unwrap();
+
+        assert!(manifest_dir.join("billing.v2.json").is_file());
+
+        let loaded_index = WorkspaceIndex::load(&manifest_dir).unwrap();
+        let loaded_manifest = loaded_index
+            .get("billing.v2")
+            .expect("Should find billing.v2 manifest");
+        assert_eq!(loaded_manifest.width, 10);
+    }
 
     #[test]
     fn test_workspace_index_load_empty() {

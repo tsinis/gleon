@@ -119,8 +119,10 @@ pub fn init_workspace(
                 let _ = std::fs::remove_file(&env_template_path);
                 return Err(InitError::Io(e));
             }
-            if let Ok(dir_file) = std::fs::File::open(&gleon_dir) {
-                let _ = dir_file.sync_all();
+            #[cfg(not(windows))]
+            {
+                let dir_file = std::fs::File::open(&gleon_dir).map_err(InitError::Io)?;
+                dir_file.sync_all().map_err(InitError::Io)?;
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}

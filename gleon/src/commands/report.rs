@@ -66,6 +66,9 @@ pub async fn run_report(
                     } => {
                         vec![baseline_path.as_path(), actual_path.as_path()]
                     }
+                    gleon_core::scanner::TestImageResult::EncodeError { actual_path, .. } => {
+                        vec![actual_path.as_path()]
+                    }
                     gleon_core::scanner::TestImageResult::MissingBaseline {
                         relative_path, ..
                     }
@@ -177,5 +180,45 @@ mod tests {
 
         assert!(res.is_ok());
         assert!(nested_out.is_file());
+    }
+
+    #[tokio::test]
+    async fn test_run_report_with_encode_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let report_json_path = temp.path().join("report.json");
+        let tc = TestCaseResult {
+            name: "test_enc".to_string(),
+            result: gleon_core::scanner::TestImageResult::EncodeError {
+                relative_path: std::path::PathBuf::from("enc.png"),
+                actual_path: std::path::PathBuf::from("actual_enc.png"),
+                error: "Encode failure".to_string(),
+            },
+        };
+        gleon_core::io::save_json_atomically(&report_json_path, &vec![tc]).unwrap();
+
+        let out_path = temp.path().join("output.md");
+
+        struct DummyEnv;
+        impl gleon_core::git::EnvProvider for DummyEnv {
+            fn get_var(&self, _key: &str) -> Option<String> {
+                None
+            }
+        }
+
+        let storage_cfg = gleon_core::storage::StorageConfig::new("https://signed.com");
+        let res = run_report(
+            &DummyEnv,
+            Some(storage_cfg),
+            "markdown",
+            &report_json_path,
+            None,
+            Some(&out_path),
+        )
+        .await;
+
+        assert!(res.is_ok());
+        let md = std::fs::read_to_string(&out_path).unwrap();
+        assert!(md.contains("Encode Error"));
+        assert!(md.contains("actual_enc.png"));
     }
 }

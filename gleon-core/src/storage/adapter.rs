@@ -315,7 +315,7 @@ impl ObjectStoreAdapter {
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NOFOLLOW);
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
         }
 
         #[cfg(windows)]
@@ -335,11 +335,11 @@ impl ObjectStoreAdapter {
             .metadata()
             .map_err(|source| StorageError::Io { source })?;
 
-        if metadata.is_symlink() {
+        if metadata.is_symlink() || !metadata.is_file() {
             return Err(StorageError::Io {
                 source: std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
-                    "Symlink blobs are not allowed for security reasons",
+                    "Symlink or non-regular file blobs are not allowed for security reasons",
                 ),
             });
         }

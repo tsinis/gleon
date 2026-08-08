@@ -233,13 +233,15 @@ screenshots:
     );
 
     // Run approve_workspace using the actual images generated from diff
+    let actual_dir = report.runs_dir.join("actual");
     let cli_approve = Cli::for_test(Commands::Approve {
         paths: vec![],
-        from: Some(report.runs_dir.join("actual")),
+        from: Some(actual_dir.clone()),
     });
     let ctx_approve = ResolvedContext::from_cli(&cli_approve, base_path).unwrap();
-    let approve_res = gleon_core::ops::approve_workspace(&ctx_approve, base_path, &[], None)
-        .expect("approve_workspace should succeed");
+    let approve_res =
+        gleon_core::ops::approve_workspace(&ctx_approve, base_path, &[], Some(&actual_dir))
+            .expect("approve_workspace should succeed");
     assert_eq!(
         approve_res.total_approved, 1,
         "Should approve 1 missing baseline image"

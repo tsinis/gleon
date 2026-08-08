@@ -20,15 +20,15 @@ pub enum ManifestError {
 
     /// Standard I/O error.
     #[error("I/O error: {0}")]
-    StdIo(#[from] std::io::Error),
+    StdIo(#[source] std::io::Error),
 
     /// Directory traversal or walker error.
     #[error("Walker error: {0}")]
-    Walker(#[from] ignore::Error),
+    Walker(#[source] ignore::Error),
 
     /// Image processing or format error.
     #[error("Image error: {0}")]
-    Image(#[from] image::ImageError),
+    Image(#[source] image::ImageError),
 
     /// Validation error in manifest schema or entry content.
     #[error("Validation error: {0}")]

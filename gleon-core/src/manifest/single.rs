@@ -11,6 +11,9 @@ pub const SUPPORTED_SINGLE_MANIFEST_SCHEMA_VERSION: u32 = 1;
 /// Maximum allowed width or height in pixels to prevent OOM allocations.
 pub const MAX_DIMENSION: u32 = 16384;
 
+/// Maximum allowed total decoded pixels (67,108,864 = 8192x8192) to prevent decompression bombs.
+pub const MAX_PIXELS: u64 = 67_108_864;
+
 /// Deterministic, noise-free manifest for a single visual regression test case.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SingleTestManifest {
@@ -113,14 +116,23 @@ impl SingleTestManifest {
             )));
         }
 
+        let total_pixels = (width as u64) * (height as u64);
+        if total_pixels > MAX_PIXELS {
+            return Err(ManifestError::Validation(format!(
+                "Total pixel count {total_pixels} ({width}x{height}) exceeds maximum allowed budget {MAX_PIXELS}"
+            )));
+        }
+
         Ok(())
     }
 
     /// Safely validates image dimensions from raw bytes before fully decoding the image.
     /// This prevents OOM (Out Of Memory) DoS attacks from decompression bombs.
     pub fn validate_image_bytes(bytes: &[u8]) -> Result<(), ManifestError> {
-        let reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
-        let (width, height) = reader.into_dimensions()?;
+        let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .map_err(ManifestError::StdIo)?;
+        let (width, height) = reader.into_dimensions().map_err(ManifestError::Image)?;
         Self::validate_dimensions(width, height)
     }
 
@@ -165,9 +177,9 @@ mod tests {
 
     #[test]
     fn test_invalid_single_manifest() {
-        let hash = ImageHash::new("md5", "abc").unwrap();
-        let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
-        assert!(SingleTestManifest::new(hash, phash, 100, 100).is_err());
+        assert!(SingleTestManifest::validate_dimensions(16385, 100).is_err());
+        assert!(SingleTestManifest::validate_dimensions(100, 16385).is_err());
+        assert!(SingleTestManifest::validate_dimensions(10000, 10000).is_err());
 
         let valid_hash = ImageHash::new("sha256", "a".repeat(64)).unwrap();
         let invalid_phash_scheme = ImageHash::new("md5", "0000000000000000").unwrap();
