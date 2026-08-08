@@ -239,4 +239,30 @@ mod tests {
         assert!(content.contains("some_ignored_file\n"));
         assert!(content.contains("runs/"));
     }
+
+    #[test]
+    #[cfg(all(unix, not(miri)))]
+    fn test_init_read_only_dir_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        // Make .gleon read-only so OpenOptions::create_new fails
+        let mut perms = std::fs::metadata(&gleon_dir).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&gleon_dir, perms.clone()).unwrap();
+
+        let can_write = std::fs::write(gleon_dir.join("test.txt"), "data").is_ok();
+        let ctx = ResolvedContext::default();
+        let res = init_workspace(&ctx, temp.path());
+
+        // Restore permissions before assertions
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&gleon_dir, perms).unwrap();
+
+        if !can_write {
+            assert!(matches!(res, Err(InitError::Io(_))));
+        }
+    }
 }

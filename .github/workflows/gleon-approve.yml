@@ -35,6 +35,16 @@ jobs:
             });
             core.setOutput('head_ref', pr.data.head.ref);
 
+      - name: Install Rust Toolchain & Build Trusted Gleon
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: .gleon-trusted-src
+      - name: Install Trusted Gleon Binary
+        run: |
+          cargo install --path .gleon-trusted-src/gleon
+          rm -rf .gleon-trusted-src
+
       - name: Checkout PR Branch
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -53,8 +63,16 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
           HEAD_REF: ${{ steps.pr-info.outputs.head_ref }}
         run: |
+          set -eo pipefail
+          if [[ ! "$HEAD_REF" =~ ^[a-zA-Z0-9_./-]+$ ]]; then
+            echo "::error::Invalid HEAD_REF: $HEAD_REF"
+            exit 1
+          fi
           RAW_ARGS="$COMMENT_BODY"
-          ARG_STRING="$(printf '%s' "$RAW_ARGS" | sed 's#^/gleon approve##' | xargs)"
+          if ! ARG_STRING="$(printf '%s' "$RAW_ARGS" | sed 's#^/gleon approve[[:space:]]*##' | xargs 2>/dev/null)"; then
+            echo "::error::Malformed arguments causing xargs to fail."
+            exit 1
+          fi
           FILTER_ARGS=()
           if [ -n "$ARG_STRING" ]; then
             read -r -a TOKENS <<< "$ARG_STRING"
@@ -67,12 +85,13 @@ jobs:
               fi
             done
           fi
+          GLEON_BIN="$HOME/.cargo/bin/gleon"
           if [ -d ".gleon/runs/latest/actual" ]; then
-            gleon approve --from=.gleon/runs/latest/actual "${FILTER_ARGS[@]}"
+            "$GLEON_BIN" approve --from=.gleon/runs/latest/actual "${FILTER_ARGS[@]}"
           elif [ -d ".gleon/diffs" ]; then
-            gleon approve --from=.gleon/diffs "${FILTER_ARGS[@]}"
+            "$GLEON_BIN" approve --from=.gleon/diffs "${FILTER_ARGS[@]}"
           else
-            gleon approve "${FILTER_ARGS[@]}"
+            "$GLEON_BIN" approve "${FILTER_ARGS[@]}"
           fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

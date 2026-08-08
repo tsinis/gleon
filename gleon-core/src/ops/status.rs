@@ -177,7 +177,28 @@ pub fn check_status(
                                     Err(e) => return Err(StatusError::Io(e)),
                                 };
 
+                                if let Err(e) =
+                                    crate::manifest::SingleTestManifest::validate_image_bytes(
+                                        &b_bytes,
+                                    )
+                                {
+                                    return Err(StatusError::Io(std::io::Error::new(
+                                        std::io::ErrorKind::InvalidData,
+                                        format!("Invalid baseline dimensions/format: {}", e),
+                                    )));
+                                }
                                 let b_img = image::load_from_memory(&b_bytes)?;
+
+                                if let Err(e) =
+                                    crate::manifest::SingleTestManifest::validate_image_bytes(
+                                        &raw_bytes,
+                                    )
+                                {
+                                    return Err(StatusError::Io(std::io::Error::new(
+                                        std::io::ErrorKind::InvalidData,
+                                        format!("Invalid actual image dimensions/format: {}", e),
+                                    )));
+                                }
                                 let a_img = image::load_from_memory(&raw_bytes)?;
 
                                 let mut b_rgba = b_img.to_rgba8();
@@ -321,7 +342,7 @@ mod tests {
     fn test_status_detects_deleted_dotted_test_case() {
         let temp = tempfile::tempdir().unwrap();
         let gleon_dir = temp.path().join(".gleon");
-        let mut ctx = ResolvedContext::default();
+        let ctx = ResolvedContext::default();
         let plat_key = ctx.platform.to_key().unwrap();
         let manifests_dir = gleon_dir.join("manifests").join(&plat_key);
         std::fs::create_dir_all(&manifests_dir).unwrap();
@@ -337,9 +358,64 @@ mod tests {
             .save(manifests_dir.join("auth").join("user.v2.json"))
             .unwrap();
 
-        ctx.base_dir = temp.path().to_path_buf();
-
         let report = check_status(&ctx, temp.path()).unwrap();
         assert_eq!(report.deleted, vec![PathBuf::from("auth/user.v2.png")]);
+    }
+
+    #[test]
+    fn test_status_missing_baseline_blob_returns_modified() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..Default::default()
+        };
+        let plat_key = ctx.platform.to_key().unwrap();
+        let manifests_dir = gleon_dir.join("manifests").join(&plat_key);
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+
+        // Create actual image on disk
+        let screenshots_dir = temp.path().join("screenshots");
+        std::fs::create_dir_all(&screenshots_dir).unwrap();
+        let img = image::RgbaImage::new(10, 10);
+        let actual_path = screenshots_dir.join("login.png");
+        img.save(&actual_path).unwrap();
+
+        // Create manifest pointing to a non-existent blob
+        let hash = crate::manifest::ImageHash::new(
+            "sha256",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .unwrap();
+        let phash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();
+        let manifest = crate::manifest::SingleTestManifest::new(hash, phash, 10, 10).unwrap();
+        manifest
+            .save(manifests_dir.join("screenshots").join("login.json"))
+            .unwrap();
+
+        let report = check_status(&ctx, temp.path()).unwrap();
+        assert_eq!(
+            report.modified,
+            vec![PathBuf::from("screenshots/login.png")]
+        );
+    }
+
+    #[test]
+    fn test_status_fallback_platform() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join(".gleon")).unwrap();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            platform: crate::platform::PlatformInfo {
+                os: "unknown_os".to_string(),
+                arch: None,
+                renderer: None,
+                labels: std::collections::BTreeMap::new(),
+            },
+            ..Default::default()
+        };
+
+        let report = check_status(&ctx, temp.path()).unwrap();
+        assert!(report.is_clean());
     }
 }

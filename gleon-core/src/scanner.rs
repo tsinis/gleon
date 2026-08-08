@@ -105,6 +105,13 @@ pub enum TestImageResult {
         /// The I/O error message.
         error: String,
     },
+    /// An error occurred while encoding the diff image.
+    EncodeError {
+        /// Relative path of the screenshot file.
+        relative_path: PathBuf,
+        /// The encoding error message.
+        error: String,
+    },
 }
 
 impl TestImageResult {
@@ -117,6 +124,7 @@ impl TestImageResult {
             Self::DimensionMismatch { relative_path, .. } => relative_path,
             Self::Mismatch { relative_path, .. } => relative_path,
             Self::IoError { relative_path, .. } => relative_path,
+            Self::EncodeError { relative_path, .. } => relative_path,
         }
     }
 }

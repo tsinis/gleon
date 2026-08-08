@@ -152,7 +152,10 @@ pub async fn push_blobs(
             let hash = &manifest.hash;
             if !referenced_hashes.contains(hash) {
                 let local_blob_path = blobs_root.join(hash.scheme()).join(hash.value());
-                if !local_blob_path.is_file() {
+                let is_symlink = std::fs::symlink_metadata(&local_blob_path)
+                    .map(|m| m.is_symlink())
+                    .unwrap_or(false);
+                if is_symlink || !local_blob_path.is_file() {
                     return Err(PushError::MissingLocalBlob {
                         hash: hash.value().to_string(),
                         platform: plat_key.clone(),
@@ -423,5 +426,39 @@ mod tests {
         assert_eq!(res.total_manifest_blobs, 1);
         assert_eq!(res.uploaded_blobs, 1);
         assert_eq!(res.skipped_blobs, 0);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    #[cfg_attr(miri, ignore)]
+    async fn test_push_rejects_symlink_blob() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let mut ctx = ResolvedContext::default();
+        ctx.platform.os = "linux".to_string();
+        let key = ctx.platform.to_key().unwrap();
+
+        let plat_dir = temp.path().join(".gleon").join("manifests").join(&key);
+        std::fs::create_dir_all(&plat_dir).unwrap();
+
+        let hash = "2222222222222222222222222222222222222222222222222222222222222222";
+        let manifest = crate::manifest::SingleTestManifest::new(
+            crate::manifest::ImageHash::new("sha256", hash).unwrap(),
+            crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap(),
+            1,
+            1,
+        )
+        .unwrap();
+        manifest.save(plat_dir.join("symlink_test.json")).unwrap();
+
+        let blobs_root = temp.path().join(".gleon").join("blobs");
+        std::fs::create_dir_all(blobs_root.join("sha256")).unwrap();
+        let target_file = temp.path().join("target.txt");
+        std::fs::write(&target_file, b"secret data").unwrap();
+        std::os::unix::fs::symlink(&target_file, blobs_root.join("sha256").join(hash)).unwrap();
+
+        let cfg = StorageConfig::new("memory://");
+        let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
+        assert!(matches!(res, Err(PushError::MissingLocalBlob { .. })));
     }
 }

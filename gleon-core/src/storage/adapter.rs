@@ -309,6 +309,18 @@ impl ObjectStoreAdapter {
         src_path: &Path,
     ) -> Result<(), StorageError> {
         let key = blob_key(hash);
+        if tokio::fs::symlink_metadata(src_path)
+            .await
+            .map(|m| m.is_symlink())
+            .unwrap_or(false)
+        {
+            return Err(StorageError::Io {
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Symlink blobs are not allowed for security reasons",
+                ),
+            });
+        }
         let bytes = tokio::fs::read(src_path)
             .await
             .map_err(|source| StorageError::Io { source })?;

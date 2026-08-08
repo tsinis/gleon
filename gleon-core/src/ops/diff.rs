@@ -176,22 +176,40 @@ pub fn run_diff(
                     }
                 };
 
+                if let Err(e) =
+                    crate::manifest::SingleTestManifest::validate_image_bytes(&baseline_bytes)
+                {
+                    return TestImageResult::DecodeError {
+                        relative_path: case.image.relative_path.clone(),
+                        error: format!("Invalid baseline dimensions/format: {}", e),
+                    };
+                }
+
                 let baseline_dyn_img = match image::load_from_memory(&baseline_bytes) {
                     Ok(img) => img,
                     Err(e) => {
                         return TestImageResult::DecodeError {
-                            relative_path: case.image.relative_path,
+                            relative_path: case.image.relative_path.clone(),
                             error: format!("Failed to decode baseline blob: {}", e),
                         };
                     }
                 };
                 let mut baseline_rgba = baseline_dyn_img.to_rgba8();
 
+                if let Err(e) =
+                    crate::manifest::SingleTestManifest::validate_image_bytes(&actual_bytes)
+                {
+                    return TestImageResult::DecodeError {
+                        relative_path: case.image.relative_path.clone(),
+                        error: format!("Invalid actual image dimensions/format: {}", e),
+                    };
+                }
+
                 let actual_dyn_img = match image::load_from_memory(&actual_bytes) {
                     Ok(img) => img,
                     Err(e) => {
                         return TestImageResult::DecodeError {
-                            relative_path: case.image.relative_path,
+                            relative_path: case.image.relative_path.clone(),
                             error: format!("Failed to decode actual screenshot: {}", e),
                         };
                     }
@@ -220,9 +238,10 @@ pub fn run_diff(
                     .unwrap_or_else(|| std::ffi::OsStr::new("screenshot.png"))
                     .to_string_lossy();
 
+                let actual_dest_path = actual_dir.join(&case.image.relative_path);
+
                 // Save actual screenshot on non-matching test runs for approval workflows
                 if !matches!(comp_result, ComparisonResult::Match) {
-                    let actual_dest_path = actual_dir.join(&case.image.relative_path);
                     if let Some(parent) = actual_dest_path.parent()
                         && let Err(e) = std::fs::create_dir_all(parent)
                     {
@@ -256,7 +275,7 @@ pub fn run_diff(
                         baseline_size,
                         actual_size,
                         baseline_path: baseline_blob_path,
-                        actual_path: case.image.absolute_path,
+                        actual_path: actual_dest_path,
                     },
                     ComparisonResult::Mismatch { detail, diff_image } => {
                         // Write diff visualization image to .gleon/runs/latest/diffs/<case_name>/<file_name>
@@ -271,9 +290,12 @@ pub fn run_diff(
                         let diff_file_path = case_diff_dir.join(&diff_file_name);
 
                         let mut cursor = std::io::Cursor::new(Vec::new());
-                        diff_image
-                            .write_to(&mut cursor, image::ImageFormat::Png)
-                            .expect("In-memory PNG encoding should never fail");
+                        if let Err(e) = diff_image.write_to(&mut cursor, image::ImageFormat::Png) {
+                            return TestImageResult::EncodeError {
+                                relative_path: case.image.relative_path,
+                                error: format!("Failed to encode diff visualization: {}", e),
+                            };
+                        }
                         let encoded = cursor.into_inner();
                         if let Err(e) = crate::io::save_file_atomically(&diff_file_path, &encoded) {
                             return TestImageResult::IoError {
@@ -287,7 +309,7 @@ pub fn run_diff(
                             detail,
                             diff_path: diff_file_path,
                             baseline_path: baseline_blob_path,
-                            actual_path: case.image.absolute_path,
+                            actual_path: actual_dest_path,
                         }
                     }
                 }

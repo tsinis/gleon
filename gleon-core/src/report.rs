@@ -368,6 +368,10 @@ impl<'a> Serialize for HtmlFailureView<'a> {
             | TestImageResult::IoError {
                 relative_path,
                 error,
+            }
+            | TestImageResult::EncodeError {
+                relative_path,
+                error,
             } => {
                 state.serialize_field(
                     "image",
@@ -376,10 +380,10 @@ impl<'a> Serialize for HtmlFailureView<'a> {
                         report_dir: None,
                     },
                 )?;
-                let error_type = if matches!(self.res, TestImageResult::DecodeError { .. }) {
-                    "DecodeError"
-                } else {
-                    "IoError"
+                let error_type = match self.res {
+                    TestImageResult::DecodeError { .. } => "DecodeError",
+                    TestImageResult::IoError { .. } => "IoError",
+                    _ => "EncodeError",
                 };
                 state.serialize_field("type", error_type)?;
                 state.serialize_field("error", error)?;
@@ -557,6 +561,10 @@ impl<'a> Serialize for XmlTestImageResultView<'a> {
             }
             TestImageResult::IoError { error, .. } => {
                 state.serialize_field("status", "IoError")?;
+                state.serialize_field("failure_message", &Some(XmlIoErrorView(error)))?;
+            }
+            TestImageResult::EncodeError { error, .. } => {
+                state.serialize_field("status", "EncodeError")?;
                 state.serialize_field("failure_message", &Some(XmlIoErrorView(error)))?;
             }
             TestImageResult::MissingBaseline { reason, .. } => {
@@ -942,10 +950,15 @@ impl ReportGenerator {
                         )
                         .expect("write infallible");
                     }
-                    TestImageResult::IoError { .. } => {
+                    TestImageResult::IoError { .. } | TestImageResult::EncodeError { .. } => {
+                        let err_label = if matches!(res, TestImageResult::EncodeError { .. }) {
+                            "Encode Error"
+                        } else {
+                            "IO Error"
+                        };
                         writeln!(
                             out,
-                            "| `{}` | {} | {} | {} | `IO Error` |",
+                            "| `{}` | {} | {} | {} | `{}` |",
                             CodeSpanEscape(name),
                             ImgLinkFormatter {
                                 base_url: None,
@@ -962,6 +975,7 @@ impl ReportGenerator {
                                 path: None,
                                 resolver: None,
                             },
+                            err_label,
                         )
                         .expect("write infallible");
                     }
@@ -1008,6 +1022,15 @@ impl ReportGenerator {
                         writeln!(
                             out,
                             "| `{}` | IO Error | {} |",
+                            CodeSpanEscape(name),
+                            MarkdownEscape(error)
+                        )
+                        .expect("write infallible");
+                    }
+                    TestImageResult::EncodeError { error, .. } => {
+                        writeln!(
+                            out,
+                            "| `{}` | Encode Error | {} |",
                             CodeSpanEscape(name),
                             MarkdownEscape(error)
                         )
@@ -1066,6 +1089,7 @@ impl ReportGenerator {
                 TestImageResult::Success { .. } => "✅ Pass",
                 TestImageResult::DecodeError { .. } => "❌ Decode Error",
                 TestImageResult::IoError { .. } => "❌ IO Error",
+                TestImageResult::EncodeError { .. } => "❌ Encode Error",
                 TestImageResult::MissingBaseline { .. } => "❌ Missing Baseline",
                 TestImageResult::DimensionMismatch { .. } => "❌ Dimension Mismatch",
                 TestImageResult::Mismatch { .. } => "❌ Mismatch",

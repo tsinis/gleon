@@ -201,15 +201,19 @@ pub fn approve_workspace(
     // Pass 2: Actually process the approved images
     for (test_name, file_path, rel_to_source) in files_to_process {
         let raw_png_bytes = std::fs::read(&file_path).map_err(ApproveError::Io)?;
+
+        SingleTestManifest::validate_image_bytes(&raw_png_bytes).map_err(ApproveError::Manifest)?;
+
         let dynamic_img = image::load_from_memory(&raw_png_bytes).map_err(|source| {
             ApproveError::ImageDecode {
-                path: rel_to_source,
+                path: rel_to_source.clone(),
                 source,
             }
         })?;
 
         let width = dynamic_img.width();
         let height = dynamic_img.height();
+
         let rgba_img = dynamic_img.to_rgba8();
 
         let phash_str = compute_phash(&rgba_img);
@@ -388,5 +392,14 @@ mod tests {
 
         assert_eq!(res.total_approved, 1);
         assert_eq!(res.approved_test_cases, vec!["auth/login".to_string()]);
+    }
+
+    #[test]
+    fn test_approve_validate_dimensions() {
+        assert!(SingleTestManifest::validate_dimensions(0, 100).is_err());
+        assert!(SingleTestManifest::validate_dimensions(100, 0).is_err());
+        assert!(SingleTestManifest::validate_dimensions(16385, 100).is_err());
+        assert!(SingleTestManifest::validate_dimensions(100, 16385).is_err());
+        assert!(SingleTestManifest::validate_dimensions(16384, 16384).is_ok());
     }
 }

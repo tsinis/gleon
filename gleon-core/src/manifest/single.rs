@@ -94,21 +94,40 @@ impl SingleTestManifest {
             )));
         }
 
-        if self.width == 0 || self.height == 0 {
+        Self::validate_dimensions(self.width, self.height)?;
+
+        Ok(())
+    }
+
+    /// Validates width and height constraints.
+    pub fn validate_dimensions(width: u32, height: u32) -> Result<(), ManifestError> {
+        if width == 0 || height == 0 {
             return Err(ManifestError::Validation(format!(
-                "Invalid image dimensions: {}x{} (must be > 0)",
-                self.width, self.height
+                "Invalid image dimensions: {width}x{height} (must be > 0)"
             )));
         }
 
-        if self.width > MAX_DIMENSION || self.height > MAX_DIMENSION {
+        if width > MAX_DIMENSION || height > MAX_DIMENSION {
             return Err(ManifestError::Validation(format!(
-                "Image dimensions {}x{} exceed the maximum allowed {}x{}",
-                self.width, self.height, MAX_DIMENSION, MAX_DIMENSION
+                "Image dimensions {width}x{height} exceed the maximum allowed {MAX_DIMENSION}x{MAX_DIMENSION}"
             )));
         }
 
         Ok(())
+    }
+
+    /// Safely validates image dimensions from raw bytes before fully decoding the image.
+    /// This prevents OOM (Out Of Memory) DoS attacks from decompression bombs.
+    pub fn validate_image_bytes(bytes: &[u8]) -> Result<(), ManifestError> {
+        let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .map_err(|e| {
+                ManifestError::Validation(format!("Failed to parse image format: {}", e))
+            })?;
+        let (width, height) = reader.into_dimensions().map_err(|e| {
+            ManifestError::Validation(format!("Failed to read image dimensions: {}", e))
+        })?;
+        Self::validate_dimensions(width, height)
     }
 
     /// Load a single test manifest from a JSON file.

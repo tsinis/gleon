@@ -150,7 +150,10 @@ where
                     .join("blobs")
                     .join(manifest.hash.scheme())
                     .join(manifest.hash.value());
-                if !local_blob.is_file() {
+                let is_symlink = std::fs::symlink_metadata(&local_blob)
+                    .map(|m| m.is_symlink())
+                    .unwrap_or(false);
+                if is_symlink || !local_blob.is_file() {
                     info!(
                         "Fetching missing blob {} from storage...",
                         manifest.hash.value()
