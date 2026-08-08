@@ -224,6 +224,38 @@ screenshots:
 
     let md = fs::read_to_string(report.runs_dir.join("report.md")).unwrap();
     assert!(md.contains("Missing Baseline"));
+
+    // Ensure the actual image was saved in runs/latest/actual for the missing baseline
+    let actual_img = report.runs_dir.join("actual/billing/unstaged.png");
+    assert!(
+        actual_img.exists(),
+        "actual screenshot should be saved for missing baseline"
+    );
+
+    // Run approve_workspace using the actual images generated from diff
+    let actual_dir = report.runs_dir.join("actual");
+    let cli_approve = Cli::for_test(Commands::Approve {
+        paths: vec![],
+        from: Some(actual_dir.clone()),
+    });
+    let ctx_approve = ResolvedContext::from_cli(&cli_approve, base_path).unwrap();
+    let approve_res =
+        gleon_core::ops::approve_workspace(&ctx_approve, base_path, &[], Some(&actual_dir))
+            .expect("approve_workspace should succeed");
+    assert_eq!(
+        approve_res.total_approved, 1,
+        "Should approve 1 missing baseline image"
+    );
+
+    // Verify it was actually baselined
+    let manifest_path = base_path
+        .join(".gleon/manifests")
+        .join(ctx_approve.platform.to_key().unwrap())
+        .join("billing/unstaged.json");
+    assert!(
+        manifest_path.exists(),
+        "Approved manifest should be created"
+    );
 }
 
 #[test]
@@ -268,6 +300,16 @@ screenshots:
         let path = entry.unwrap().path();
         let _ = fs::remove_file(path);
     }
+
+    // Modify actual screenshot so it doesn't match the manifest hash, forcing diff engine to load the missing blob
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    fs::copy(
+        fixtures_dir.join("diff_16px_corners_100x100.png"),
+        screenshot_dir.join("form.png"),
+    )
+    .unwrap();
 
     let report_missing_blob = run_diff(&ctx, base_path).unwrap();
     assert!(!report_missing_blob.passed);
@@ -514,4 +556,134 @@ fn test_diff_fallback_platform_integration() {
     assert!(diff_res.passed);
     assert_eq!(diff_res.total_tests, 1);
     assert_eq!(diff_res.failed_tests, 0);
+}
+
+#[test]
+fn test_diff_nested_test_name_directory_creation() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let baseline_bytes = fs::read(fixtures_dir.join("baseline_100x100.png")).unwrap();
+    let diff_bytes = fs::read(fixtures_dir.join("diff_16px_corners_100x100.png")).unwrap();
+
+    let nested_dir = base_path.join("auth").join("login");
+    fs::create_dir_all(&nested_dir).unwrap();
+    let screenshot_file = nested_dir.join("form.png");
+    fs::write(&screenshot_file, &baseline_bytes).unwrap();
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "auth/login/*.png"
+"#;
+    fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
+
+    let cli = Cli::for_test(Commands::Diff {
+        auto_pull: false,
+        resolve: false,
+    });
+    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    // Stage baseline
+    stage_workspace(&ctx, base_path, None).unwrap();
+
+    // Replace with diff image
+    fs::write(&screenshot_file, &diff_bytes).unwrap();
+
+    // Run diff -> must create auth/login directory inside runs/latest/diffs/
+    let report = run_diff(&ctx, base_path).unwrap();
+    assert!(!report.passed);
+    assert_eq!(report.failed_tests, 1);
+
+    let expected_diff_file = report
+        .runs_dir
+        .join("diffs")
+        .join("auth/login/form")
+        .join("diff_form.png");
+    assert!(
+        expected_diff_file.is_file(),
+        "Diff image must be created at {:?}",
+        expected_diff_file
+    );
+}
+
+#[test]
+fn test_diff_missing_baseline_saved_and_approved() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cli_init = Cli::for_test(Commands::Init);
+    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+
+    // 1. Init workspace
+    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+
+    // 2. Add an actual image WITHOUT running stage_workspace first, meaning no baseline
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let actual_png_bytes = fs::read(fixtures_dir.join("baseline_100x100.png"))
+        .expect("baseline_100x100.png fixture must exist");
+
+    let screenshot_dir = base_path.join("billing");
+    fs::create_dir_all(&screenshot_dir).unwrap();
+    let screenshot_file = screenshot_dir.join("form.png");
+    fs::write(&screenshot_file, &actual_png_bytes).unwrap();
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
+
+    let cli = Cli {
+        branch: Some("main".to_string()),
+        os: None,
+        arch: None,
+        renderer: None,
+        labels: vec![],
+        platform: None,
+        verbose: false,
+        quiet: false,
+        config: None,
+        strict: false,
+        target_branch: "main".to_string(),
+        command: Commands::Diff {
+            auto_pull: false,
+            resolve: false,
+        },
+    };
+
+    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    // 3. Run diff -> should fail with MissingBaseline, BUT should save the actual image
+    let report = run_diff(&ctx, base_path).expect("run_diff should succeed");
+    assert!(!report.passed);
+    assert_eq!(report.total_tests, 1);
+    assert_eq!(report.failed_tests, 1);
+
+    // Verify the actual screenshot was saved in .gleon/runs/latest/actual/
+    let expected_actual_file = report
+        .runs_dir
+        .join("actual")
+        .join("billing")
+        .join("form.png");
+    assert!(
+        expected_actual_file.is_file(),
+        "Actual image must be saved for MissingBaseline at {:?}",
+        expected_actual_file
+    );
+
+    // Verify the content is exactly the same as the original PNG
+    let saved_actual_bytes = fs::read(&expected_actual_file).unwrap();
+    assert_eq!(saved_actual_bytes, actual_png_bytes);
 }

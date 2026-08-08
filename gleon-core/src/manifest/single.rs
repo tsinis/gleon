@@ -8,12 +8,18 @@ use std::path::Path;
 /// Supported schema version for individual test manifests.
 pub const SUPPORTED_SINGLE_MANIFEST_SCHEMA_VERSION: u32 = 1;
 
+/// Maximum allowed width or height in pixels to prevent OOM allocations.
+pub const MAX_DIMENSION: u32 = 16384;
+
+/// Maximum allowed total decoded pixels (67,108,864 = 8192x8192) to prevent decompression bombs.
+pub const MAX_PIXELS: u64 = 67_108_864;
+
 /// Deterministic, noise-free manifest for a single visual regression test case.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SingleTestManifest {
     /// Schema version (always 1).
     pub schema_version: u32,
-    /// Primary comparison digest (must be sha256).
+    /// Primary comparison digest (supported cryptographic schemes: sha256, sha512, sha384, sha224, blake3).
     pub hash: ImageHash,
     /// Perceptual hash digest (must be dhash or valid scheme).
     pub phash: ImageHash,
@@ -51,22 +57,36 @@ impl SingleTestManifest {
             )));
         }
 
-        if self.hash.scheme() != "sha256" {
+        if !matches!(
+            self.hash.scheme(),
+            "sha256" | "sha512" | "sha384" | "sha224" | "blake3"
+        ) {
             return Err(ManifestError::Validation(format!(
-                "Expected hash scheme 'sha256', got '{}'",
+                "Unsupported hash scheme '{}'",
                 self.hash.scheme()
             )));
         }
 
-        if self.hash.value().len() != 64
-            || !self
-                .hash
-                .value()
-                .chars()
-                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+        let expected_len = match self.hash.scheme() {
+            "sha512" => 128,
+            "sha384" => 96,
+            "sha256" | "blake3" => 64,
+            "sha224" => 56,
+            _ => 0,
+        };
+
+        if expected_len > 0
+            && (self.hash.value().len() != expected_len
+                || !self
+                    .hash
+                    .value()
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)))
         {
             return Err(ManifestError::Validation(format!(
-                "Invalid sha256 hash value: expected 64 lowercase hex characters, got '{}'",
+                "Invalid {} hash value: expected {} lowercase hex characters, got '{}'",
+                self.hash.scheme(),
+                expected_len,
                 self.hash.value()
             )));
         }
@@ -91,14 +111,43 @@ impl SingleTestManifest {
             )));
         }
 
-        if self.width == 0 || self.height == 0 {
+        Self::validate_dimensions(self.width, self.height)?;
+
+        Ok(())
+    }
+
+    /// Validates width and height constraints.
+    pub fn validate_dimensions(width: u32, height: u32) -> Result<(), ManifestError> {
+        if width == 0 || height == 0 {
             return Err(ManifestError::Validation(format!(
-                "Invalid image dimensions: {}x{}",
-                self.width, self.height
+                "Invalid image dimensions: {width}x{height} (must be > 0)"
+            )));
+        }
+
+        if width > MAX_DIMENSION || height > MAX_DIMENSION {
+            return Err(ManifestError::Validation(format!(
+                "Image dimensions {width}x{height} exceed the maximum allowed {MAX_DIMENSION}x{MAX_DIMENSION}"
+            )));
+        }
+
+        let total_pixels = (width as u64) * (height as u64);
+        if total_pixels > MAX_PIXELS {
+            return Err(ManifestError::Validation(format!(
+                "Total pixel count {total_pixels} ({width}x{height}) exceeds maximum allowed budget {MAX_PIXELS}"
             )));
         }
 
         Ok(())
+    }
+
+    /// Safely validates image dimensions from raw bytes before fully decoding the image.
+    /// This prevents OOM (Out Of Memory) DoS attacks from decompression bombs.
+    pub fn validate_image_bytes(bytes: &[u8]) -> Result<(), ManifestError> {
+        let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .map_err(ManifestError::StdIo)?;
+        let (width, height) = reader.into_dimensions().map_err(ManifestError::Image)?;
+        Self::validate_dimensions(width, height)
     }
 
     /// Load a single test manifest from a JSON file.
@@ -142,22 +191,30 @@ mod tests {
 
     #[test]
     fn test_invalid_single_manifest() {
-        let hash = ImageHash::new("md5", "abc").unwrap();
-        let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
-        assert!(SingleTestManifest::new(hash, phash, 100, 100).is_err());
+        assert!(SingleTestManifest::validate_dimensions(16385, 100).is_err());
+        assert!(SingleTestManifest::validate_dimensions(100, 16385).is_err());
+        assert!(SingleTestManifest::validate_dimensions(10000, 10000).is_err());
 
         let valid_hash = ImageHash::new("sha256", "a".repeat(64)).unwrap();
-        let invalid_phash_scheme = ImageHash::new("sha256", "0000000000000000").unwrap();
+        let invalid_phash_scheme = ImageHash::new("md5", "0000000000000000").unwrap();
         assert!(
             SingleTestManifest::new(valid_hash.clone(), invalid_phash_scheme, 100, 100).is_err()
         );
 
         let invalid_phash_val = ImageHash::new("dhash", "short").unwrap();
-        assert!(SingleTestManifest::new(valid_hash, invalid_phash_val, 100, 100).is_err());
+        assert!(SingleTestManifest::new(valid_hash.clone(), invalid_phash_val, 100, 100).is_err());
 
         let uppercase_hash = ImageHash::new("sha256", "A".repeat(64)).unwrap();
         let valid_phash = ImageHash::new("dhash", "0000000000000000").unwrap();
-        assert!(SingleTestManifest::new(uppercase_hash, valid_phash, 100, 100).is_err());
+        let manifest_uppercase =
+            SingleTestManifest::new(uppercase_hash, valid_phash.clone(), 100, 100).unwrap();
+        assert_eq!(manifest_uppercase.hash.value(), "a".repeat(64));
+
+        // Zero dimensions
+        assert!(SingleTestManifest::new(valid_hash.clone(), valid_phash.clone(), 0, 100).is_err());
+
+        // Exceeds max dimensions
+        assert!(SingleTestManifest::new(valid_hash, valid_phash, MAX_DIMENSION + 1, 100).is_err());
     }
 
     #[test]

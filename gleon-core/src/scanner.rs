@@ -98,6 +98,22 @@ pub enum TestImageResult {
         /// Reason/details for the missing baseline.
         reason: String,
     },
+    /// An I/O error occurred while reading or saving the image.
+    IoError {
+        /// Relative path of the screenshot file.
+        relative_path: PathBuf,
+        /// The I/O error message.
+        error: String,
+    },
+    /// An error occurred while encoding the diff image.
+    EncodeError {
+        /// Relative path of the screenshot file.
+        relative_path: PathBuf,
+        /// Path to the actual image on disk.
+        actual_path: PathBuf,
+        /// The encoding error message.
+        error: String,
+    },
 }
 
 impl TestImageResult {
@@ -109,6 +125,8 @@ impl TestImageResult {
             Self::MissingBaseline { relative_path, .. } => relative_path,
             Self::DimensionMismatch { relative_path, .. } => relative_path,
             Self::Mismatch { relative_path, .. } => relative_path,
+            Self::IoError { relative_path, .. } => relative_path,
+            Self::EncodeError { relative_path, .. } => relative_path,
         }
     }
 }
@@ -132,9 +150,6 @@ impl TestCaseResult {
 /// Validates that all segments of a test name contain only allowed characters `[a-z0-9_.-]`.
 /// The name can use either Unix-style forward slashes (`/`) or Windows-style backslashes (`\`) as separators.
 pub fn validate_test_name(name: &str) -> Result<(), String> {
-    if name == "." {
-        return Ok(());
-    }
     for segment in name.split(['/', '\\']) {
         if segment.is_empty() {
             return Err("Test name segment cannot be empty".to_string());
@@ -384,8 +399,13 @@ impl FileScanner {
 
     /// Normalizes path separators to forward slashes for cross-platform manifest key consistency.
     pub fn normalize_path_str(path: &Path) -> Cow<'_, str> {
-        let lossy = path.to_string_lossy();
-        Cow::Owned(crate::manifest::normalize_test_name(&lossy).into_owned())
+        match path.to_string_lossy() {
+            Cow::Borrowed(s) => crate::manifest::normalize_test_name(s),
+            Cow::Owned(s) => match crate::manifest::normalize_test_name(&s) {
+                Cow::Borrowed(_) => Cow::Owned(s),
+                Cow::Owned(new_s) => Cow::Owned(new_s),
+            },
+        }
     }
 
     /// Parses a directory entry and returns the parsed paths if it's a valid matching PNG.
@@ -457,7 +477,7 @@ mod tests {
 
     #[test]
     fn test_validate_test_name() {
-        assert!(validate_test_name(".").is_ok());
+        assert!(validate_test_name(".").is_err());
         assert!(validate_test_name("billing").is_ok());
         assert!(validate_test_name("billing/stripe").is_ok());
         assert!(validate_test_name("billing/stripe-v2").is_ok());
@@ -975,10 +995,12 @@ screenshots:
         let p1 = Path::new("billing/stripe/form.png");
         let res1 = FileScanner::normalize_path_str(p1);
         assert_eq!(res1, "billing/stripe/form.png");
+        assert!(matches!(res1, std::borrow::Cow::Borrowed(_)));
 
         let p2 = Path::new("clean_path.png");
         let res2 = FileScanner::normalize_path_str(p2);
         assert_eq!(res2, "clean_path.png");
+        assert!(matches!(res2, std::borrow::Cow::Borrowed(_)));
     }
 
     #[test]

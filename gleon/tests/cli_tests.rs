@@ -618,6 +618,30 @@ screenshots:
             "Downloaded 1 missing baseline blob(s) from storage",
         ));
 
+    // 4. Pull again, should be up to date
+    let mut cmd_pull2 = Command::cargo_bin("gleon")?;
+    cmd_pull2
+        .current_dir(fresh_dir.path())
+        .env("GLEON_STORAGE_URL", &remote_url)
+        .arg("pull")
+        .assert()
+        .success()
+        .stderr(predicates::str::contains(
+            "All 1 baseline blob(s) are already up to date locally.",
+        ));
+
+    // 5. Push again, should be up to date
+    let mut cmd_push2 = Command::cargo_bin("gleon")?;
+    cmd_push2
+        .current_dir(dir.path())
+        .env("GLEON_STORAGE_URL", &remote_url)
+        .arg("push")
+        .assert()
+        .success()
+        .stderr(predicates::str::contains(
+            "All 1 baseline blob(s) are already present in remote storage.",
+        ));
+
     Ok(())
 }
 
@@ -1001,4 +1025,59 @@ fn test_cli_report_with_s3_storage_pre_signed_urls() -> Result<(), Box<dyn std::
         .stdout(predicates::str::contains("X-Amz-Signature"));
 
     Ok(())
+}
+
+#[test]
+fn test_approve_command() {
+    let dir = init_temp_dir();
+    let base_path = dir.path();
+    let fixtures_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("get parent dir")
+        .join("gleon-core")
+        .join("tests")
+        .join("fixtures");
+
+    // Create actual screenshots to approve
+    let actual_dir = base_path
+        .join(".gleon")
+        .join("runs")
+        .join("latest")
+        .join("actual");
+    let login_dir = actual_dir.join("login");
+    std::fs::create_dir_all(&login_dir).expect("create_dir_all login");
+    std::fs::copy(
+        fixtures_dir.join("baseline_100x100.png"),
+        login_dir.join("button.png"),
+    )
+    .expect("copy baseline screenshot");
+
+    // Run approve command
+    let mut cmd = Command::cargo_bin("gleon").expect("cargo_bin gleon");
+    cmd.current_dir(base_path)
+        .arg("approve")
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("Approved 1 screenshot(s)"));
+
+    // Check that manifest and blob are created
+    let manifests_dir = base_path.join(".gleon").join("manifests");
+    let mut found_button_json = false;
+    if let Ok(entries) = std::fs::read_dir(&manifests_dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().unwrap().is_dir() {
+                let button_json = entry.path().join("login").join("button.json");
+                if button_json.exists() {
+                    found_button_json = true;
+                    let manifest_content =
+                        std::fs::read_to_string(&button_json).expect("read_to_string button.json");
+                    assert!(manifest_content.contains("sha256:"));
+                }
+            }
+        }
+    }
+    assert!(
+        found_button_json,
+        "Expected to find login/button.json manifest"
+    );
 }

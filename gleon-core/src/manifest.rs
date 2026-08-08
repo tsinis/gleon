@@ -22,6 +22,14 @@ pub enum ManifestError {
     #[error("I/O error: {0}")]
     StdIo(#[source] std::io::Error),
 
+    /// Directory traversal or walker error.
+    #[error("Walker error: {0}")]
+    Walker(#[source] ignore::Error),
+
+    /// Image processing or format error.
+    #[error("Image error: {0}")]
+    Image(#[source] image::ImageError),
+
     /// Validation error in manifest schema or entry content.
     #[error("Validation error: {0}")]
     Validation(String),
@@ -49,11 +57,22 @@ fn validate_hash_parts(scheme: &str, value: &str) -> Result<(), String> {
     if value.is_empty() {
         return Err("Hash value cannot be empty".to_string());
     }
-    if !value
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err("Hash value contains invalid characters".to_string());
+
+    // Strict Cryptographic Digest Checks
+    if scheme == "sha256" {
+        if value.len() != 64 {
+            return Err("sha256 hash must be exactly 64 characters long".to_string());
+        }
+        if !value.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err("sha256 hash must contain only ASCII hexadecimal characters".to_string());
+        }
+    } else {
+        if !value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err("Hash value contains invalid characters".to_string());
+        }
     }
     Ok(())
 }
@@ -65,7 +84,10 @@ impl ImageHash {
         if scheme_str.chars().any(|c| c.is_ascii_uppercase()) {
             scheme_str.make_ascii_lowercase();
         }
-        let value_str = value.into();
+        let mut value_str = value.into();
+        if value_str.chars().any(|c| c.is_ascii_uppercase()) {
+            value_str.make_ascii_lowercase();
+        }
         validate_hash_parts(&scheme_str, &value_str)
             .map_err(ManifestError::Validation)
             .map(|_| Self {
@@ -98,11 +120,18 @@ impl std::str::FromStr for ImageHash {
         } else {
             std::borrow::Cow::Borrowed(scheme)
         };
-        validate_hash_parts(&scheme_cow, value)
+
+        let value_cow = if value.chars().any(|c| c.is_ascii_uppercase()) {
+            std::borrow::Cow::Owned(value.to_ascii_lowercase())
+        } else {
+            std::borrow::Cow::Borrowed(value)
+        };
+
+        validate_hash_parts(&scheme_cow, &value_cow)
             .map_err(ManifestError::Validation)
             .map(|()| ImageHash {
                 scheme: scheme_cow.into_owned(),
-                value: value.to_string(),
+                value: value_cow.into_owned(),
             })
     }
 }
@@ -138,9 +167,40 @@ mod tests {
 
     #[test]
     fn test_image_hash_parse_and_display() {
-        let hash = "sha256:a1b2c3d4e5f67890".parse::<ImageHash>().unwrap();
+        let hash = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            .parse::<ImageHash>()
+            .unwrap();
         assert_eq!(hash.scheme(), "sha256");
-        assert_eq!(hash.value(), "a1b2c3d4e5f67890");
-        assert_eq!(hash.to_string(), "sha256:a1b2c3d4e5f67890");
+        assert_eq!(
+            hash.value(),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+        assert_eq!(
+            hash.to_string(),
+            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+    }
+
+    #[test]
+    fn test_image_hash_uppercase_normalization() {
+        let hash = "SHA256:0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+            .parse::<ImageHash>()
+            .unwrap();
+        assert_eq!(hash.scheme(), "sha256");
+        assert_eq!(
+            hash.value(),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+
+        let hash_new = ImageHash::new(
+            "SHA256",
+            "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+        )
+        .unwrap();
+        assert_eq!(hash_new.scheme(), "sha256");
+        assert_eq!(
+            hash_new.value(),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
     }
 }

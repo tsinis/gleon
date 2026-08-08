@@ -91,3 +91,43 @@ fn test_init_workspace_honors_cli_overrides() {
             .is_dir()
     );
 }
+
+#[test]
+fn test_gitignore_append_no_newline() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+    let gleon_dir = base_path.join(".gleon");
+    fs::create_dir_all(&gleon_dir).unwrap();
+    let gitignore_path = gleon_dir.join(".gitignore");
+
+    // Write a .gitignore that lacks a trailing newline
+    fs::write(&gitignore_path, "node_modules").unwrap();
+
+    let cli = Cli::for_test(Commands::Init);
+    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    init_workspace(&ctx, base_path).unwrap();
+
+    let content = fs::read_to_string(&gitignore_path).unwrap();
+    assert!(content.contains("node_modules\nblobs/\n"));
+}
+
+#[test]
+fn test_env_template_already_exists() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+    let gleon_dir = base_path.join(".gleon");
+    fs::create_dir_all(&gleon_dir).unwrap();
+    let env_template_path = gleon_dir.join(".env.template");
+
+    fs::write(&env_template_path, "EXISTING_VAR=1\n").unwrap();
+
+    let cli = Cli::for_test(Commands::Init);
+    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+    init_workspace(&ctx, base_path).unwrap();
+
+    // The .gleon/.env.template shouldn't be overwritten
+    let content = fs::read_to_string(&env_template_path).unwrap();
+    assert_eq!(content, "EXISTING_VAR=1\n");
+}

@@ -144,21 +144,14 @@ where
 
         if let Some(adapter) = adapter {
             for manifest in [&item.conflict.ours, &item.conflict.theirs] {
-                let local_blob = ctx
-                    .base_dir
-                    .join(".gleon")
-                    .join("blobs")
-                    .join("sha256")
-                    .join(manifest.hash.value());
-                if !local_blob.exists() {
+                let blobs_root = ctx.base_dir.join(".gleon").join("blobs");
+                let local_blob = gleon_core::storage::local_blob_path(&blobs_root, &manifest.hash);
+                if !gleon_core::storage::is_usable_blob(&local_blob) {
                     info!(
                         "Fetching missing blob {} from storage...",
                         manifest.hash.value()
                     );
-                    if let Err(e) = adapter
-                        .download_blob(manifest.hash.value(), &local_blob)
-                        .await
-                    {
+                    if let Err(e) = adapter.download_blob(&manifest.hash, &local_blob).await {
                         warn!("Failed to fetch blob {}: {e}", manifest.hash.value());
                     }
                 }
@@ -359,9 +352,13 @@ mod tests {
         let config = StorageConfig::new("memory://");
         let adapter = ObjectStoreAdapter::from_config(&config).unwrap();
 
-        let ours_hash = "1111111111111111111111111111111111111111111111111111111111111111";
+        let ours_hash = gleon_core::manifest::ImageHash::new(
+            "sha256",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .unwrap();
         // Upload a dummy blob for ours hash into memory adapter so download_blob succeeds
-        adapter.upload_blob(ours_hash, &login_path).await.unwrap();
+        adapter.upload_blob(&ours_hash, &login_path).await.unwrap();
 
         // This will attempt to download missing blob for ours and theirs
         let count = resolve_conflicts_with_selector(&ctx, conflicts, Some(&adapter), |_| Ok(0))
@@ -374,7 +371,7 @@ mod tests {
             .join(".gleon")
             .join("blobs")
             .join("sha256")
-            .join(ours_hash);
+            .join(ours_hash.value());
         assert!(
             ours_blob_path.exists(),
             "Downloaded blob for ours hash must exist on local disk"

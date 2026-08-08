@@ -28,22 +28,26 @@ async fn test_memory_store_blob_and_manifest_lifecycle() {
     let src_file = dir.path().join("sample_blob.png");
     std::fs::write(&src_file, b"png_file_bytes").expect("write src file");
 
-    let blob_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    let blob_hash = gleon_core::manifest::ImageHash::new(
+        "sha256",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    )
+    .unwrap();
 
     // 1. Upload Blob
     adapter
-        .upload_blob(blob_hash, &src_file)
+        .upload_blob(&blob_hash, &src_file)
         .await
         .expect("upload blob ok");
 
     // 2. List Blobs
-    let list = adapter.list_blobs().await.expect("list blobs ok");
-    assert_eq!(list, vec![blob_hash.to_string()]);
+    let list = adapter.list_blobs("sha256").await.expect("list blobs ok");
+    assert_eq!(list, vec![blob_hash.value().to_string()]);
 
     // 3. Download Blob
     let dest_file = dir.path().join("downloaded_blob.png");
     adapter
-        .download_blob(blob_hash, &dest_file)
+        .download_blob(&blob_hash, &dest_file)
         .await
         .expect("download blob ok");
 
@@ -51,32 +55,32 @@ async fn test_memory_store_blob_and_manifest_lifecycle() {
     assert_eq!(downloaded_bytes, b"png_file_bytes");
 
     // 4. Download non-existent blob -> BlobNotFound
-    let not_found = adapter
-        .download_blob(
-            "0000000000000000000000000000000000000000000000000000000000000000",
-            &dest_file,
-        )
-        .await;
+    let missing_hash = gleon_core::manifest::ImageHash::new(
+        "sha256",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .unwrap();
+    let not_found = adapter.download_blob(&missing_hash, &dest_file).await;
 
     assert!(matches!(not_found, Err(StorageError::BlobNotFound(_))));
 
     // 5. Check blob_exists
     assert!(
         adapter
-            .blob_exists(blob_hash)
+            .blob_exists(&blob_hash)
             .await
             .expect("blob_exists ok")
     );
     assert!(
         !adapter
-            .blob_exists("0000000000000000000000000000000000000000000000000000000000000000")
+            .blob_exists(&missing_hash)
             .await
             .expect("blob_exists false ok")
     );
 
-    // 8. Upload missing local file -> StorageError::Io
+    // 6. Upload missing local file -> StorageError::Io
     let missing_local = dir.path().join("non_existent_file.png");
-    let upload_err = adapter.upload_blob(blob_hash, &missing_local).await;
+    let upload_err = adapter.upload_blob(&blob_hash, &missing_local).await;
     assert!(matches!(upload_err, Err(StorageError::Io { .. })));
 }
 
@@ -97,14 +101,18 @@ async fn test_adapter_download_io_errors() {
     let src_file = dir.path().join("sample_blob.png");
     std::fs::write(&src_file, b"png_file_bytes").expect("write src file");
 
-    let blob_hash = "1111111111111111111111111111111111111111111111111111111111111111";
-    adapter.upload_blob(blob_hash, &src_file).await.unwrap();
+    let blob_hash = gleon_core::manifest::ImageHash::new(
+        "sha256",
+        "1111111111111111111111111111111111111111111111111111111111111111",
+    )
+    .unwrap();
+    adapter.upload_blob(&blob_hash, &src_file).await.unwrap();
 
     let file_as_dir = dir.path().join("regular_file.txt");
     std::fs::write(&file_as_dir, b"not a directory").expect("write file as dir");
 
     let dest_file = file_as_dir.join("downloaded.png");
-    let err = adapter.download_blob(blob_hash, &dest_file).await;
+    let err = adapter.download_blob(&blob_hash, &dest_file).await;
 
     assert!(
         matches!(err, Err(StorageError::Io { .. })),
@@ -122,11 +130,15 @@ async fn test_adapter_list_blobs() {
     let src_file = dir.path().join("blob.png");
     std::fs::write(&src_file, b"sample bytes").unwrap();
 
-    let blob_hash = "2222222222222222222222222222222222222222222222222222222222222222";
-    adapter.upload_blob(blob_hash, &src_file).await.unwrap();
+    let blob_hash = gleon_core::manifest::ImageHash::new(
+        "sha256",
+        "2222222222222222222222222222222222222222222222222222222222222222",
+    )
+    .unwrap();
+    adapter.upload_blob(&blob_hash, &src_file).await.unwrap();
 
-    let blobs = adapter.list_blobs().await.unwrap();
-    assert_eq!(blobs, vec![blob_hash.to_string()]);
+    let blobs = adapter.list_blobs("sha256").await.unwrap();
+    assert_eq!(blobs, vec![blob_hash.value().to_string()]);
 }
 
 #[test]

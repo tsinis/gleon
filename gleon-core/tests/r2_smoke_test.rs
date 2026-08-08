@@ -41,10 +41,14 @@ async fn smoke_r2_live_upload_download() {
     let adapter = ObjectStoreAdapter::from_config(&config).expect("build live R2 store adapter");
 
     let png_fixture = fixture_path("baseline_100x100.png");
-    let test_hash = "f00000000000000000000000000000000000000000000000000000000000000f";
+    let hash = gleon_core::manifest::ImageHash::new(
+        "sha256",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    )
+    .unwrap();
 
     adapter
-        .upload_blob(test_hash, &png_fixture)
+        .upload_blob(&hash, &png_fixture)
         .await
         .expect("R2 upload blob ok");
 
@@ -52,7 +56,7 @@ async fn smoke_r2_live_upload_download() {
     let downloaded_file = local_dest.path().join("r2_downloaded.png");
 
     adapter
-        .download_blob(test_hash, &downloaded_file)
+        .download_blob(&hash, &downloaded_file)
         .await
         .expect("R2 download blob ok");
 

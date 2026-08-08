@@ -42,15 +42,15 @@ steps:
 
 ### Action Inputs
 
-| Input | Description | Default |
-| :--- | :--- | :--- |
-| `version` | Gleon release version tag to download (e.g. `'v1.0.0'`) | **Required** |
-| `github-token` | GitHub token (`${{ secrets.GITHUB_TOKEN }}`) to prevent API rate limits when downloading the binary. **Highly recommended** for active CI pipelines | `''` |
-| `checksum` | Expected SHA256 digest of the binary for independent trust root verification | **Required** |
-| `license-key` | Commercial BSL license key for private repositories | `''` |
-| `strict` | Fail build on license violation (`'true'` / `'false'`) | `'false'` |
-| `target-branch` | Target branch for baseline comparison | PR base ref or default branch |
-| `args` | Additional flags for `gleon diff` | `''` |
+| Input           | Description                                                                                                                                         | Default                       |
+| :-------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------- |
+| `version`       | Gleon release version tag to download (e.g. `'v1.0.0'`)                                                                                             | **Required**                  |
+| `github-token`  | GitHub token (`${{ secrets.GITHUB_TOKEN }}`) to prevent API rate limits when downloading the binary. **Highly recommended** for active CI pipelines | `''`                          |
+| `checksum`      | Expected SHA256 digest of the binary for independent trust root verification                                                                        | **Required**                  |
+| `license-key`   | Commercial BSL license key for private repositories                                                                                                 | `''`                          |
+| `strict`        | Fail build on license violation (`'true'` / `'false'`)                                                                                              | `'false'`                     |
+| `target-branch` | Target branch for baseline comparison                                                                                                               | PR base ref or default branch |
+| `args`          | Additional flags for `gleon diff`                                                                                                                   | `''`                          |
 
 ### Ephemeral Diff Branch Cleanup Workflow
 
@@ -100,6 +100,28 @@ jobs:
 
 When a Pull Request is closed or merged, this workflow automatically deletes the ephemeral `gleon/diffs/pr-<PR_NUMBER>` branch from your repository.
 
+## 📸 Approving Visual Baseline Changes in Pull Requests
+
+When `gleon` detects visual regressions during a PR CI run, it posts a detailed Markdown report with diff previews in the PR comment section.
+
+To accept the new visual changes as the new baseline:
+
+1. **Approve All Changed Screenshots**:
+   Comment directly on the PR:
+
+   ```text
+   /gleon approve
+   ```
+
+2. **Approve Specific Tests Only**:
+
+   ```text
+   /gleon approve auth/login
+   ```
+
+### GitHub Actions Workflow Setup
+
+To enable `/gleon approve` comments in your repository, refer to the shipped workflow template in [.github/workflows/gleon-approve.yml](./workflows/gleon-approve.yml). Ensure your workflow uses proper collaborator permission checks, fork rejection, and branch SHA pinning before granting write access or pushing baseline updates.
 
 ## How to Build and Run Locally
 

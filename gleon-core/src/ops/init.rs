@@ -85,38 +85,77 @@ pub fn init_workspace(
         } else {
             ""
         };
-        let full_append = format!("{prefix}{to_append}");
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&gitignore_path)?;
-        file.write_all(full_append.as_bytes())?;
+        if !prefix.is_empty() {
+            file.write_all(prefix.as_bytes())?;
+        }
+        file.write_all(to_append.as_bytes())?;
     }
 
     // Scaffold .gleon/.env.template if it does not exist
     let env_template_path = gleon_dir.join(".env.template");
-    if !env_template_path.exists() {
-        let template_content = "# gleon Storage Configuration\n\
-            # Copy this file to .env.local and fill in your credentials\n\
-            GLEON_STORAGE_URL=\n\
-            AWS_ACCESS_KEY_ID=\n\
-            AWS_SECRET_ACCESS_KEY=\n\
-            # For Cloudflare R2:\n\
-            # R2_ACCOUNT_ID=\n";
-        crate::io::save_file_atomically(&env_template_path, template_content.as_bytes())
-            .map_err(InitError::from)?;
+    let template_content = "# gleon Storage Configuration\n\
+        # Copy this file to .env.local and fill in your credentials\n\
+        GLEON_STORAGE_URL=\n\
+        AWS_ACCESS_KEY_ID=\n\
+        AWS_SECRET_ACCESS_KEY=\n\
+        # For Cloudflare R2:\n\
+        # R2_ACCOUNT_ID=\n";
+    let env_create_res = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&env_template_path);
+    match env_create_res {
+        Ok(mut f) => {
+            use std::io::Write;
+            if let Err(e) = f
+                .write_all(template_content.as_bytes())
+                .and_then(|_| f.sync_all())
+            {
+                let _ = std::fs::remove_file(&env_template_path);
+                return Err(InitError::Io(e));
+            }
+            #[cfg(not(windows))]
+            if let Err(e) = std::fs::File::open(&gleon_dir).and_then(|d| d.sync_all()) {
+                return Err(InitError::Io(e));
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(InitError::Io(e)),
     }
 
     let internal_config = gleon_dir.join("gleon.yaml");
 
     let mut config_created = None;
-    if !internal_config.exists() {
-        let default_config = GleonConfig::default();
-        let yaml_content = serde_yaml::to_string(&default_config).map_err(InitError::Yaml)?;
-        crate::io::save_file_atomically(&internal_config, yaml_content.as_bytes())
-            .map_err(InitError::from)?;
-        config_created = Some(internal_config);
+    let default_config = GleonConfig::default();
+    let yaml_content = serde_yaml::to_string(&default_config).map_err(InitError::Yaml)?;
+
+    let config_create_res = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&internal_config);
+    match config_create_res {
+        Ok(mut f) => {
+            use std::io::Write;
+            if let Err(e) = f
+                .write_all(yaml_content.as_bytes())
+                .and_then(|_| f.sync_all())
+            {
+                let _ = std::fs::remove_file(&internal_config);
+                return Err(InitError::Io(e));
+            }
+            #[cfg(not(windows))]
+            if let Err(e) = std::fs::File::open(&gleon_dir).and_then(|d| d.sync_all()) {
+                return Err(InitError::Io(e));
+            }
+            config_created = Some(internal_config);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(InitError::Io(e)),
     }
 
     Ok(InitResult {
@@ -128,12 +167,25 @@ pub fn init_workspace(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::ResolvedContext;
+
+    #[test]
+    fn test_init_error_from_io_error() {
+        let err1 = crate::io::IoError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "foo"));
+        let init_err1: InitError = err1.into();
+        assert!(matches!(init_err1, InitError::Io(_)));
+
+        let serde_err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+        let err2 = crate::io::IoError::JsonParse(serde_err);
+        let init_err2: InitError = err2.into();
+        assert!(matches!(init_err2, InitError::Io(_)));
+    }
 
     #[test]
     fn test_init_workspace_creates_structure_and_config() {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir = temp_dir.path();
-        let ctx = crate::context::ResolvedContext::default();
+        let ctx = ResolvedContext::default();
 
         let res = init_workspace(&ctx, base_dir).unwrap();
         assert!(res.gleon_dir.exists());
@@ -152,5 +204,63 @@ mod tests {
         assert!(env_template.exists());
         let template_str = std::fs::read_to_string(env_template).unwrap();
         assert!(template_str.contains("GLEON_STORAGE_URL="));
+    }
+
+    #[test]
+    fn test_init_platform_key_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut ctx = ResolvedContext::default();
+        ctx.platform.os = "invalid/os".to_string();
+
+        let res = init_workspace(&ctx, temp.path());
+        assert!(res.is_ok());
+
+        // manifests should be created without a platform sub-directory
+        let manifests_dir = temp.path().join(".gleon").join("manifests");
+        assert!(manifests_dir.exists());
+    }
+
+    #[test]
+    fn test_init_gitignore_append_newline() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        // Write .gitignore without trailing newline
+        std::fs::write(gleon_dir.join(".gitignore"), "some_ignored_file").unwrap();
+
+        let ctx = ResolvedContext::default();
+        let res = init_workspace(&ctx, temp.path());
+        assert!(res.is_ok());
+
+        let content = std::fs::read_to_string(gleon_dir.join(".gitignore")).unwrap();
+        assert!(content.contains("some_ignored_file\n"));
+        assert!(content.contains("runs/"));
+    }
+
+    #[test]
+    #[cfg(all(unix, not(miri)))]
+    fn test_init_read_only_dir_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        // Make .gleon read-only so OpenOptions::create_new fails
+        let mut perms = std::fs::metadata(&gleon_dir).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&gleon_dir, perms.clone()).unwrap();
+
+        let can_write = std::fs::write(gleon_dir.join("test.txt"), "data").is_ok();
+        let ctx = ResolvedContext::default();
+        let res = init_workspace(&ctx, temp.path());
+
+        // Restore permissions before assertions
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&gleon_dir, perms).unwrap();
+
+        if !can_write {
+            assert!(matches!(res, Err(InitError::Io(_))));
+        }
     }
 }

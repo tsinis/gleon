@@ -184,6 +184,16 @@ pub enum Commands {
         #[arg(short = 'o', long)]
         out: Option<std::path::PathBuf>,
     },
+    /// Approve failed visual diffs and update baseline snapshots
+    Approve {
+        /// Optional specific test paths to approve (filters by prefix)
+        #[arg(value_name = "PATHS")]
+        paths: Vec<std::path::PathBuf>,
+
+        /// Optional path to directory containing actual screenshots (e.g. CI artifacts)
+        #[arg(long = "from")]
+        from: Option<std::path::PathBuf>,
+    },
 }
 
 #[cfg(test)]
@@ -366,5 +376,29 @@ mod tests {
 
         let push_ok = Cli::try_parse_from(["gleon", "push", "--platform", "linux-x86_64"]);
         assert!(push_ok.is_ok());
+    }
+
+    #[test]
+    fn test_parse_approve_command() -> Result<(), clap::Error> {
+        let args = ["gleon", "approve", "--from", ".gleon/diffs", "auth/login"];
+        let cli = Cli::try_parse_from(args)?;
+        assert_eq!(
+            cli.command,
+            Commands::Approve {
+                paths: vec![std::path::PathBuf::from("auth/login")],
+                from: Some(std::path::PathBuf::from(".gleon/diffs")),
+            }
+        );
+
+        let args_no_from = ["gleon", "approve"];
+        let cli_no_from = Cli::try_parse_from(args_no_from)?;
+        assert_eq!(
+            cli_no_from.command,
+            Commands::Approve {
+                paths: vec![],
+                from: None,
+            }
+        );
+        Ok(())
     }
 }

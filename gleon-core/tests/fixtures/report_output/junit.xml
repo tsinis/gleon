@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuites name="gleon Tests" tests="6" failures="6">
+<testsuites name="gleon Tests" tests="7" failures="7">
 
   <testsuite name="billing_dashboard_1" tests="1" failures="1">
     
@@ -55,7 +55,17 @@
     
     <testcase name="missing_base.png" classname="billing_dashboard_6">
       
-      <failure message="Baseline missing: Baseline missing">Baseline missing: Baseline missing</failure>
+      <failure message="Missing baseline: Baseline missing">Missing baseline: Baseline missing</failure>
+      
+    </testcase>
+    
+  </testsuite>
+
+  <testsuite name="billing_dashboard_7" tests="1" failures="1">
+    
+    <testcase name="encode_fail.png" classname="billing_dashboard_7">
+      
+      <failure message="Encode error: Failed to write PNG chunk">Encode error: Failed to write PNG chunk</failure>
       
     </testcase>
     

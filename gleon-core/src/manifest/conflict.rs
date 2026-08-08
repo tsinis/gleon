@@ -316,7 +316,7 @@ mod tests {
             Err(ConflictParseError::InvalidAncestorJson(_))
         ));
 
-        let invalid_ours = "{\"schema_version\":1,\"hash\":\"sha256:1111\",\"phash\":\"dhash:0000000000000000\",\"width\":10,\"height\":10}";
+        let invalid_ours = "{\"schema_version\":1,\"hash\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"phash\":\"dhash:0000000000000000\",\"width\":0,\"height\":10}";
         let invalid_ours_manifest =
             format!("<<<<<<< HEAD\n{invalid_ours}\n=======\n{valid2}\n>>>>>>> branch");
         assert!(matches!(
@@ -324,7 +324,7 @@ mod tests {
             Err(ConflictParseError::InvalidOursManifest(_))
         ));
 
-        let invalid_theirs = "{\"schema_version\":1,\"hash\":\"sha256:2222\",\"phash\":\"dhash:0000000000000000\",\"width\":10,\"height\":10}";
+        let invalid_theirs = "{\"schema_version\":1,\"hash\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"phash\":\"dhash:0000000000000000\",\"width\":0,\"height\":10}";
         let invalid_theirs_manifest =
             format!("<<<<<<< HEAD\n{valid}\n=======\n{invalid_theirs}\n>>>>>>> branch");
         assert!(matches!(
@@ -332,7 +332,7 @@ mod tests {
             Err(ConflictParseError::InvalidTheirsManifest(_))
         ));
 
-        let invalid_ancestor = "{\"schema_version\":1,\"hash\":\"sha256:0000\",\"phash\":\"dhash:0000000000000000\",\"width\":10,\"height\":10}";
+        let invalid_ancestor = "{\"schema_version\":1,\"hash\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"phash\":\"dhash:0000000000000000\",\"width\":0,\"height\":10}";
         let invalid_ancestor_manifest = format!(
             "<<<<<<< HEAD\n{valid}\n|||||||\n{invalid_ancestor}\n=======\n{valid2}\n>>>>>>> branch"
         );

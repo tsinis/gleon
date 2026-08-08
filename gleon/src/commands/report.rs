@@ -66,10 +66,14 @@ pub async fn run_report(
                     } => {
                         vec![baseline_path.as_path(), actual_path.as_path()]
                     }
+                    gleon_core::scanner::TestImageResult::EncodeError { actual_path, .. } => {
+                        vec![actual_path.as_path()]
+                    }
                     gleon_core::scanner::TestImageResult::MissingBaseline {
                         relative_path, ..
                     }
-                    | gleon_core::scanner::TestImageResult::DecodeError { relative_path, .. } => {
+                    | gleon_core::scanner::TestImageResult::DecodeError { relative_path, .. }
+                    | gleon_core::scanner::TestImageResult::IoError { relative_path, .. } => {
                         vec![relative_path.as_path()]
                     }
                     _ => vec![],
@@ -93,8 +97,16 @@ pub async fn run_report(
             }
 
             while let Some(res) = join_set.join_next().await {
-                if let Ok(Some((p, signed))) = res {
-                    let _ = signed_urls.insert(p, signed);
+                match res {
+                    Ok(Some((p, signed))) => {
+                        let _ = signed_urls.insert(p, signed);
+                    }
+                    Ok(None) => {
+                        tracing::warn!("Failed to generate pre-signed URL for blob path");
+                    }
+                    Err(e) => {
+                        tracing::warn!("URL signing task panicked or was cancelled: {}", e);
+                    }
                 }
             }
         }
@@ -118,6 +130,15 @@ pub async fn run_report(
     let md_content = ReportGenerator::render_pr_comment(&report_data, &options);
 
     if let Some(out_path) = out {
+        let parent = out_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "Failed to create parent directory for report output '{}'",
+                parent.display()
+            )
+        })?;
         gleon_core::io::save_file_atomically(out_path, md_content.as_bytes())
             .with_context(|| format!("Failed to write output to '{}'", out_path.display()))?;
         tracing::info!("Generated markdown report at {}", out_path.display());
@@ -126,4 +147,78 @@ pub async fn run_report(
     }
 
     Ok(0)
+}
+
+#[cfg(all(test, not(miri)))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_run_report_creates_nested_parent_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let report_json_path = temp.path().join("report.json");
+        std::fs::write(&report_json_path, "[]").unwrap();
+
+        let nested_out = temp.path().join("nested").join("sub").join("output.md");
+
+        struct DummyEnv;
+        impl gleon_core::git::EnvProvider for DummyEnv {
+            fn get_var(&self, _key: &str) -> Option<String> {
+                None
+            }
+        }
+
+        let res = run_report(
+            &DummyEnv,
+            None,
+            "markdown",
+            &report_json_path,
+            None,
+            Some(&nested_out),
+        )
+        .await;
+
+        assert!(res.is_ok());
+        assert!(nested_out.is_file());
+    }
+
+    #[tokio::test]
+    async fn test_run_report_with_encode_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let report_json_path = temp.path().join("report.json");
+        let tc = TestCaseResult {
+            name: "test_enc".to_string(),
+            result: gleon_core::scanner::TestImageResult::EncodeError {
+                relative_path: std::path::PathBuf::from("enc.png"),
+                actual_path: std::path::PathBuf::from("actual_enc.png"),
+                error: "Encode failure".to_string(),
+            },
+        };
+        gleon_core::io::save_json_atomically(&report_json_path, &vec![tc]).unwrap();
+
+        let out_path = temp.path().join("output.md");
+
+        struct DummyEnv;
+        impl gleon_core::git::EnvProvider for DummyEnv {
+            fn get_var(&self, _key: &str) -> Option<String> {
+                None
+            }
+        }
+
+        let storage_cfg = gleon_core::storage::StorageConfig::new("https://signed.com");
+        let res = run_report(
+            &DummyEnv,
+            Some(storage_cfg),
+            "markdown",
+            &report_json_path,
+            None,
+            Some(&out_path),
+        )
+        .await;
+
+        assert!(res.is_ok());
+        let md = std::fs::read_to_string(&out_path).unwrap();
+        assert!(md.contains("Encode Error"));
+        assert!(md.contains("actual_enc.png"));
+    }
 }
