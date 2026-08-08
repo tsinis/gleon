@@ -154,9 +154,20 @@ pub fn check_status(
                     None => Ok((Some(img.relative_path.clone()), None)),
                     Some(manifest) => {
                         let raw_bytes = std::fs::read(&img.absolute_path)?;
-                        let is_unchanged = manifest.hash.scheme() == "sha256" && {
-                            let actual_sha256 = hex::encode(sha2::Sha256::digest(&raw_bytes));
-                            actual_sha256 == manifest.hash.value()
+                        let is_unchanged = match manifest.hash.scheme() {
+                            "sha256" => {
+                                let actual_sha256 = hex::encode(sha2::Sha256::digest(&raw_bytes));
+                                actual_sha256 == manifest.hash.value()
+                            }
+                            _ => {
+                                let baseline_blob_path = crate::storage::local_blob_path(
+                                    &gleon_dir.join("blobs"),
+                                    &manifest.hash,
+                                );
+                                std::fs::read(&baseline_blob_path)
+                                    .map(|b_bytes| raw_bytes == b_bytes)
+                                    .unwrap_or(false)
+                            }
                         };
                         if is_unchanged {
                             crate::manifest::SingleTestManifest::validate_image_bytes(&raw_bytes)?;
@@ -418,5 +429,135 @@ mod tests {
 
         let report = check_status(&ctx, temp.path()).unwrap();
         assert!(report.is_clean());
+    }
+
+    #[test]
+    fn test_status_missing_blob_with_masks() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        let ctx_temp = ResolvedContext::default();
+
+        let platform_key = ctx_temp.platform.to_key().unwrap();
+        let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+
+        let mut index = WorkspaceIndex::new();
+        let hash_val = "1111111111111111111111111111111111111111111111111111111111111111";
+        index
+            .save_test(
+                &manifests_dir,
+                "test",
+                &crate::manifest::SingleTestManifest {
+                    schema_version: 1,
+                    hash: crate::manifest::ImageHash::new("sha256", hash_val).unwrap(),
+                    phash: crate::manifest::ImageHash::new("dhash", "2222222222222222").unwrap(),
+                    width: 1,
+                    height: 1,
+                },
+            )
+            .unwrap();
+
+        let img = image::RgbaImage::new(10, 10);
+        img.save(temp.path().join("test.png")).unwrap();
+
+        // Define a mask so status.rs attempts to read the baseline blob
+        let ctx = ResolvedContext {
+            config: Some(crate::config::GleonConfig {
+                screenshots: vec![crate::config::ScreenshotRule {
+                    include: vec![crate::config::GlobPattern::new("**/*.png").unwrap()],
+                    mode: crate::config::Mode::Pixel,
+                    diff: crate::config::DiffConfig::default(),
+                    masks: vec![crate::config::MaskRule {
+                        path: crate::config::GlobPattern::new("**/*.png").unwrap(),
+                        zones: vec![crate::config::Zone {
+                            x: 0,
+                            y: 0,
+                            width: crate::config::Dimension::Pixels(1),
+                            height: crate::config::Dimension::Pixels(1),
+                        }],
+                    }],
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        // Blob doesn't exist, so we expect Modified (NotFound branch lines 175-178)
+        let res = check_status(&ctx, temp.path());
+        let res_unwrapped = res.unwrap();
+        assert_eq!(res_unwrapped.modified.len(), 1);
+
+        // Now create a CORRUPT baseline blob (lines 181-189)
+        let blob_dir = gleon_dir.join("blobs").join("sha256");
+        std::fs::create_dir_all(&blob_dir).unwrap();
+        std::fs::write(blob_dir.join(hash_val), "fake png data").unwrap();
+
+        let res2 = check_status(&ctx, temp.path());
+        assert!(matches!(res2, Err(StatusError::Io(_))));
+    }
+
+    #[test]
+    fn test_status_invalid_platform_key() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join(".gleon")).unwrap();
+
+        // Construct an invalid platform info that fails to_key() (e.g. empty os and version)
+        let ctx = ResolvedContext {
+            platform: crate::platform::PlatformInfo {
+                os: String::new(),
+                arch: None,
+                renderer: None,
+                labels: std::collections::BTreeMap::new(),
+            },
+            ..Default::default()
+        };
+        let res = check_status(&ctx, temp.path());
+        assert!(matches!(
+            res,
+            Err(StatusError::Context(ContextError::Platform(_)))
+        ));
+    }
+
+    #[test]
+    fn test_status_non_sha256_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        let ctx = ResolvedContext::default();
+
+        let platform_key = ctx.platform.to_key().unwrap();
+        let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+
+        let hash_val = "11111111111111111111111111111111";
+        let mut index = WorkspaceIndex::new();
+        index
+            .save_test(
+                &manifests_dir,
+                "test",
+                &crate::manifest::SingleTestManifest {
+                    schema_version: 1,
+                    hash: crate::manifest::ImageHash::new("custom_scheme", hash_val).unwrap(),
+                    phash: crate::manifest::ImageHash::new("dhash", "2222222222222222").unwrap(),
+                    width: 10,
+                    height: 10,
+                },
+            )
+            .unwrap();
+
+        let img = image::RgbaImage::new(10, 10);
+        let mut img_bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut img_bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        std::fs::write(temp.path().join("test.png"), &img_bytes).unwrap();
+
+        let blob_dir = gleon_dir.join("blobs").join("custom_scheme");
+        std::fs::create_dir_all(&blob_dir).unwrap();
+        std::fs::write(blob_dir.join(hash_val), &img_bytes).unwrap();
+
+        let res = check_status(&ctx, temp.path()).unwrap();
+        assert!(res.is_clean());
     }
 }

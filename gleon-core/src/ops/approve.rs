@@ -138,7 +138,9 @@ pub fn approve_workspace(
             }
         };
         let path = entry.path();
-        if path.is_file()
+        let is_symlink = entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false);
+        if !is_symlink
+            && path.is_file()
             && path
                 .extension()
                 .and_then(|ext| ext.to_str())
@@ -402,5 +404,78 @@ mod tests {
         assert!(SingleTestManifest::validate_dimensions(100, 16385).is_err());
         assert!(SingleTestManifest::validate_dimensions(16384, 4000).is_ok());
         assert!(SingleTestManifest::validate_dimensions(16384, 16384).is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_approve_duplicate_test_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        let actual_dir = gleon_dir.join("runs").join("latest").join("actual");
+        std::fs::create_dir_all(&actual_dir).unwrap();
+
+        let img = image::RgbaImage::new(1, 1);
+        // On Linux, these are two distinct files, but they normalize to "foo"
+        img.save(actual_dir.join("foo.png")).unwrap();
+        img.save(actual_dir.join("FOO.png")).unwrap();
+
+        let ctx = ResolvedContext::default();
+        let res = approve_workspace(&ctx, temp.path(), &[], None);
+        assert!(matches!(res, Err(ApproveError::DuplicateTestName { .. })));
+    }
+
+    #[test]
+    fn test_approve_empty_actual_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        let actual_dir = gleon_dir.join("runs").join("latest").join("actual");
+        std::fs::create_dir_all(&actual_dir).unwrap();
+
+        // Put a non-png file to verify it ignores it and still errors empty
+        std::fs::write(actual_dir.join("test.txt"), "hello").unwrap();
+
+        let ctx = ResolvedContext::default();
+        let res = approve_workspace(&ctx, temp.path(), &[], None);
+        assert!(matches!(res, Err(ApproveError::NoActualScreenshots { .. })));
+    }
+
+    #[test]
+    fn test_approve_image_decode_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        let actual_dir = gleon_dir.join("runs").join("latest").join("actual");
+        std::fs::create_dir_all(&actual_dir).unwrap();
+
+        // Valid PNG but truncated so load_from_memory fails but read_info succeeds
+        let mut buf = Vec::new();
+        let img = image::RgbaImage::new(1, 1);
+        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
+        // Truncate the 12-byte IEND chunk (and possibly more) to cause decode error
+        buf.truncate(buf.len() - 15);
+        std::fs::write(actual_dir.join("test.png"), &buf).unwrap();
+
+        let ctx = ResolvedContext::default();
+        let res = approve_workspace(&ctx, temp.path(), &[], None);
+        assert!(matches!(res, Err(ApproveError::ImageDecode { .. })));
+    }
+
+    #[test]
+    #[cfg(all(unix, not(miri)))]
+    fn test_approve_rejects_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        let actual_dir = gleon_dir.join("runs").join("latest").join("actual");
+        std::fs::create_dir_all(&actual_dir).unwrap();
+
+        let real_png = temp.path().join("real.png");
+        let img = image::RgbaImage::new(1, 1);
+        img.save(&real_png).unwrap();
+
+        std::os::unix::fs::symlink(&real_png, actual_dir.join("symlink.png")).unwrap();
+
+        let ctx = ResolvedContext::default();
+        let res = approve_workspace(&ctx, temp.path(), &[], None);
+        assert!(matches!(res, Err(ApproveError::NoActualScreenshots { .. })));
     }
 }

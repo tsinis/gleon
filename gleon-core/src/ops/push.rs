@@ -151,11 +151,8 @@ pub async fn push_blobs(
         for manifest in index.entries().values() {
             let hash = &manifest.hash;
             if !referenced_hashes.contains(hash) {
-                let local_blob_path = blobs_root.join(hash.scheme()).join(hash.value());
-                let is_symlink = std::fs::symlink_metadata(&local_blob_path)
-                    .map(|m| m.is_symlink())
-                    .unwrap_or(false);
-                if is_symlink || !local_blob_path.is_file() {
+                let local_blob_path = crate::storage::local_blob_path(&blobs_root, hash);
+                if !crate::storage::is_usable_blob(&local_blob_path) {
                     return Err(PushError::MissingLocalBlob {
                         hash: hash.value().to_string(),
                         platform: plat_key.clone(),

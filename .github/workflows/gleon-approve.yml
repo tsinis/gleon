@@ -4,6 +4,12 @@ on:
   issue_comment:
     types: [created]
 
+permissions: {}
+
+concurrency:
+  group: gleon-approve-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
 jobs:
   approve:
     if: ${{ github.event.issue.pull_request && startsWith(github.event.comment.body, '/gleon approve') }}
@@ -39,6 +45,17 @@ jobs:
             }
             core.setOutput('head_ref', pr.data.head.ref);
             core.setOutput('head_sha', pr.data.head.sha);
+            
+            try {
+              const ref = await github.rest.git.getRef({
+                owner: repo.owner,
+                repo: repo.repo,
+                ref: `heads/gleon/diffs/pr-${context.issue.number}`
+              });
+              core.setOutput('ephemeral_sha', ref.data.object.sha);
+            } catch (e) {
+              core.setOutput('ephemeral_sha', '');
+            }
 
       - name: Checkout Base Branch
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -52,14 +69,24 @@ jobs:
       - name: Fetch PR Branch & Screenshots
         env:
           HEAD_REF: ${{ steps.pr-info.outputs.head_ref }}
-          PR_NUMBER: ${{ github.event.issue.number }}
+          HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
+          EPHEMERAL_SHA: ${{ steps.pr-info.outputs.ephemeral_sha }}
         run: |
           set -eo pipefail
-          git fetch origin "$HEAD_REF:pr-branch"
-          git checkout pr-branch
-          EPHEMERAL_BRANCH="gleon/diffs/pr-$PR_NUMBER"
-          if git fetch origin "$EPHEMERAL_BRANCH"; then
-            git checkout "origin/$EPHEMERAL_BRANCH" -- .gleon/runs/latest/actual/ || git checkout "origin/$EPHEMERAL_BRANCH" -- .gleon/diffs/ || true
+          if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid HEAD_SHA format: $HEAD_SHA"
+            exit 1
+          fi
+          git fetch origin "$HEAD_SHA"
+          git checkout "$HEAD_SHA" -- .gleon/manifests/ .gleon/blobs/ || true
+          if [ -n "$EPHEMERAL_SHA" ] && git fetch origin "$EPHEMERAL_SHA"; then
+            if git checkout "$EPHEMERAL_SHA" -- .gleon/runs/latest/actual/; then
+              echo "Restored actual screenshots from ephemeral branch."
+            elif git checkout "$EPHEMERAL_SHA" -- .gleon/diffs/; then
+              echo "Restored diff artifacts from ephemeral branch."
+            else
+              echo "::warning::No recognized screenshot artifacts found in ephemeral branch."
+            fi
           fi
 
       - name: Update Baselines
@@ -99,18 +126,28 @@ jobs:
       - name: Commit & Push Baselines
         env:
           HEAD_REF: ${{ steps.pr-info.outputs.head_ref }}
+          HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .gleon/manifests/
+          git add .gleon/manifests/ || true
           git add -f .gleon/blobs/ || true
           if git diff --staged --quiet; then
             echo "No baseline changes to commit."
           else
-            git commit -m "chore(gleon): update baseline images [skip ci]"
-            git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
-            git push origin "HEAD:refs/heads/$HEAD_REF" || {
+            export GIT_INDEX_FILE=.git/tmp_index
+            git read-tree "$HEAD_SHA"
+            git add .gleon/manifests/ || true
+            git add -f .gleon/blobs/ || true
+            NEW_TREE=$(git write-tree)
+            NEW_COMMIT=$(git commit-tree $NEW_TREE -p "$HEAD_SHA" -m "chore(gleon): update baseline images [skip ci]")
+            unset GIT_INDEX_FILE
+            
+            AUTH="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+            git -c "http.https://github.com/.extraheader=Authorization: Basic $AUTH" \
+              push origin "$NEW_COMMIT:refs/heads/$HEAD_REF" || {
               echo "::error::Failed to push approved baselines to $HEAD_REF. Check write permissions."
               exit 1
             }

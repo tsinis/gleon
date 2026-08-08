@@ -121,38 +121,7 @@ To accept the new visual changes as the new baseline:
 
 ### GitHub Actions Workflow Setup
 
-To enable `/gleon approve` comments in your repository, add `.github/workflows/gleon-approve.yml`:
-
-```yaml
-name: Gleon Baseline Approval
-
-on:
-  issue_comment:
-    types: [created]
-
-jobs:
-  approve:
-    if: github.event.issue.pull_request && contains(github.event.comment.body, '/gleon approve')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout PR Branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.issue.pull_request.head.ref }}
-
-      - name: Setup Gleon
-        uses: gleon-hq/setup-gleon@v1
-
-      - name: Run Approval
-        run: |
-          gleon approve
-
-      - name: Commit Updated Manifests
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore(gleon): approve visual regression baselines"
-          file_pattern: ".gleon/manifests/*"
-```
+To enable `/gleon approve` comments in your repository, refer to the shipped workflow template in [.github/workflows/gleon-approve.yml](file:///.github/workflows/gleon-approve.yml). Ensure your workflow uses proper collaborator permission checks, fork rejection, and branch SHA pinning before granting write access or pushing baseline updates.
 
 ## How to Build and Run Locally
 

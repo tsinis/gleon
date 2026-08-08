@@ -56,6 +56,208 @@ pub struct DiffReportResult {
     pub runs_dir: PathBuf,
 }
 
+pub(crate) fn process_diff_case(
+    case: &crate::scanner::TestCase,
+    workspace_index: &WorkspaceIndex,
+    actual_dir: &Path,
+    diffs_dir: &Path,
+    gleon_dir: &Path,
+) -> TestImageResult {
+    let test_name = case.name.clone();
+    let actual_bytes = match std::fs::read(&case.image.absolute_path) {
+        Ok(b) => b,
+        Err(e) => {
+            return TestImageResult::IoError {
+                relative_path: case.image.relative_path.clone(),
+                error: format!("Failed to read actual screenshot file: {}", e),
+            };
+        }
+    };
+
+    let single_manifest_opt = workspace_index.get(&test_name);
+
+    if let Some(baseline_entry) = single_manifest_opt {
+        let is_byte_identical = baseline_entry.hash.scheme() == "sha256" && {
+            let actual_sha256 = hex::encode(sha2::Sha256::digest(&actual_bytes));
+            actual_sha256 == baseline_entry.hash.value()
+        };
+        if is_byte_identical {
+            let baseline_blob_path =
+                crate::storage::local_blob_path(&gleon_dir.join("blobs"), &baseline_entry.hash);
+            if !crate::storage::is_usable_blob(&baseline_blob_path) {
+                return TestImageResult::MissingBaseline {
+                    relative_path: case.image.relative_path.clone(),
+                    reason: format!("Baseline blob not found: {}", baseline_entry.hash.value()),
+                };
+            }
+            if let Err(e) = crate::manifest::SingleTestManifest::validate_image_bytes(&actual_bytes)
+            {
+                return TestImageResult::DecodeError {
+                    relative_path: case.image.relative_path.clone(),
+                    error: format!("Invalid actual image dimensions/format: {}", e),
+                };
+            }
+            return TestImageResult::Success {
+                relative_path: case.image.relative_path.clone(),
+            };
+        }
+    }
+
+    let actual_dest_path = actual_dir.join(&case.image.relative_path);
+
+    let parent = actual_dest_path.parent().unwrap_or_else(|| Path::new("."));
+    if let Err(e) = std::fs::create_dir_all(parent) {
+        return TestImageResult::IoError {
+            relative_path: case.image.relative_path.clone(),
+            error: format!("Failed to create directory for actual screenshot: {}", e),
+        };
+    }
+    if let Err(e) = crate::io::save_file_atomically(&actual_dest_path, &actual_bytes) {
+        return TestImageResult::IoError {
+            relative_path: case.image.relative_path.clone(),
+            error: format!("Failed to save actual screenshot: {}", e),
+        };
+    }
+
+    let baseline_entry = match single_manifest_opt {
+        Some(entry) => entry,
+        None => {
+            return TestImageResult::MissingBaseline {
+                relative_path: case.image.relative_path.clone(),
+                reason: format!("No staged baseline manifest for test '{}'", test_name),
+            };
+        }
+    };
+
+    let baseline_blob_path = gleon_dir
+        .join("blobs")
+        .join(baseline_entry.hash.scheme())
+        .join(baseline_entry.hash.value());
+
+    let baseline_bytes = match std::fs::read(&baseline_blob_path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return TestImageResult::MissingBaseline {
+                relative_path: case.image.relative_path.clone(),
+                reason: format!("Baseline blob not found: {}", baseline_entry.hash.value()),
+            };
+        }
+        Err(e) => {
+            return TestImageResult::DecodeError {
+                relative_path: case.image.relative_path.clone(),
+                error: format!("Failed to read baseline blob file: {}", e),
+            };
+        }
+    };
+
+    if let Err(e) = crate::manifest::SingleTestManifest::validate_image_bytes(&baseline_bytes) {
+        return TestImageResult::DecodeError {
+            relative_path: case.image.relative_path.clone(),
+            error: format!("Invalid baseline dimensions/format: {}", e),
+        };
+    }
+
+    let baseline_dyn_img = match image::load_from_memory(&baseline_bytes) {
+        Ok(img) => img,
+        Err(e) => {
+            return TestImageResult::DecodeError {
+                relative_path: case.image.relative_path.clone(),
+                error: format!("Failed to decode baseline blob: {}", e),
+            };
+        }
+    };
+    let mut baseline_rgba = baseline_dyn_img.to_rgba8();
+
+    if let Err(e) = crate::manifest::SingleTestManifest::validate_image_bytes(&actual_bytes) {
+        return TestImageResult::DecodeError {
+            relative_path: case.image.relative_path.clone(),
+            error: format!("Invalid actual image dimensions/format: {}", e),
+        };
+    }
+
+    let actual_dyn_img = match image::load_from_memory(&actual_bytes) {
+        Ok(img) => img,
+        Err(e) => {
+            return TestImageResult::DecodeError {
+                relative_path: case.image.relative_path.clone(),
+                error: format!("Failed to decode actual screenshot: {}", e),
+            };
+        }
+    };
+    let mut actual_rgba = actual_dyn_img.to_rgba8();
+
+    let matched_zones = case.rule.matched_mask_zones(&case.image.relative_path);
+    if !matched_zones.is_empty() {
+        apply_masks(&mut baseline_rgba, &matched_zones);
+        apply_masks(&mut actual_rgba, &matched_zones);
+    }
+
+    let comp_result = compare_images(
+        &baseline_rgba,
+        &actual_rgba,
+        case.rule.mode,
+        &case.rule.diff,
+    );
+
+    let raw_file_name = case
+        .image
+        .relative_path
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("screenshot.png"))
+        .to_string_lossy();
+
+    match comp_result {
+        ComparisonResult::Match => TestImageResult::Success {
+            relative_path: case.image.relative_path.clone(),
+        },
+        ComparisonResult::DimensionMismatch {
+            baseline_size,
+            actual_size,
+        } => TestImageResult::DimensionMismatch {
+            relative_path: case.image.relative_path.clone(),
+            baseline_size,
+            actual_size,
+            baseline_path: baseline_blob_path,
+            actual_path: actual_dest_path,
+        },
+        ComparisonResult::Mismatch { detail, diff_image } => {
+            let case_diff_dir = diffs_dir.join(&test_name);
+            if let Err(e) = std::fs::create_dir_all(&case_diff_dir) {
+                return TestImageResult::IoError {
+                    relative_path: case.image.relative_path.clone(),
+                    error: format!("Failed to create directory for diff: {}", e),
+                };
+            }
+            let diff_file_name = format!("diff_{raw_file_name}");
+            let diff_file_path = case_diff_dir.join(&diff_file_name);
+
+            let mut cursor = std::io::Cursor::new(Vec::new());
+            if let Err(e) = diff_image.write_to(&mut cursor, image::ImageFormat::Png) {
+                return TestImageResult::EncodeError {
+                    relative_path: case.image.relative_path.clone(),
+                    actual_path: actual_dest_path,
+                    error: format!("Failed to encode diff visualization: {}", e),
+                };
+            }
+            let encoded = cursor.into_inner();
+            if let Err(e) = crate::io::save_file_atomically(&diff_file_path, &encoded) {
+                return TestImageResult::IoError {
+                    relative_path: case.image.relative_path.clone(),
+                    error: format!("Failed to save diff visualization: {}", e),
+                };
+            }
+
+            TestImageResult::Mismatch {
+                relative_path: case.image.relative_path.clone(),
+                detail,
+                diff_path: diff_file_path,
+                baseline_path: baseline_blob_path,
+                actual_path: actual_dest_path,
+            }
+        }
+    }
+}
+
 /// Executes diff comparison for the workspace at `base_dir`.
 pub fn run_diff(
     context: &ResolvedContext,
@@ -111,219 +313,16 @@ pub fn run_diff(
 
     let progress_bar = crate::ui::create_progress_bar(test_cases.len() as u64);
 
+    use rayon::prelude::*;
     let case_results: Vec<TestCaseResult> = test_cases
-        .into_iter()
+        .into_par_iter()
         .map(|case| {
-            let test_name = case.name.clone();
             progress_bar.set_message(case.image.relative_path.display().to_string());
-
-            let result = (|| {
-                let actual_bytes = match std::fs::read(&case.image.absolute_path) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        return TestImageResult::IoError {
-                            relative_path: case.image.relative_path,
-                            error: format!("Failed to read actual screenshot file: {}", e),
-                        };
-                    }
-                };
-
-                let single_manifest_opt = workspace_index.get(&test_name);
-
-                if let Some(baseline_entry) = single_manifest_opt {
-                    let is_byte_identical = baseline_entry.hash.scheme() == "sha256" && {
-                        let actual_sha256 = hex::encode(sha2::Sha256::digest(&actual_bytes));
-                        actual_sha256 == baseline_entry.hash.value()
-                    };
-                    if is_byte_identical {
-                        if let Err(e) =
-                            crate::manifest::SingleTestManifest::validate_image_bytes(&actual_bytes)
-                        {
-                            return TestImageResult::DecodeError {
-                                relative_path: case.image.relative_path,
-                                error: format!("Invalid actual image dimensions/format: {}", e),
-                            };
-                        }
-                        // Fast path: images are byte-for-byte identical. Matches unconditionally.
-                        return TestImageResult::Success {
-                            relative_path: case.image.relative_path,
-                        };
-                    }
-                }
-
-                let actual_dest_path = actual_dir.join(&case.image.relative_path);
-
-                // Save actual screenshot on non-matching test runs for approval workflows
-                let parent = actual_dest_path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."));
-                if let Err(e) = std::fs::create_dir_all(parent) {
-                    return TestImageResult::IoError {
-                        relative_path: case.image.relative_path,
-                        error: format!("Failed to create directory for actual screenshot: {}", e),
-                    };
-                }
-                if let Err(e) = crate::io::save_file_atomically(&actual_dest_path, &actual_bytes) {
-                    return TestImageResult::IoError {
-                        relative_path: case.image.relative_path,
-                        error: format!("Failed to save actual screenshot: {}", e),
-                    };
-                }
-
-                let baseline_entry = match single_manifest_opt {
-                    Some(entry) => entry,
-                    None => {
-                        return TestImageResult::MissingBaseline {
-                            relative_path: case.image.relative_path,
-                            reason: format!("No staged baseline manifest for test '{}'", test_name),
-                        };
-                    }
-                };
-
-                let baseline_blob_path = gleon_dir
-                    .join("blobs")
-                    .join(baseline_entry.hash.scheme())
-                    .join(baseline_entry.hash.value());
-
-                // If not identical, load both and compare pixels
-                let baseline_bytes = match std::fs::read(&baseline_blob_path) {
-                    Ok(b) => b,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        return TestImageResult::MissingBaseline {
-                            relative_path: case.image.relative_path,
-                            reason: format!(
-                                "Baseline blob not found: {}",
-                                baseline_entry.hash.value()
-                            ),
-                        };
-                    }
-                    Err(e) => {
-                        return TestImageResult::DecodeError {
-                            relative_path: case.image.relative_path,
-                            error: format!("Failed to read baseline blob file: {}", e),
-                        };
-                    }
-                };
-
-                if let Err(e) =
-                    crate::manifest::SingleTestManifest::validate_image_bytes(&baseline_bytes)
-                {
-                    return TestImageResult::DecodeError {
-                        relative_path: case.image.relative_path.clone(),
-                        error: format!("Invalid baseline dimensions/format: {}", e),
-                    };
-                }
-
-                let baseline_dyn_img = match image::load_from_memory(&baseline_bytes) {
-                    Ok(img) => img,
-                    Err(e) => {
-                        return TestImageResult::DecodeError {
-                            relative_path: case.image.relative_path.clone(),
-                            error: format!("Failed to decode baseline blob: {}", e),
-                        };
-                    }
-                };
-                let mut baseline_rgba = baseline_dyn_img.to_rgba8();
-
-                if let Err(e) =
-                    crate::manifest::SingleTestManifest::validate_image_bytes(&actual_bytes)
-                {
-                    return TestImageResult::DecodeError {
-                        relative_path: case.image.relative_path.clone(),
-                        error: format!("Invalid actual image dimensions/format: {}", e),
-                    };
-                }
-
-                let actual_dyn_img = match image::load_from_memory(&actual_bytes) {
-                    Ok(img) => img,
-                    Err(e) => {
-                        return TestImageResult::DecodeError {
-                            relative_path: case.image.relative_path.clone(),
-                            error: format!("Failed to decode actual screenshot: {}", e),
-                        };
-                    }
-                };
-                let mut actual_rgba = actual_dyn_img.to_rgba8();
-
-                // Apply ignore-zone masks if defined
-                let matched_zones = case.rule.matched_mask_zones(&case.image.relative_path);
-                if !matched_zones.is_empty() {
-                    apply_masks(&mut baseline_rgba, &matched_zones);
-                    apply_masks(&mut actual_rgba, &matched_zones);
-                }
-
-                // Perform engine comparison
-                let comp_result = compare_images(
-                    &baseline_rgba,
-                    &actual_rgba,
-                    case.rule.mode,
-                    &case.rule.diff,
-                );
-
-                let raw_file_name = case
-                    .image
-                    .relative_path
-                    .file_name()
-                    .unwrap_or_else(|| std::ffi::OsStr::new("screenshot.png"))
-                    .to_string_lossy();
-
-                match comp_result {
-                    ComparisonResult::Match => TestImageResult::Success {
-                        relative_path: case.image.relative_path,
-                    },
-                    ComparisonResult::DimensionMismatch {
-                        baseline_size,
-                        actual_size,
-                    } => TestImageResult::DimensionMismatch {
-                        relative_path: case.image.relative_path,
-                        baseline_size,
-                        actual_size,
-                        baseline_path: baseline_blob_path,
-                        actual_path: actual_dest_path,
-                    },
-                    ComparisonResult::Mismatch { detail, diff_image } => {
-                        // Write diff visualization image to .gleon/runs/latest/diffs/<case_name>/<file_name>
-                        let case_diff_dir = diffs_dir.join(&test_name);
-                        if let Err(e) = std::fs::create_dir_all(&case_diff_dir) {
-                            return TestImageResult::IoError {
-                                relative_path: case.image.relative_path,
-                                error: format!("Failed to create directory for diff: {}", e),
-                            };
-                        }
-                        let diff_file_name = format!("diff_{raw_file_name}");
-                        let diff_file_path = case_diff_dir.join(&diff_file_name);
-
-                        let mut cursor = std::io::Cursor::new(Vec::new());
-                        if let Err(e) = diff_image.write_to(&mut cursor, image::ImageFormat::Png) {
-                            return TestImageResult::EncodeError {
-                                relative_path: case.image.relative_path,
-                                actual_path: actual_dest_path,
-                                error: format!("Failed to encode diff visualization: {}", e),
-                            };
-                        }
-                        let encoded = cursor.into_inner();
-                        if let Err(e) = crate::io::save_file_atomically(&diff_file_path, &encoded) {
-                            return TestImageResult::IoError {
-                                relative_path: case.image.relative_path,
-                                error: format!("Failed to save diff visualization: {}", e),
-                            };
-                        }
-
-                        TestImageResult::Mismatch {
-                            relative_path: case.image.relative_path,
-                            detail,
-                            diff_path: diff_file_path,
-                            baseline_path: baseline_blob_path,
-                            actual_path: actual_dest_path,
-                        }
-                    }
-                }
-            })();
-
+            let result =
+                process_diff_case(&case, &workspace_index, &actual_dir, &diffs_dir, &gleon_dir);
             progress_bar.inc(1);
-
             TestCaseResult {
-                name: test_name,
+                name: case.name,
                 result,
             }
         })
@@ -503,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
+    #[cfg(all(unix, not(miri)))]
     fn test_diff_write_io_errors_via_poisoning() {
         use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
@@ -579,5 +578,106 @@ mod tests {
         // run_diff should run and return no test results because scanner finds nothing (no screenshots created).
         let res = run_diff(&ctx, temp.path()).unwrap();
         assert_eq!(res.total_tests, 0);
+    }
+
+    #[test]
+    #[cfg(all(unix, not(miri)))]
+    fn test_process_diff_case_io_errors() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        let actual_dir = temp.path().join("actual");
+        let diffs_dir = temp.path().join("diffs");
+
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+        std::fs::create_dir_all(&actual_dir).unwrap();
+        std::fs::create_dir_all(&diffs_dir).unwrap();
+
+        let case = crate::scanner::TestCase {
+            name: "test".to_string(),
+            image: crate::scanner::TestImage {
+                absolute_path: temp.path().join("test.png"),
+                relative_path: PathBuf::from("test.png"),
+            },
+            rule: std::sync::Arc::new(crate::config::ScreenshotRule {
+                include: vec![],
+                mode: crate::config::Mode::Pixel,
+                diff: crate::config::DiffConfig {
+                    threshold: 0.0,
+                    anti_alias: false,
+                    min_similarity: 1.0,
+                },
+                masks: vec![],
+            }),
+        };
+
+        // 1. Missing actual image
+        let res1 = super::process_diff_case(
+            &case,
+            &crate::manifest::WorkspaceIndex::new(),
+            &actual_dir,
+            &diffs_dir,
+            &gleon_dir,
+        );
+        assert!(matches!(res1, TestImageResult::IoError { .. }));
+
+        // 2. Decode error on actual image (requires baseline to bypass MissingBaseline)
+        std::fs::write(&case.image.absolute_path, "fake png").unwrap();
+        let mut index = crate::manifest::WorkspaceIndex::new();
+        let hash_val = "1111111111111111111111111111111111111111111111111111111111111111";
+        index.insert(
+            "test".to_string(),
+            crate::manifest::SingleTestManifest {
+                schema_version: 1,
+                hash: crate::manifest::ImageHash::new("sha256", hash_val).unwrap(),
+                phash: crate::manifest::ImageHash::new("dhash", "2222222222222222").unwrap(),
+                width: 1,
+                height: 1,
+            },
+        );
+        let blob_dir = gleon_dir.join("blobs").join("sha256");
+        std::fs::create_dir_all(&blob_dir).unwrap();
+        std::fs::write(blob_dir.join(hash_val), "fake png").unwrap();
+        let res2 = super::process_diff_case(&case, &index, &actual_dir, &diffs_dir, &gleon_dir);
+        assert!(matches!(res2, TestImageResult::DecodeError { .. }));
+
+        // Create valid image
+        let img = image::ImageBuffer::<image::Rgba<u8>, _>::new(1, 1);
+        img.save(&case.image.absolute_path).unwrap();
+
+        // 3. IoError on create actual dir (make actual_dir read-only)
+        let mut perms = std::fs::metadata(&actual_dir).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&actual_dir, perms.clone()).unwrap();
+
+        let case2 = crate::scanner::TestCase {
+            name: "test".to_string(),
+            image: crate::scanner::TestImage {
+                absolute_path: case.image.absolute_path.clone(),
+                relative_path: PathBuf::from("subdir/test.png"), // Requires create_dir_all
+            },
+            rule: std::sync::Arc::new(crate::config::ScreenshotRule {
+                include: vec![],
+                mode: crate::config::Mode::Pixel,
+                diff: crate::config::DiffConfig {
+                    threshold: 0.0,
+                    anti_alias: false,
+                    min_similarity: 1.0,
+                },
+                masks: vec![],
+            }),
+        };
+        let res3 = super::process_diff_case(
+            &case2,
+            &crate::manifest::WorkspaceIndex::new(),
+            &actual_dir,
+            &diffs_dir,
+            &gleon_dir,
+        );
+        assert!(matches!(res3, TestImageResult::IoError { .. }));
+
+        // Restore permissions
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&actual_dir, perms).unwrap();
     }
 }

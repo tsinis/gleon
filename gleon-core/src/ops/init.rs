@@ -120,9 +120,8 @@ pub fn init_workspace(
                 return Err(InitError::Io(e));
             }
             #[cfg(not(windows))]
-            {
-                let dir_file = std::fs::File::open(&gleon_dir).map_err(InitError::Io)?;
-                dir_file.sync_all().map_err(InitError::Io)?;
+            if let Err(e) = std::fs::File::open(&gleon_dir).and_then(|d| d.sync_all()) {
+                return Err(InitError::Io(e));
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -150,9 +149,8 @@ pub fn init_workspace(
                 return Err(InitError::Io(e));
             }
             #[cfg(not(windows))]
-            {
-                let dir_file = std::fs::File::open(&gleon_dir).map_err(InitError::Io)?;
-                dir_file.sync_all().map_err(InitError::Io)?;
+            if let Err(e) = std::fs::File::open(&gleon_dir).and_then(|d| d.sync_all()) {
+                return Err(InitError::Io(e));
             }
             config_created = Some(internal_config);
         }

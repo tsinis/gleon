@@ -78,7 +78,7 @@ async fn test_memory_store_blob_and_manifest_lifecycle() {
             .expect("blob_exists false ok")
     );
 
-    // 8. Upload missing local file -> StorageError::Io
+    // 6. Upload missing local file -> StorageError::Io
     let missing_local = dir.path().join("non_existent_file.png");
     let upload_err = adapter.upload_blob(&blob_hash, &missing_local).await;
     assert!(matches!(upload_err, Err(StorageError::Io { .. })));

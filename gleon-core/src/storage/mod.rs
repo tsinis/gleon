@@ -53,3 +53,21 @@ pub enum StorageError {
 pub fn blob_key(hash: &crate::manifest::ImageHash) -> ObjPath {
     ObjPath::from(format!("blobs/{}/{}", hash.scheme(), hash.value()))
 }
+
+/// Returns the local file path for a CAS blob under `blobs_root`.
+#[must_use]
+pub fn local_blob_path(
+    blobs_root: &std::path::Path,
+    hash: &crate::manifest::ImageHash,
+) -> std::path::PathBuf {
+    blobs_root.join(hash.scheme()).join(hash.value())
+}
+
+/// Returns `true` only if `path` is an existing regular file and not a symlink.
+#[must_use]
+pub fn is_usable_blob(path: &std::path::Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => !meta.is_symlink() && meta.is_file(),
+        Err(_) => false,
+    }
+}

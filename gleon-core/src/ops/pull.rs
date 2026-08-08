@@ -144,8 +144,8 @@ pub async fn pull_blobs(
             let hash = &manifest.hash;
             if !referenced_hashes.contains(hash) {
                 referenced_hashes.insert(hash.clone());
-                let local_blob_path = blobs_root.join(hash.scheme()).join(hash.value());
-                if local_blob_path.is_file() {
+                let local_blob_path = crate::storage::local_blob_path(&blobs_root, hash);
+                if crate::storage::is_usable_blob(&local_blob_path) {
                     skipped_blobs += 1;
                 } else {
                     missing_blobs.push((hash.clone(), target_platform_key.clone()));
@@ -281,6 +281,9 @@ mod tests {
     #[tokio::test]
     async fn test_pull_manifests_root_unreadable() {
         use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let gleon_dir = temp.path().join(".gleon");
         let manifests_dir = gleon_dir.join("manifests");
@@ -293,13 +296,15 @@ mod tests {
         let ctx = ResolvedContext::default();
         let cfg = StorageConfig::new("memory://");
         let res = pull_blobs(&ctx, temp.path(), Some(&cfg), true, None).await;
-        assert!(matches!(res, Err(PullError::Io(_))));
 
         perms.set_mode(0o755);
-        std::fs::set_permissions(&manifests_dir, perms).unwrap();
+        let _ = std::fs::set_permissions(&manifests_dir, perms);
+
+        assert!(matches!(res, Err(PullError::Io(_))));
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)]
     async fn test_pull_invalid_platform_key() {
         let temp = tempfile::tempdir().unwrap();
         let gleon_dir = temp.path().join(".gleon");
@@ -316,6 +321,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)]
     async fn test_pull_empty_fallback_platform() {
         let temp = tempfile::tempdir().unwrap();
         let gleon_dir = temp.path().join(".gleon");
@@ -326,8 +332,6 @@ mod tests {
         std::fs::create_dir_all(gleon_dir.join("manifests").join(fb_key)).unwrap();
 
         let mut ctx = ResolvedContext::default();
-        // Since we created both platform dir and fallback dir, setting platform key via os segment string won't work perfectly since plat_key contains colon.
-        // Wait, how do I mock ctx.platform.to_key() to return "5:linux-6:x86_64"?
         ctx.platform.os = "linux".to_string();
         ctx.platform.arch = Some("x86_64".to_string());
         ctx.platform.renderer = None;
@@ -343,6 +347,9 @@ mod tests {
     #[tokio::test]
     async fn test_pull_storage_io_error() {
         use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let gleon_dir = temp.path().join(".gleon");
         std::fs::create_dir_all(gleon_dir.join("manifests")).unwrap();
@@ -380,7 +387,7 @@ mod tests {
                 &empty_file,
             )
             .await
-            .ok();
+            .expect("upload dummy blob");
 
         // Make the local blobs directory unreadable to trigger an IO error during download
         let local_blobs = temp.path().join(".gleon").join("blobs");
@@ -391,10 +398,11 @@ mod tests {
         std::fs::set_permissions(&local_blobs, perms.clone()).unwrap();
 
         let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
-        assert!(matches!(res, Err(PullError::Storage(_))));
 
         perms.set_mode(0o755);
-        std::fs::set_permissions(&local_blobs, perms).unwrap();
+        let _ = std::fs::set_permissions(&local_blobs, perms);
+
+        assert!(matches!(res, Err(PullError::Storage(_))));
     }
 
     #[tokio::test]

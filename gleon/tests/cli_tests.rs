@@ -1028,12 +1028,12 @@ fn test_cli_report_with_s3_storage_pre_signed_urls() -> Result<(), Box<dyn std::
 }
 
 #[test]
-fn test_approve_command() -> Result<(), Box<dyn std::error::Error>> {
+fn test_approve_command() {
     let dir = init_temp_dir();
     let base_path = dir.path();
     let fixtures_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .unwrap()
+        .expect("get parent dir")
         .join("gleon-core")
         .join("tests")
         .join("fixtures");
@@ -1045,14 +1045,15 @@ fn test_approve_command() -> Result<(), Box<dyn std::error::Error>> {
         .join("latest")
         .join("actual");
     let login_dir = actual_dir.join("login");
-    std::fs::create_dir_all(&login_dir)?;
+    std::fs::create_dir_all(&login_dir).expect("create_dir_all login");
     std::fs::copy(
         fixtures_dir.join("baseline_100x100.png"),
         login_dir.join("button.png"),
-    )?;
+    )
+    .expect("copy baseline screenshot");
 
     // Run approve command
-    let mut cmd = Command::cargo_bin("gleon")?;
+    let mut cmd = Command::cargo_bin("gleon").expect("cargo_bin gleon");
     cmd.current_dir(base_path)
         .arg("approve")
         .assert()
@@ -1068,7 +1069,8 @@ fn test_approve_command() -> Result<(), Box<dyn std::error::Error>> {
                 let button_json = entry.path().join("login").join("button.json");
                 if button_json.exists() {
                     found_button_json = true;
-                    let manifest_content = std::fs::read_to_string(&button_json)?;
+                    let manifest_content =
+                        std::fs::read_to_string(&button_json).expect("read_to_string button.json");
                     assert!(manifest_content.contains("sha256:"));
                 }
             }
@@ -1078,6 +1080,4 @@ fn test_approve_command() -> Result<(), Box<dyn std::error::Error>> {
         found_button_json,
         "Expected to find login/button.json manifest"
     );
-
-    Ok(())
 }

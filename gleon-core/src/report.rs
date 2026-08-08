@@ -66,11 +66,13 @@ pub fn make_relative_path(target: &std::path::Path, base: &std::path::Path) -> s
         .components()
         .filter(|c| !matches!(c, Component::CurDir));
 
+    #[cfg(windows)]
     if let (Some(Component::Prefix(p1)), Some(Component::Prefix(p2))) =
         (target_comps.clone().next(), base_comps.clone().next())
-        && p1 != p2
     {
-        return target.to_path_buf();
+        if p1 != p2 {
+            return target.to_path_buf();
+        }
     }
 
     let mut target_comp = target_comps.next();
@@ -1648,5 +1650,55 @@ mod tests {
         assert!(md.contains("`Decode Error`"));
         assert!(md.contains("10 px (fb)"));
         assert!(md.contains("https://artifact.url"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_make_relative_path_edge_cases() {
+        let abs = PathBuf::from("/a/b/c");
+        let rel = PathBuf::from("a/b/c");
+        // Mixed absolute and relative returns target unchanged
+        assert_eq!(super::make_relative_path(&abs, &rel), abs);
+
+        // Prefix mismatches
+        let mut p1 = PathBuf::new();
+        p1.push("C:\\a\\b");
+        let mut p2 = PathBuf::new();
+        p2.push("D:\\a\\b");
+        // Mismatched prefix returns target unchanged
+        assert_eq!(super::make_relative_path(&p1, &p2), p1);
+    }
+
+    #[test]
+    fn test_posix_display_edge_cases() {
+        let p = std::path::Path::new("C:\\.\\");
+        let s = super::PosixPathFormatter(p).to_string();
+        assert!(!s.is_empty());
+    }
+
+    #[test]
+    fn test_render_pr_comment_io_error() {
+        let tests = vec![
+            TestCaseResult {
+                name: "io_error_test".to_string(),
+                result: TestImageResult::IoError {
+                    relative_path: PathBuf::from("io_error.png"),
+                    error: "disk full".to_string(),
+                },
+            },
+            TestCaseResult {
+                name: "encode_error_test".to_string(),
+                result: TestImageResult::EncodeError {
+                    relative_path: PathBuf::from("encode_error.png"),
+                    error: "bad dimensions".to_string(),
+                    actual_path: PathBuf::from("actual_encode.png"),
+                },
+            },
+        ];
+
+        let opts = MarkdownReportOptions::default();
+        let md = ReportGenerator::render_pr_comment(&tests, &opts);
+        assert!(md.contains("IO Error") || md.contains("IoError"));
+        assert!(md.contains("Encode Error") || md.contains("EncodeError"));
     }
 }

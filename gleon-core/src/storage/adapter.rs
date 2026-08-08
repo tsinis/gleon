@@ -335,7 +335,17 @@ impl ObjectStoreAdapter {
             .metadata()
             .map_err(|source| StorageError::Io { source })?;
 
-        if metadata.is_symlink() || !metadata.is_file() {
+        #[cfg(windows)]
+        let is_symlink_or_reparse = {
+            use std::os::windows::fs::MetadataExt;
+            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+            metadata.is_symlink()
+                || (metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+        };
+        #[cfg(not(windows))]
+        let is_symlink_or_reparse = metadata.is_symlink();
+
+        if is_symlink_or_reparse || !metadata.is_file() {
             return Err(StorageError::Io {
                 source: std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -344,8 +354,21 @@ impl ObjectStoreAdapter {
             });
         }
 
+        let len = metadata.len();
+        const MAX_BLOB_SIZE: u64 = 100 * 1024 * 1024;
+        if len > MAX_BLOB_SIZE {
+            return Err(StorageError::Io {
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "Blob size {len} exceeds maximum allowed size of {MAX_BLOB_SIZE} bytes"
+                    ),
+                ),
+            });
+        }
+
         let mut file = tokio::fs::File::from_std(std_file);
-        let mut bytes = Vec::new();
+        let mut bytes = Vec::with_capacity(len as usize);
         tokio::io::AsyncReadExt::read_to_end(&mut file, &mut bytes)
             .await
             .map_err(|source| StorageError::Io { source })?;
@@ -370,7 +393,7 @@ impl ObjectStoreAdapter {
         }
     }
 
-    /// Downloads a single blob from remote storage at `blobs/sha256/<hash>` to `dest_path` atomically.
+    /// Downloads a single blob from remote storage at `blob_key(hash)` to `dest_path` atomically.
     ///
     /// # Errors
     /// Returns [`StorageError::BlobNotFound`] if the hash does not exist on remote storage,
@@ -433,13 +456,13 @@ impl ObjectStoreAdapter {
         Ok(())
     }
 
-    /// Lists all SHA256 blob hashes existing under the remote `blobs/sha256/` prefix.
+    /// Lists all blob hashes existing under the remote `blobs/<scheme>/` prefix for the given `scheme`.
     ///
     /// # Errors
     /// Returns [`StorageError`] if remote object listing fails.
     #[instrument(skip(self), level = "debug")]
     pub async fn list_blobs(&self, scheme: &str) -> Result<Vec<String>, StorageError> {
-        let prefix = ObjPath::from(format!("blobs/{}", scheme));
+        let prefix = ObjPath::from(format!("blobs/{scheme}"));
         let mut list_stream = self.store.list(Some(&prefix));
 
         let mut hashes = Vec::new();

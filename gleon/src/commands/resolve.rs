@@ -144,16 +144,9 @@ where
 
         if let Some(adapter) = adapter {
             for manifest in [&item.conflict.ours, &item.conflict.theirs] {
-                let local_blob = ctx
-                    .base_dir
-                    .join(".gleon")
-                    .join("blobs")
-                    .join(manifest.hash.scheme())
-                    .join(manifest.hash.value());
-                let is_symlink = std::fs::symlink_metadata(&local_blob)
-                    .map(|m| m.is_symlink())
-                    .unwrap_or(false);
-                if is_symlink || !local_blob.is_file() {
+                let blobs_root = ctx.base_dir.join(".gleon").join("blobs");
+                let local_blob = gleon_core::storage::local_blob_path(&blobs_root, &manifest.hash);
+                if !gleon_core::storage::is_usable_blob(&local_blob) {
                     info!(
                         "Fetching missing blob {} from storage...",
                         manifest.hash.value()

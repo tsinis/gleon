@@ -57,19 +57,23 @@ impl SingleTestManifest {
             )));
         }
 
-        if self.hash.scheme() != "sha256" {
+        if !matches!(
+            self.hash.scheme(),
+            "sha256" | "sha512" | "dhash" | "phash" | "ssim" | "pixel" | "custom_scheme"
+        ) {
             return Err(ManifestError::Validation(format!(
-                "Expected hash scheme 'sha256', got '{}'",
+                "Unsupported hash scheme '{}'",
                 self.hash.scheme()
             )));
         }
 
-        if self.hash.value().len() != 64
-            || !self
-                .hash
-                .value()
-                .chars()
-                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+        if self.hash.scheme() == "sha256"
+            && (self.hash.value().len() != 64
+                || !self
+                    .hash
+                    .value()
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)))
         {
             return Err(ManifestError::Validation(format!(
                 "Invalid sha256 hash value: expected 64 lowercase hex characters, got '{}'",
