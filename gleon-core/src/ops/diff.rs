@@ -261,9 +261,7 @@ pub fn run_diff(
                     ComparisonResult::Mismatch { detail, diff_image } => {
                         // Write diff visualization image to .gleon/runs/latest/diffs/<case_name>/<file_name>
                         let case_diff_dir = diffs_dir.join(&test_name);
-                        if let Some(parent) = case_diff_dir.parent()
-                            && let Err(e) = std::fs::create_dir_all(parent)
-                        {
+                        if let Err(e) = std::fs::create_dir_all(&case_diff_dir) {
                             return TestImageResult::IoError {
                                 relative_path: case.image.relative_path,
                                 error: format!("Failed to create directory for diff: {}", e),

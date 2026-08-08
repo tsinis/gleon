@@ -49,15 +49,30 @@ jobs:
           fi
 
       - name: Update Baselines & Commit
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          HEAD_REF: ${{ steps.pr-info.outputs.head_ref }}
         run: |
-          RAW_ARGS="${{ github.event.comment.body }}"
-          FILTER_ARGS=$(echo "$RAW_ARGS" | sed 's#^/gleon approve##' | xargs)
+          RAW_ARGS="$COMMENT_BODY"
+          ARG_STRING="$(printf '%s' "$RAW_ARGS" | sed 's#^/gleon approve##' | xargs)"
+          FILTER_ARGS=()
+          if [ -n "$ARG_STRING" ]; then
+            read -r -a TOKENS <<< "$ARG_STRING"
+            for token in "${TOKENS[@]}"; do
+              if [[ "$token" =~ ^[A-Za-z0-9._/:=-]+$ ]]; then
+                FILTER_ARGS+=("$token")
+              else
+                echo "::error::Invalid argument token: $token"
+                exit 1
+              fi
+            done
+          fi
           if [ -d ".gleon/runs/latest/actual" ]; then
-            gleon approve --from=.gleon/runs/latest/actual $FILTER_ARGS
+            gleon approve --from=.gleon/runs/latest/actual "${FILTER_ARGS[@]}"
           elif [ -d ".gleon/diffs" ]; then
-            gleon approve --from=.gleon/diffs $FILTER_ARGS
+            gleon approve --from=.gleon/diffs "${FILTER_ARGS[@]}"
           else
-            gleon approve $FILTER_ARGS
+            gleon approve "${FILTER_ARGS[@]}"
           fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -65,7 +80,6 @@ jobs:
           if git diff --staged --quiet; then
             echo "No baseline changes to commit."
           else
-            HEAD_REF="${{ steps.pr-info.outputs.head_ref }}"
             git commit -m "chore(gleon): update baseline images [skip ci]"
             git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
             git push origin "HEAD:refs/heads/$HEAD_REF" || {

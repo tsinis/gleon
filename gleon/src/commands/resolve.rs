@@ -150,7 +150,7 @@ where
                     .join("blobs")
                     .join(manifest.hash.scheme())
                     .join(manifest.hash.value());
-                if !local_blob.exists() {
+                if !local_blob.is_file() {
                     info!(
                         "Fetching missing blob {} from storage...",
                         manifest.hash.value()

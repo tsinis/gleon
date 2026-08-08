@@ -919,10 +919,33 @@ impl ReportGenerator {
                         )
                         .expect("write infallible");
                     }
-                    TestImageResult::DecodeError { .. } | TestImageResult::IoError { .. } => {
+                    TestImageResult::DecodeError { .. } => {
                         writeln!(
                             out,
                             "| `{}` | {} | {} | {} | `Decode Error` |",
+                            CodeSpanEscape(name),
+                            ImgLinkFormatter {
+                                base_url: None,
+                                path: None,
+                                resolver: None,
+                            },
+                            ImgLinkFormatter {
+                                base_url: options.base_image_url,
+                                path: Some(res.relative_path()),
+                                resolver: options.image_url_resolver,
+                            },
+                            ImgLinkFormatter {
+                                base_url: None,
+                                path: None,
+                                resolver: None,
+                            },
+                        )
+                        .expect("write infallible");
+                    }
+                    TestImageResult::IoError { .. } => {
+                        writeln!(
+                            out,
+                            "| `{}` | {} | {} | {} | `IO Error` |",
                             CodeSpanEscape(name),
                             ImgLinkFormatter {
                                 base_url: None,

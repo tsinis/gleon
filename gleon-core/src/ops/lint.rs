@@ -261,15 +261,19 @@ mod tests {
         perms.set_mode(0o000);
         std::fs::set_permissions(&unreadable_file, perms).unwrap();
 
+        let can_read = std::fs::File::open(&unreadable_file).is_ok();
         let report = lint_workspace_manifests(&ctx, temp.path(), None).unwrap();
-        assert!(!report.passed);
-        assert_eq!(report.corrupted_files.len(), 1);
-        assert!(report.corrupted_files[0].1.contains("Failed to read file:"));
 
-        // Restore permissions to allow cleanup
+        // Restore permissions to allow cleanup before assertions
         let mut perms = std::fs::metadata(&unreadable_file).unwrap().permissions();
         perms.set_mode(0o644);
         std::fs::set_permissions(&unreadable_file, perms).unwrap();
+
+        if !can_read {
+            assert!(!report.passed);
+            assert_eq!(report.corrupted_files.len(), 1);
+            assert!(report.corrupted_files[0].1.contains("Failed to read file:"));
+        }
     }
 
     #[cfg(all(unix, not(miri)))]
@@ -292,14 +296,17 @@ mod tests {
         perms.set_mode(0o000);
         std::fs::set_permissions(&sub_dir, perms).unwrap();
 
-        // Running lint should fail with an IoError for the unreadable directory (since into_io_error() is Some)
+        let can_read_dir = std::fs::read_dir(&sub_dir).is_ok();
         let res = lint_workspace_manifests(&ctx, temp.path(), None);
-        assert!(matches!(res, Err(LintError::Io(_))));
 
-        // Restore permissions to allow cleanup
+        // Restore permissions to allow cleanup before assertions
         let mut perms = std::fs::metadata(&sub_dir).unwrap().permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(&sub_dir, perms).unwrap();
+
+        if !can_read_dir {
+            assert!(matches!(res, Err(LintError::Io(_))));
+        }
     }
 
     #[test]

@@ -241,7 +241,6 @@ pub async fn push_blobs(
 mod tests {
     use super::*;
     use crate::platform::PlatformError;
-    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn test_push_error_display() {
@@ -327,8 +326,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     #[cfg_attr(miri, ignore)]
     async fn test_push_unreadable_manifests_root() {
+        use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
         let manifests = temp.path().join(".gleon").join("manifests");
         std::fs::create_dir_all(&manifests).unwrap();
@@ -337,13 +338,18 @@ mod tests {
         perms.set_mode(0o000);
         std::fs::set_permissions(&manifests, perms.clone()).unwrap();
 
+        let can_read = std::fs::read_dir(&manifests).is_ok();
+
         let ctx = ResolvedContext::default();
         let cfg = StorageConfig::new("memory://");
         let res = push_blobs(&ctx, temp.path(), Some(&cfg), true, None).await;
-        assert!(matches!(res, Err(PushError::Io(_))));
 
         perms.set_mode(0o755);
         std::fs::set_permissions(&manifests, perms).unwrap();
+
+        if !can_read {
+            assert!(matches!(res, Err(PushError::Io(_))));
+        }
     }
 
     #[tokio::test]

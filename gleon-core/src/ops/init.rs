@@ -112,11 +112,18 @@ pub fn init_workspace(
     match env_create_res {
         Ok(mut f) => {
             use std::io::Write;
-            f.write_all(template_content.as_bytes())
-                .map_err(InitError::from)?;
-            f.sync_all().map_err(InitError::from)?;
-            // Durability: commit directory entry. Silently ignored on Windows.
-            let _ = std::fs::File::open(&gleon_dir).and_then(|d| d.sync_all());
+            if let Err(e) = f
+                .write_all(template_content.as_bytes())
+                .and_then(|_| f.sync_all())
+            {
+                let _ = std::fs::remove_file(&env_template_path);
+                return Err(InitError::Io(e));
+            }
+            #[cfg(not(windows))]
+            {
+                let dir_file = std::fs::File::open(&gleon_dir).map_err(InitError::Io)?;
+                dir_file.sync_all().map_err(InitError::Io)?;
+            }
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(InitError::Io(e)),
@@ -135,11 +142,18 @@ pub fn init_workspace(
     match config_create_res {
         Ok(mut f) => {
             use std::io::Write;
-            f.write_all(yaml_content.as_bytes())
-                .map_err(InitError::from)?;
-            f.sync_all().map_err(InitError::from)?;
-            // Durability: commit directory entry. Silently ignored on Windows.
-            let _ = std::fs::File::open(&gleon_dir).and_then(|d| d.sync_all());
+            if let Err(e) = f
+                .write_all(yaml_content.as_bytes())
+                .and_then(|_| f.sync_all())
+            {
+                let _ = std::fs::remove_file(&internal_config);
+                return Err(InitError::Io(e));
+            }
+            #[cfg(not(windows))]
+            {
+                let dir_file = std::fs::File::open(&gleon_dir).map_err(InitError::Io)?;
+                dir_file.sync_all().map_err(InitError::Io)?;
+            }
             config_created = Some(internal_config);
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}

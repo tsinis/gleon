@@ -126,7 +126,17 @@ pub fn approve_workspace(
         .standard_filters(false)
         .build();
 
-    for entry in walker.flatten() {
+    for result in walker {
+        let entry = match result {
+            Ok(e) => e,
+            Err(e) => {
+                let msg = e.to_string();
+                let io_err = e
+                    .into_io_error()
+                    .unwrap_or_else(|| std::io::Error::other(msg));
+                return Err(ApproveError::Io(io_err));
+            }
+        };
         let path = entry.path();
         if path.is_file()
             && path
