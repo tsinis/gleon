@@ -19,7 +19,7 @@ pub const MAX_PIXELS: u64 = 67_108_864;
 pub struct SingleTestManifest {
     /// Schema version (always 1).
     pub schema_version: u32,
-    /// Primary comparison digest (must be sha256).
+    /// Primary comparison digest (supported cryptographic schemes: sha256, sha512, sha384, sha224, blake3).
     pub hash: ImageHash,
     /// Perceptual hash digest (must be dhash or valid scheme).
     pub phash: ImageHash,
@@ -59,7 +59,7 @@ impl SingleTestManifest {
 
         if !matches!(
             self.hash.scheme(),
-            "sha256" | "sha512" | "dhash" | "phash" | "ssim" | "pixel" | "custom_scheme"
+            "sha256" | "sha512" | "sha384" | "sha224" | "blake3"
         ) {
             return Err(ManifestError::Validation(format!(
                 "Unsupported hash scheme '{}'",

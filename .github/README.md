@@ -121,7 +121,7 @@ To accept the new visual changes as the new baseline:
 
 ### GitHub Actions Workflow Setup
 
-To enable `/gleon approve` comments in your repository, refer to the shipped workflow template in [.github/workflows/gleon-approve.yml](file:///.github/workflows/gleon-approve.yml). Ensure your workflow uses proper collaborator permission checks, fork rejection, and branch SHA pinning before granting write access or pushing baseline updates.
+To enable `/gleon approve` comments in your repository, refer to the shipped workflow template in [.github/workflows/gleon-approve.yml](./workflows/gleon-approve.yml). Ensure your workflow uses proper collaborator permission checks, fork rejection, and branch SHA pinning before granting write access or pushing baseline updates.
 
 ## How to Build and Run Locally
 

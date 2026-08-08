@@ -281,6 +281,7 @@ mod tests {
     #[tokio::test]
     async fn test_pull_manifests_root_unreadable() {
         use std::os::unix::fs::PermissionsExt;
+        // SAFETY: `libc::geteuid()` is a side-effect-free POSIX syscall query that returns the process EUID.
         if unsafe { libc::geteuid() } == 0 {
             return;
         }
@@ -347,6 +348,7 @@ mod tests {
     #[tokio::test]
     async fn test_pull_storage_io_error() {
         use std::os::unix::fs::PermissionsExt;
+        // SAFETY: `libc::geteuid()` is a side-effect-free POSIX syscall query that returns the process EUID.
         if unsafe { libc::geteuid() } == 0 {
             return;
         }

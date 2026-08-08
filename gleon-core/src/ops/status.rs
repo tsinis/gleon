@@ -164,9 +164,11 @@ pub fn check_status(
                                     &gleon_dir.join("blobs"),
                                     &manifest.hash,
                                 );
-                                std::fs::read(&baseline_blob_path)
-                                    .map(|b_bytes| raw_bytes == b_bytes)
-                                    .unwrap_or(false)
+                                match std::fs::read(&baseline_blob_path) {
+                                    Ok(b_bytes) => raw_bytes == b_bytes,
+                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                                    Err(e) => return Err(StatusError::Io(e)),
+                                }
                             }
                         };
                         if is_unchanged {
@@ -175,10 +177,10 @@ pub fn check_status(
                         } else {
                             let matched_zones = case.rule.matched_mask_zones(&img.relative_path);
                             if !matched_zones.is_empty() {
-                                let baseline_blob_path = gleon_dir
-                                    .join("blobs")
-                                    .join(manifest.hash.scheme())
-                                    .join(manifest.hash.value());
+                                let baseline_blob_path = crate::storage::local_blob_path(
+                                    &gleon_dir.join("blobs"),
+                                    &manifest.hash,
+                                );
 
                                 let b_bytes_res = std::fs::read(&baseline_blob_path);
                                 let b_bytes = match b_bytes_res {
@@ -536,7 +538,7 @@ mod tests {
                 "test",
                 &crate::manifest::SingleTestManifest {
                     schema_version: 1,
-                    hash: crate::manifest::ImageHash::new("custom_scheme", hash_val).unwrap(),
+                    hash: crate::manifest::ImageHash::new("sha512", hash_val).unwrap(),
                     phash: crate::manifest::ImageHash::new("dhash", "2222222222222222").unwrap(),
                     width: 10,
                     height: 10,
@@ -553,7 +555,7 @@ mod tests {
         .unwrap();
         std::fs::write(temp.path().join("test.png"), &img_bytes).unwrap();
 
-        let blob_dir = gleon_dir.join("blobs").join("custom_scheme");
+        let blob_dir = gleon_dir.join("blobs").join("sha512");
         std::fs::create_dir_all(&blob_dir).unwrap();
         std::fs::write(blob_dir.join(hash_val), &img_bytes).unwrap();
 

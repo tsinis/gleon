@@ -54,7 +54,11 @@ jobs:
               });
               core.setOutput('ephemeral_sha', ref.data.object.sha);
             } catch (e) {
-              core.setOutput('ephemeral_sha', '');
+              if (e.status === 404) {
+                core.setOutput('ephemeral_sha', '');
+              } else {
+                throw e;
+              }
             }
 
       - name: Checkout Base Branch
@@ -78,14 +82,34 @@ jobs:
             exit 1
           fi
           git fetch origin "$HEAD_SHA"
-          git checkout "$HEAD_SHA" -- .gleon/manifests/ .gleon/blobs/ || true
-          if [ -n "$EPHEMERAL_SHA" ] && git fetch origin "$EPHEMERAL_SHA"; then
-            if git checkout "$EPHEMERAL_SHA" -- .gleon/runs/latest/actual/; then
-              echo "Restored actual screenshots from ephemeral branch."
-            elif git checkout "$EPHEMERAL_SHA" -- .gleon/diffs/; then
-              echo "Restored diff artifacts from ephemeral branch."
-            else
-              echo "::warning::No recognized screenshot artifacts found in ephemeral branch."
+          RESTORED_ANY=false
+          if git ls-tree --name-only "$HEAD_SHA" .gleon/manifests | grep -q .; then
+            git checkout "$HEAD_SHA" -- .gleon/manifests/
+            echo "Restored .gleon/manifests/ from PR branch."
+            RESTORED_ANY=true
+          fi
+          if git ls-tree --name-only "$HEAD_SHA" .gleon/blobs | grep -q .; then
+            git checkout "$HEAD_SHA" -- .gleon/blobs/
+            echo "Restored .gleon/blobs/ from PR branch."
+            RESTORED_ANY=true
+          fi
+          if ! $RESTORED_ANY; then
+            echo "No existing manifests or blobs found in $HEAD_SHA to restore."
+          fi
+
+          if [ -n "$EPHEMERAL_SHA" ]; then
+            if [[ ! "$EPHEMERAL_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Invalid EPHEMERAL_SHA format: $EPHEMERAL_SHA"
+              exit 1
+            fi
+            if git fetch origin "$EPHEMERAL_SHA"; then
+              if git checkout "$EPHEMERAL_SHA" -- .gleon/runs/latest/actual/; then
+                echo "Restored actual screenshots from ephemeral branch."
+              elif git checkout "$EPHEMERAL_SHA" -- .gleon/diffs/; then
+                echo "Restored diff artifacts from ephemeral branch."
+              else
+                echo "::warning::No recognized screenshot artifacts found in ephemeral branch."
+              fi
             fi
           fi
 
@@ -132,19 +156,21 @@ jobs:
           set -eo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .gleon/manifests/ || true
-          git add -f .gleon/blobs/ || true
-          if git diff --staged --quiet; then
+          
+          export GIT_INDEX_FILE=.git/tmp_index
+          rm -f "$GIT_INDEX_FILE"
+          git read-tree "$HEAD_SHA"
+          git add .gleon/manifests/ 2>/dev/null || true
+          git add -f .gleon/blobs/ 2>/dev/null || true
+          NEW_TREE=$(git write-tree)
+          unset GIT_INDEX_FILE
+          rm -f .git/tmp_index
+
+          HEAD_TREE=$(git rev-parse "$HEAD_SHA^{tree}")
+          if [ "$NEW_TREE" = "$HEAD_TREE" ]; then
             echo "No baseline changes to commit."
           else
-            export GIT_INDEX_FILE=.git/tmp_index
-            git read-tree "$HEAD_SHA"
-            git add .gleon/manifests/ || true
-            git add -f .gleon/blobs/ || true
-            NEW_TREE=$(git write-tree)
             NEW_COMMIT=$(git commit-tree $NEW_TREE -p "$HEAD_SHA" -m "chore(gleon): update baseline images [skip ci]")
-            unset GIT_INDEX_FILE
-            
             AUTH="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
             git -c "http.https://github.com/.extraheader=Authorization: Basic $AUTH" \
               push origin "$NEW_COMMIT:refs/heads/$HEAD_REF" || {

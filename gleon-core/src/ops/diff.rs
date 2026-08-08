@@ -129,10 +129,8 @@ pub(crate) fn process_diff_case(
         }
     };
 
-    let baseline_blob_path = gleon_dir
-        .join("blobs")
-        .join(baseline_entry.hash.scheme())
-        .join(baseline_entry.hash.value());
+    let baseline_blob_path =
+        crate::storage::local_blob_path(&gleon_dir.join("blobs"), &baseline_entry.hash);
 
     let baseline_bytes = match std::fs::read(&baseline_blob_path) {
         Ok(b) => b,
@@ -143,7 +141,7 @@ pub(crate) fn process_diff_case(
             };
         }
         Err(e) => {
-            return TestImageResult::DecodeError {
+            return TestImageResult::IoError {
                 relative_path: case.image.relative_path.clone(),
                 error: format!("Failed to read baseline blob file: {}", e),
             };
@@ -584,6 +582,10 @@ mod tests {
     #[cfg(all(unix, not(miri)))]
     fn test_process_diff_case_io_errors() {
         use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+
         let temp = tempfile::tempdir().unwrap();
         let gleon_dir = temp.path().join(".gleon");
         let actual_dir = temp.path().join("actual");
@@ -674,10 +676,11 @@ mod tests {
             &diffs_dir,
             &gleon_dir,
         );
-        assert!(matches!(res3, TestImageResult::IoError { .. }));
 
-        // Restore permissions
+        // Restore permissions before assertions
         perms.set_mode(0o755);
         std::fs::set_permissions(&actual_dir, perms).unwrap();
+
+        assert!(matches!(res3, TestImageResult::IoError { .. }));
     }
 }
