@@ -303,8 +303,12 @@ impl ObjectStoreAdapter {
     /// # Errors
     /// Returns [`StorageError`] if the local file cannot be read or remote upload fails.
     #[instrument(skip(self, src_path), level = "debug")]
-    pub async fn upload_blob(&self, sha256: &str, src_path: &Path) -> Result<(), StorageError> {
-        let key = blob_key(sha256);
+    pub async fn upload_blob(
+        &self,
+        hash: &crate::manifest::ImageHash,
+        src_path: &Path,
+    ) -> Result<(), StorageError> {
+        let key = blob_key(hash);
         let bytes = tokio::fs::read(src_path)
             .await
             .map_err(|source| StorageError::Io { source })?;
@@ -312,13 +316,16 @@ impl ObjectStoreAdapter {
             .put(&key, object_store::PutPayload::from(bytes))
             .await
             .map_err(|source| StorageError::Store { source })?;
-        debug!(sha256 = %sha256, "Successfully uploaded blob to remote storage");
+        debug!(hash = %hash.value(), "Successfully uploaded blob to remote storage");
         Ok(())
     }
 
     /// Checks if a blob exists on remote storage without downloading it.
-    pub async fn blob_exists(&self, sha256: &str) -> Result<bool, StorageError> {
-        let key = blob_key(sha256);
+    pub async fn blob_exists(
+        &self,
+        hash: &crate::manifest::ImageHash,
+    ) -> Result<bool, StorageError> {
+        let key = blob_key(hash);
         match self.store.head(&key).await {
             Ok(_) => Ok(true),
             Err(object_store::Error::NotFound { .. }) => Ok(false),
@@ -332,14 +339,18 @@ impl ObjectStoreAdapter {
     /// Returns [`StorageError::BlobNotFound`] if the hash does not exist on remote storage,
     /// or [`StorageError::Io`] / [`StorageError::PersistFailed`] if atomic write fails.
     #[instrument(skip(self, dest_path), level = "debug")]
-    pub async fn download_blob(&self, sha256: &str, dest_path: &Path) -> Result<(), StorageError> {
-        let key = blob_key(sha256);
+    pub async fn download_blob(
+        &self,
+        hash: &crate::manifest::ImageHash,
+        dest_path: &Path,
+    ) -> Result<(), StorageError> {
+        let key = blob_key(hash);
 
         let get_result = self.store.get(&key).await;
         let get_output = match get_result {
             Ok(output) => output,
             Err(object_store::Error::NotFound { .. }) => {
-                return Err(StorageError::BlobNotFound(sha256.to_string()));
+                return Err(StorageError::BlobNotFound(hash.value().to_string()));
             }
             Err(err) => return Err(StorageError::Store { source: err }),
         };
@@ -381,7 +392,7 @@ impl ObjectStoreAdapter {
             source: std::io::Error::other(e),
         })??;
 
-        debug!(sha256 = %sha256, path = %dest_path.display(), "Successfully downloaded blob from remote storage");
+        debug!(hash = %hash.value(), path = %dest_path.display(), "Successfully downloaded blob from remote storage");
         Ok(())
     }
 
@@ -390,8 +401,8 @@ impl ObjectStoreAdapter {
     /// # Errors
     /// Returns [`StorageError`] if remote object listing fails.
     #[instrument(skip(self), level = "debug")]
-    pub async fn list_blobs(&self) -> Result<Vec<String>, StorageError> {
-        let prefix = ObjPath::from("blobs/sha256");
+    pub async fn list_blobs(&self, scheme: &str) -> Result<Vec<String>, StorageError> {
+        let prefix = ObjPath::from(format!("blobs/{}", scheme));
         let mut list_stream = self.store.list(Some(&prefix));
 
         let mut hashes = Vec::new();

@@ -29,29 +29,7 @@ pub fn normalize_test_name(test_name: &str) -> Cow<'_, str> {
 /// Validates a relative test path (e.g. `auth/login_screen`).
 /// Splits on both `/` and `\`, verifying that each segment contains only valid characters `[a-z0-9_.-]`.
 pub fn validate_test_path(test_path: &str) -> Result<(), ManifestError> {
-    if test_path.trim().is_empty() {
-        return Err(ManifestError::Validation(
-            "Test path cannot be empty".to_string(),
-        ));
-    }
-
-    for segment in test_path.split(['/', '\\']) {
-        if segment.is_empty() || segment == "." || segment == ".." {
-            return Err(ManifestError::Validation(format!(
-                "Invalid test path segment '{}' in '{}'",
-                segment, test_path
-            )));
-        }
-        if !segment.chars().all(|c| {
-            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.' || c == '-'
-        }) {
-            return Err(ManifestError::Validation(format!(
-                "Test path segment '{}' contains invalid characters",
-                segment
-            )));
-        }
-    }
-    Ok(())
+    crate::scanner::validate_test_name(test_path).map_err(ManifestError::Validation)
 }
 
 /// In-memory index mapping test case relative paths to their `SingleTestManifest`.
@@ -194,7 +172,7 @@ impl WorkspaceIndex {
 
         let manifest_dir = manifest_dir.as_ref();
         let canonical_key = normalized.as_ref();
-        let target_path = manifest_dir.join(canonical_key).with_extension("json");
+        let target_path = manifest_dir.join(format!("{canonical_key}.json"));
 
         match manifest.save(&target_path) {
             Ok(()) => {}
@@ -207,7 +185,7 @@ impl WorkspaceIndex {
             .get(canonical_key)
             .filter(|s| *s != canonical_key)
         {
-            let old_path = manifest_dir.join(old_source).with_extension("json");
+            let old_path = manifest_dir.join(format!("{old_source}.json"));
             let is_same_file = match (fs::canonicalize(&old_path), fs::canonicalize(&target_path)) {
                 (Ok(p1), Ok(p2)) => p1 == p2,
                 _ => false,
@@ -241,7 +219,7 @@ impl WorkspaceIndex {
         let canonical_key = normalized.as_ref();
 
         if let Some(old_source) = self.source_paths.remove(canonical_key) {
-            let old_path = manifest_dir.join(old_source).with_extension("json");
+            let old_path = manifest_dir.join(format!("{old_source}.json"));
             match fs::remove_file(&old_path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -249,7 +227,7 @@ impl WorkspaceIndex {
             }
         }
 
-        let target_path = manifest_dir.join(canonical_key).with_extension("json");
+        let target_path = manifest_dir.join(format!("{canonical_key}.json"));
         match fs::remove_file(&target_path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

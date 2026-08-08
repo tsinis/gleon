@@ -28,11 +28,15 @@ async fn test_file_scheme_storage_integration() {
     let real_png = fixture_path("baseline_100x100.png");
     assert!(real_png.exists(), "baseline PNG fixture must exist");
 
-    let sha256_hash = "a1b2c3d4e5f67890123456789abcdef0123456789abcdef0123456789abcdef0";
+    let hash = gleon_core::manifest::ImageHash::new(
+        "sha256",
+        "a1b2c3d4e5f67890123456789abcdef0123456789abcdef0123456789abcdef0",
+    )
+    .unwrap();
 
     // 1. Upload real PNG blob to file:// store
     adapter
-        .upload_blob(sha256_hash, &real_png)
+        .upload_blob(&hash, &real_png)
         .await
         .expect("upload real PNG blob ok");
 
@@ -41,7 +45,7 @@ async fn test_file_scheme_storage_integration() {
         .path()
         .join("blobs")
         .join("sha256")
-        .join(sha256_hash);
+        .join(hash.value());
     assert!(expected_remote_path.exists());
 
     // 2. Download blob to local client workspace
@@ -49,7 +53,7 @@ async fn test_file_scheme_storage_integration() {
     let downloaded_path = local_dest_dir.path().join("downloaded.png");
 
     adapter
-        .download_blob(sha256_hash, &downloaded_path)
+        .download_blob(&hash, &downloaded_path)
         .await
         .expect("download blob ok");
 

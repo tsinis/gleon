@@ -618,6 +618,30 @@ screenshots:
             "Downloaded 1 missing baseline blob(s) from storage",
         ));
 
+    // 4. Pull again, should be up to date
+    let mut cmd_pull2 = Command::cargo_bin("gleon")?;
+    cmd_pull2
+        .current_dir(fresh_dir.path())
+        .env("GLEON_STORAGE_URL", &remote_url)
+        .arg("pull")
+        .assert()
+        .success()
+        .stderr(predicates::str::contains(
+            "All 1 baseline blob(s) are already up to date locally.",
+        ));
+
+    // 5. Push again, should be up to date
+    let mut cmd_push2 = Command::cargo_bin("gleon")?;
+    cmd_push2
+        .current_dir(dir.path())
+        .env("GLEON_STORAGE_URL", &remote_url)
+        .arg("push")
+        .assert()
+        .success()
+        .stderr(predicates::str::contains(
+            "All 1 baseline blob(s) are already present in remote storage.",
+        ));
+
     Ok(())
 }
 
@@ -1037,10 +1061,22 @@ fn test_approve_command() -> Result<(), Box<dyn std::error::Error>> {
 
     // Check that manifest and blob are created
     let manifests_dir = base_path.join(".gleon").join("manifests");
-    let entries: Vec<_> = std::fs::read_dir(&manifests_dir)?.collect();
+    let mut found_button_json = false;
+    if let Ok(entries) = std::fs::read_dir(&manifests_dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().unwrap().is_dir() {
+                let button_json = entry.path().join("login").join("button.json");
+                if button_json.exists() {
+                    found_button_json = true;
+                    let manifest_content = std::fs::read_to_string(&button_json)?;
+                    assert!(manifest_content.contains("sha256:"));
+                }
+            }
+        }
+    }
     assert!(
-        !entries.is_empty(),
-        "Expected a platform manifest directory to be created"
+        found_button_json,
+        "Expected to find login/button.json manifest"
     );
 
     Ok(())

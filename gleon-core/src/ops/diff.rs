@@ -93,13 +93,15 @@ pub fn run_diff(
     }
 
     let runs_dir = gleon_dir.join("runs").join("latest");
-    let _ = std::fs::remove_dir_all(&runs_dir);
+    match std::fs::remove_dir_all(&runs_dir) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(DiffOpError::Io(e)),
+    }
     let diffs_dir = runs_dir.join("diffs");
     let actual_dir = runs_dir.join("actual");
     std::fs::create_dir_all(&diffs_dir).map_err(DiffOpError::Io)?;
     std::fs::create_dir_all(&actual_dir).map_err(DiffOpError::Io)?;
-
-    use rayon::prelude::*;
 
     let config = context.config.as_ref().cloned().unwrap_or_default();
     let test_cases = match FileScanner::scan_workspace(&config, base_dir) {
@@ -110,9 +112,9 @@ pub fn run_diff(
     let progress_bar = crate::ui::create_progress_bar(test_cases.len() as u64);
 
     let case_results: Vec<TestCaseResult> = test_cases
-        .into_par_iter()
+        .into_iter()
         .map(|case| {
-            let test_name = case.name;
+            let test_name = case.name.clone();
             progress_bar.set_message(case.image.relative_path.display().to_string());
 
             let result = (|| {
@@ -136,15 +138,18 @@ pub fn run_diff(
                 let actual_bytes = match std::fs::read(&case.image.absolute_path) {
                     Ok(b) => b,
                     Err(e) => {
-                        return TestImageResult::DecodeError {
+                        return TestImageResult::IoError {
                             relative_path: case.image.relative_path,
                             error: format!("Failed to read actual screenshot file: {}", e),
                         };
                     }
                 };
 
-                let actual_sha256 = hex::encode(sha2::Sha256::digest(&actual_bytes));
-                if actual_sha256 == baseline_entry.hash.value() {
+                let is_byte_identical = baseline_entry.hash.scheme() == "sha256" && {
+                    let actual_sha256 = hex::encode(sha2::Sha256::digest(&actual_bytes));
+                    actual_sha256 == baseline_entry.hash.value()
+                };
+                if is_byte_identical {
                     // Fast path: images are byte-for-byte identical. Matches unconditionally.
                     return TestImageResult::Success {
                         relative_path: case.image.relative_path,
@@ -256,23 +261,22 @@ pub fn run_diff(
                     ComparisonResult::Mismatch { detail, diff_image } => {
                         // Write diff visualization image to .gleon/runs/latest/diffs/<case_name>/<file_name>
                         let case_diff_dir = diffs_dir.join(&test_name);
-                        if let Err(e) = std::fs::create_dir_all(&case_diff_dir) {
+                        if let Some(parent) = case_diff_dir.parent()
+                            && let Err(e) = std::fs::create_dir_all(parent)
+                        {
                             return TestImageResult::IoError {
                                 relative_path: case.image.relative_path,
-                                error: format!("Failed to create diff directory: {}", e),
+                                error: format!("Failed to create directory for diff: {}", e),
                             };
                         }
                         let diff_file_name = format!("diff_{raw_file_name}");
                         let diff_file_path = case_diff_dir.join(&diff_file_name);
 
-                        let mut encoded = Vec::new();
-                        let mut cursor = std::io::Cursor::new(&mut encoded);
-                        if let Err(e) = diff_image.write_to(&mut cursor, image::ImageFormat::Png) {
-                            return TestImageResult::IoError {
-                                relative_path: case.image.relative_path,
-                                error: format!("Failed to encode diff image to PNG: {}", e),
-                            };
-                        }
+                        let mut cursor = std::io::Cursor::new(Vec::new());
+                        diff_image
+                            .write_to(&mut cursor, image::ImageFormat::Png)
+                            .expect("In-memory PNG encoding should never fail");
+                        let encoded = cursor.into_inner();
                         if let Err(e) = crate::io::save_file_atomically(&diff_file_path, &encoded) {
                             return TestImageResult::IoError {
                                 relative_path: case.image.relative_path,
@@ -416,11 +420,9 @@ mod tests {
         let manifest = crate::manifest::SingleTestManifest::new(hash, phash, 100, 100).unwrap();
         manifest.save(manifests_dir.join("login.json")).unwrap();
 
-        // Create actual screenshot
-        let screenshots_dir = temp.path().join("login");
-        std::fs::create_dir_all(&screenshots_dir).unwrap();
+        // Create actual screenshot with non-matching hash
         let img = image::RgbaImage::new(10, 10);
-        img.save(screenshots_dir.join("spec.png")).unwrap();
+        img.save(temp.path().join("login.png")).unwrap();
 
         // Create blob path as a DIRECTORY so std::fs::read returns EISDIR (generic IO error, not NotFound)
         let blob_dir = gleon_dir
@@ -432,5 +434,125 @@ mod tests {
         let res = run_diff(&ctx, temp.path()).unwrap();
         assert_eq!(res.failed_tests, 1);
         assert!(!res.passed);
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    #[test]
+    fn test_diff_actual_read_generic_io_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let ctx = ResolvedContext::default();
+        let plat_key = ctx.platform.to_key().unwrap();
+        let manifests_dir = gleon_dir.join("manifests").join(&plat_key);
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+
+        let hash = crate::manifest::ImageHash::new(
+            "sha256",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .unwrap();
+        let phash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();
+        let manifest = crate::manifest::SingleTestManifest::new(hash, phash, 100, 100).unwrap();
+        manifest.save(manifests_dir.join("login.json")).unwrap();
+
+        let screenshot = temp.path().join("login.png");
+        std::fs::write(&screenshot, "fake png").unwrap();
+
+        // Remove read permissions
+        let mut perms = std::fs::metadata(&screenshot).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&screenshot, perms.clone()).unwrap();
+
+        let res = run_diff(&ctx, temp.path());
+
+        // Restore permissions before assertions
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&screenshot, perms).unwrap();
+
+        let report = res.unwrap();
+        assert_eq!(report.failed_tests, 1);
+        assert!(!report.passed);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_diff_write_io_errors_via_poisoning() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let mut ctx = ResolvedContext::default();
+        ctx.platform.os = "linux".to_string();
+        let key = ctx.platform.to_key().unwrap();
+
+        let manifests_dir = gleon_dir.join("manifests").join(&key);
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+        let hash = "1111111111111111111111111111111111111111111111111111111111111111";
+        let manifest = crate::manifest::SingleTestManifest::new(
+            crate::manifest::ImageHash::new("sha256", hash).unwrap(),
+            crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap(),
+            1,
+            1,
+        )
+        .unwrap();
+        manifest.save(manifests_dir.join("test.json")).unwrap();
+
+        let blobs_dir = gleon_dir.join("blobs").join("sha256");
+        std::fs::create_dir_all(&blobs_dir).unwrap();
+        let img = image::ImageBuffer::<image::Rgba<u8>, _>::new(1, 1);
+        img.save_with_format(blobs_dir.join(hash), image::ImageFormat::Png)
+            .unwrap();
+
+        // Mismatching actual image (same dimensions, different color)
+        let mut bad_img = image::ImageBuffer::<image::Rgba<u8>, _>::new(1, 1);
+        bad_img.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        bad_img.save(temp.path().join("test.png")).unwrap();
+
+        let runs_dir = gleon_dir.join("runs").join("latest");
+        let actual_dir = runs_dir.join("actuals");
+        let diffs_dir = runs_dir.join("diffs");
+        std::fs::create_dir_all(&actual_dir).unwrap();
+        std::fs::create_dir_all(&diffs_dir).unwrap();
+
+        // Put a file inside actual_dir and diffs_dir so they cannot be deleted if read-only
+        std::fs::write(actual_dir.join("dummy"), "").unwrap();
+        std::fs::write(diffs_dir.join("dummy"), "").unwrap();
+
+        // Make actual_dir and diffs_dir read-only.
+        // remove_dir_all(&runs_dir) will fail to delete them because it can't delete 'dummy'.
+        // They will survive, and then save_file_atomically will fail because they are read-only!
+        let mut perms = std::fs::metadata(&actual_dir).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&actual_dir, perms.clone()).unwrap();
+        std::fs::set_permissions(&diffs_dir, perms.clone()).unwrap();
+
+        let result = run_diff(&ctx, temp.path());
+        assert!(result.is_err());
+
+        // Restore permissions so tempdir can be cleaned up
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&actual_dir, perms.clone()).unwrap();
+        std::fs::set_permissions(&diffs_dir, perms).unwrap();
+    }
+
+    #[test]
+    fn test_diff_empty_fallback_platform() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let ctx = ResolvedContext {
+            fallback_platform_key: Some("some-fallback-key".to_string()),
+            ..Default::default()
+        };
+
+        // No manifests created for primary or fallback platform, so fb_index will be empty.
+        // run_diff should run and return no test results because scanner finds nothing (no screenshots created).
+        let res = run_diff(&ctx, temp.path()).unwrap();
+        assert_eq!(res.total_tests, 0);
     }
 }

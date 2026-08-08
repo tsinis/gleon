@@ -154,8 +154,11 @@ pub fn check_status(
                     None => Ok((Some(img.relative_path.clone()), None)),
                     Some(manifest) => {
                         let raw_bytes = std::fs::read(&img.absolute_path)?;
-                        let actual_sha256 = hex::encode(sha2::Sha256::digest(&raw_bytes));
-                        if actual_sha256 == manifest.hash.value() {
+                        let is_unchanged = manifest.hash.scheme() == "sha256" && {
+                            let actual_sha256 = hex::encode(sha2::Sha256::digest(&raw_bytes));
+                            actual_sha256 == manifest.hash.value()
+                        };
+                        if is_unchanged {
                             Ok((None, None))
                         } else {
                             let matched_zones = case.rule.matched_mask_zones(&img.relative_path);
@@ -224,7 +227,10 @@ pub fn check_status(
     // Identify deleted test cases (staged in index but no longer present on disk)
     for staged_name in workspace_index.entries().keys() {
         if !seen_test_cases.contains(staged_name.as_str()) {
-            deleted.push(PathBuf::from(staged_name).with_extension("png"));
+            let mut p = String::with_capacity(staged_name.len() + 4);
+            p.push_str(staged_name);
+            p.push_str(".png");
+            deleted.push(PathBuf::from(p));
         }
     }
 
@@ -239,7 +245,7 @@ pub fn check_status(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
 
@@ -309,5 +315,31 @@ mod tests {
         };
         let text = report.format_text();
         assert!(text.contains("auth/user.v2.png"));
+    }
+
+    #[test]
+    fn test_status_detects_deleted_dotted_test_case() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        let mut ctx = ResolvedContext::default();
+        let plat_key = ctx.platform.to_key().unwrap();
+        let manifests_dir = gleon_dir.join("manifests").join(&plat_key);
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+
+        let hash = crate::manifest::ImageHash::new(
+            "sha256",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .unwrap();
+        let phash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();
+        let manifest = crate::manifest::SingleTestManifest::new(hash, phash, 1, 1).unwrap();
+        manifest
+            .save(manifests_dir.join("auth").join("user.v2.json"))
+            .unwrap();
+
+        ctx.base_dir = temp.path().to_path_buf();
+
+        let report = check_status(&ctx, temp.path()).unwrap();
+        assert_eq!(report.deleted, vec![PathBuf::from("auth/user.v2.png")]);
     }
 }

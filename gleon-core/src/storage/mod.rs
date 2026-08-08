@@ -50,6 +50,6 @@ pub enum StorageError {
 
 /// Helper function constructing the remote object path for a CAS blob hash.
 #[must_use]
-pub fn blob_key(sha256: &str) -> ObjPath {
-    ObjPath::from(format!("blobs/sha256/{sha256}"))
+pub fn blob_key(hash: &crate::manifest::ImageHash) -> ObjPath {
+    ObjPath::from(format!("blobs/{}/{}", hash.scheme(), hash.value()))
 }

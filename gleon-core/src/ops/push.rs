@@ -32,11 +32,11 @@ pub enum PushError {
 
     /// Missing local blob for a manifest hash.
     #[error(
-        "Missing local blob for hash '{sha256}' referenced in manifest at platform '{platform}'. Please run 'gleon stage' first."
+        "Missing local blob for hash '{hash}' referenced in manifest at platform '{platform}'. Please run 'gleon stage' first."
     )]
     MissingLocalBlob {
-        /// The SHA256 hex string of the missing blob.
-        sha256: String,
+        /// The string representation of the missing hash.
+        hash: String,
         /// The platform directory key where the reference was found.
         platform: String,
     },
@@ -117,7 +117,7 @@ pub async fn push_blobs(
     };
 
     let manifests_root = gleon_dir.join("manifests");
-    let blobs_dir = gleon_dir.join("blobs").join("sha256");
+    let blobs_root = gleon_dir.join("blobs");
 
     let platform_dirs = if all_platforms {
         match list_platform_dirs(&manifests_root) {
@@ -149,16 +149,16 @@ pub async fn push_blobs(
             Err(e) => return Err(PushError::Manifest(e)),
         };
         for manifest in index.entries().values() {
-            let hash_str = manifest.hash.value();
-            if !referenced_hashes.contains(hash_str) {
-                let local_blob_path = blobs_dir.join(hash_str);
+            let hash = &manifest.hash;
+            if !referenced_hashes.contains(hash) {
+                let local_blob_path = blobs_root.join(hash.scheme()).join(hash.value());
                 if !local_blob_path.is_file() {
                     return Err(PushError::MissingLocalBlob {
-                        sha256: hash_str.to_string(),
+                        hash: hash.value().to_string(),
                         platform: plat_key.clone(),
                     });
                 }
-                referenced_hashes.insert(hash_str.to_string());
+                referenced_hashes.insert(hash.clone());
             }
         }
     }
@@ -185,7 +185,7 @@ pub async fn push_blobs(
                 .blob_exists(&hash)
                 .await
                 .map_err(PushError::Storage)?;
-            Ok::<(String, bool), PushError>((hash, exists))
+            Ok::<(crate::manifest::ImageHash, bool), PushError>((hash, exists))
         }
     }))
     .buffer_unordered(adapter.concurrency());
@@ -204,10 +204,13 @@ pub async fn push_blobs(
     // Upload missing blobs in parallel with Fail-Fast short-circuiting
     let mut upload_stream = futures::stream::iter(missing_blobs.into_iter().map(|hash| {
         let adapter = adapter.clone();
-        let src_path = blobs_dir.join(&hash);
+        let src_path = blobs_root.join(hash.scheme()).join(hash.value());
         let pb = progress_bar.clone();
         async move {
-            pb.set_message(format!("Uploading {}", &hash[..8.min(hash.len())]));
+            pb.set_message(format!(
+                "Uploading {}",
+                &hash.value()[..8.min(hash.value().len())]
+            ));
             let res = adapter
                 .upload_blob(&hash, &src_path)
                 .await
@@ -238,6 +241,7 @@ pub async fn push_blobs(
 mod tests {
     use super::*;
     use crate::platform::PlatformError;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn test_push_error_display() {
@@ -245,11 +249,11 @@ mod tests {
         assert!(err1.to_string().contains("not initialized"));
 
         let err2 = PushError::MissingLocalBlob {
-            sha256: "abc".to_string(),
-            platform: "macos-aarch64".to_string(),
+            hash: "xyz".to_string(),
+            platform: "linux-x86_64".to_string(),
         };
         assert!(err2.to_string().contains("Missing local blob"));
-        assert!(err2.to_string().contains("abc"));
+        assert!(err2.to_string().contains("xyz"));
 
         let err3 = PushError::Io(std::io::Error::other("io test"));
         assert!(err3.to_string().contains("IO error"));
@@ -309,8 +313,109 @@ mod tests {
         std::fs::create_dir_all(manifests.join("invalid platform space")).unwrap();
         std::fs::write(manifests.join("some_file.txt"), "hello").unwrap();
 
-        let dirs = list_platform_dirs(&manifests).unwrap();
-        assert_eq!(dirs.len(), 1);
-        assert_eq!(dirs[0].0, "valid-platform");
+        let res = list_platform_dirs(&manifests).unwrap();
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].0, "valid-platform");
+    }
+
+    #[test]
+    fn test_list_platform_dirs_missing_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifests = temp.path().join("does_not_exist");
+        let res = list_platform_dirs(&manifests).unwrap();
+        assert!(res.is_empty());
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_push_unreadable_manifests_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifests = temp.path().join(".gleon").join("manifests");
+        std::fs::create_dir_all(&manifests).unwrap();
+
+        let mut perms = std::fs::metadata(&manifests).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&manifests, perms.clone()).unwrap();
+
+        let ctx = ResolvedContext::default();
+        let cfg = StorageConfig::new("memory://");
+        let res = push_blobs(&ctx, temp.path(), Some(&cfg), true, None).await;
+        assert!(matches!(res, Err(PushError::Io(_))));
+
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&manifests, perms).unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_push_invalid_platform_key() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut ctx = ResolvedContext::default();
+        ctx.platform.os = "invalid/os".to_string(); // Will fail to_key()
+
+        std::fs::create_dir_all(temp.path().join(".gleon").join("manifests")).unwrap();
+
+        let cfg = StorageConfig::new("memory://");
+        let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
+        assert!(matches!(
+            res,
+            Err(PushError::Context(ContextError::Platform(_)))
+        ));
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_push_invalid_manifest_load() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let mut ctx = ResolvedContext::default();
+        ctx.platform.os = "linux".to_string();
+        let key = ctx.platform.to_key().unwrap();
+
+        let plat_dir = temp.path().join(".gleon").join("manifests").join(&key);
+        std::fs::create_dir_all(&plat_dir).unwrap();
+        std::fs::write(plat_dir.join("bad.json"), "not json").unwrap();
+
+        let cfg = StorageConfig::new("memory://");
+        let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
+        assert!(matches!(res, Err(PushError::Manifest(_))));
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_push_success_with_referenced_blob() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let mut ctx = ResolvedContext::default();
+        ctx.platform.os = "linux".to_string();
+        let key = ctx.platform.to_key().unwrap();
+
+        let plat_dir = temp.path().join(".gleon").join("manifests").join(&key);
+        std::fs::create_dir_all(&plat_dir).unwrap();
+
+        let hash = "1111111111111111111111111111111111111111111111111111111111111111";
+        let manifest = crate::manifest::SingleTestManifest::new(
+            crate::manifest::ImageHash::new("sha256", hash).unwrap(),
+            crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap(),
+            1,
+            1,
+        )
+        .unwrap();
+        manifest.save(plat_dir.join("test.json")).unwrap();
+        manifest.save(plat_dir.join("test2.json")).unwrap();
+
+        // Create the local blob so validation passes
+        let blobs_root = temp.path().join(".gleon").join("blobs");
+        std::fs::create_dir_all(blobs_root.join("sha256")).unwrap();
+        std::fs::write(blobs_root.join("sha256").join(hash), b"data").unwrap();
+
+        let cfg = StorageConfig::new("memory://");
+        let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, None)
+            .await
+            .unwrap();
+
+        assert_eq!(res.total_manifest_blobs, 1);
+        assert_eq!(res.uploaded_blobs, 1);
+        assert_eq!(res.skipped_blobs, 0);
     }
 }

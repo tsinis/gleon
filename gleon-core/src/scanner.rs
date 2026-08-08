@@ -140,9 +140,6 @@ impl TestCaseResult {
 /// Validates that all segments of a test name contain only allowed characters `[a-z0-9_.-]`.
 /// The name can use either Unix-style forward slashes (`/`) or Windows-style backslashes (`\`) as separators.
 pub fn validate_test_name(name: &str) -> Result<(), String> {
-    if name == "." {
-        return Ok(());
-    }
     for segment in name.split(['/', '\\']) {
         if segment.is_empty() {
             return Err("Test name segment cannot be empty".to_string());
@@ -470,7 +467,7 @@ mod tests {
 
     #[test]
     fn test_validate_test_name() {
-        assert!(validate_test_name(".").is_ok());
+        assert!(validate_test_name(".").is_err());
         assert!(validate_test_name("billing").is_ok());
         assert!(validate_test_name("billing/stripe").is_ok());
         assert!(validate_test_name("billing/stripe-v2").is_ok());

@@ -224,11 +224,82 @@ mod tests {
         assert!(matches!(err_abs, Err(LintError::InvalidPlatformFilter(_))));
 
         // 4. Multi-segment platform filter
-        let err_multi = lint_workspace_manifests(&ctx, temp.path(), Some("macos/aarch64"));
+        let err_multi = lint_workspace_manifests(&ctx, temp.path(), Some("linux/x86_64"));
         assert!(matches!(
             err_multi,
             Err(LintError::InvalidPlatformFilter(_))
         ));
+
+        // 5. Invalid characters in normal platform filter
+        let err_invalid_chars = lint_workspace_manifests(&ctx, temp.path(), Some("LINUX"));
+        assert!(matches!(
+            err_invalid_chars,
+            Err(LintError::InvalidPlatformFilter(_))
+        ));
+
+        // 6. Valid platform filter on missing directory
+        let err_valid = lint_workspace_manifests(&ctx, temp.path(), Some("linux-x86_64"));
+        assert!(matches!(err_valid, Err(LintError::ManifestDirNotFound(_))));
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    #[test]
+    fn test_lint_unreadable_file_and_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempdir().unwrap();
+        let cli = Cli::for_test(Commands::Init);
+        let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
+        let manifests_dir = temp.path().join(".gleon").join("manifests");
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+
+        let valid_json = "{}";
+        let unreadable_file = manifests_dir.join("unreadable.json");
+        std::fs::write(&unreadable_file, valid_json).unwrap();
+
+        // Make file unreadable
+        let mut perms = std::fs::metadata(&unreadable_file).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&unreadable_file, perms).unwrap();
+
+        let report = lint_workspace_manifests(&ctx, temp.path(), None).unwrap();
+        assert!(!report.passed);
+        assert_eq!(report.corrupted_files.len(), 1);
+        assert!(report.corrupted_files[0].1.contains("Failed to read file:"));
+
+        // Restore permissions to allow cleanup
+        let mut perms = std::fs::metadata(&unreadable_file).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&unreadable_file, perms).unwrap();
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    #[test]
+    fn test_lint_unreadable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempdir().unwrap();
+        let cli = Cli::for_test(Commands::Init);
+        let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
+        let manifests_dir = temp.path().join(".gleon").join("manifests");
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+
+        let sub_dir = manifests_dir.join("sub");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        let test_file = sub_dir.join("test.json");
+        std::fs::write(&test_file, "{}").unwrap();
+
+        // Make sub_dir unreadable
+        let mut perms = std::fs::metadata(&sub_dir).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&sub_dir, perms).unwrap();
+
+        // Running lint should fail with an IoError for the unreadable directory (since into_io_error() is Some)
+        let res = lint_workspace_manifests(&ctx, temp.path(), None);
+        assert!(matches!(res, Err(LintError::Io(_))));
+
+        // Restore permissions to allow cleanup
+        let mut perms = std::fs::metadata(&sub_dir).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&sub_dir, perms).unwrap();
     }
 
     #[test]

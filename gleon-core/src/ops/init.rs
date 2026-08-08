@@ -109,10 +109,17 @@ pub fn init_workspace(
         .write(true)
         .create_new(true)
         .open(&env_template_path);
-    if let Ok(mut f) = env_create_res {
-        use std::io::Write;
-        let _ = f.write_all(template_content.as_bytes());
-        let _ = f.sync_all();
+    match env_create_res {
+        Ok(mut f) => {
+            use std::io::Write;
+            f.write_all(template_content.as_bytes())
+                .map_err(InitError::from)?;
+            f.sync_all().map_err(InitError::from)?;
+            // Durability: commit directory entry. Silently ignored on Windows.
+            let _ = std::fs::File::open(&gleon_dir).and_then(|d| d.sync_all());
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(InitError::Io(e)),
     }
 
     let internal_config = gleon_dir.join("gleon.yaml");
@@ -125,12 +132,18 @@ pub fn init_workspace(
         .write(true)
         .create_new(true)
         .open(&internal_config);
-    if let Ok(mut f) = config_create_res {
-        use std::io::Write;
-        f.write_all(yaml_content.as_bytes())
-            .map_err(InitError::from)?;
-        f.sync_all().map_err(InitError::from)?;
-        config_created = Some(internal_config);
+    match config_create_res {
+        Ok(mut f) => {
+            use std::io::Write;
+            f.write_all(yaml_content.as_bytes())
+                .map_err(InitError::from)?;
+            f.sync_all().map_err(InitError::from)?;
+            // Durability: commit directory entry. Silently ignored on Windows.
+            let _ = std::fs::File::open(&gleon_dir).and_then(|d| d.sync_all());
+            config_created = Some(internal_config);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(InitError::Io(e)),
     }
 
     Ok(InitResult {
@@ -142,12 +155,25 @@ pub fn init_workspace(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::ResolvedContext;
+
+    #[test]
+    fn test_init_error_from_io_error() {
+        let err1 = crate::io::IoError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "foo"));
+        let init_err1: InitError = err1.into();
+        assert!(matches!(init_err1, InitError::Io(_)));
+
+        let serde_err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+        let err2 = crate::io::IoError::JsonParse(serde_err);
+        let init_err2: InitError = err2.into();
+        assert!(matches!(init_err2, InitError::Io(_)));
+    }
 
     #[test]
     fn test_init_workspace_creates_structure_and_config() {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir = temp_dir.path();
-        let ctx = crate::context::ResolvedContext::default();
+        let ctx = ResolvedContext::default();
 
         let res = init_workspace(&ctx, base_dir).unwrap();
         assert!(res.gleon_dir.exists());
@@ -166,5 +192,37 @@ mod tests {
         assert!(env_template.exists());
         let template_str = std::fs::read_to_string(env_template).unwrap();
         assert!(template_str.contains("GLEON_STORAGE_URL="));
+    }
+
+    #[test]
+    fn test_init_platform_key_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut ctx = ResolvedContext::default();
+        ctx.platform.os = "invalid/os".to_string();
+
+        let res = init_workspace(&ctx, temp.path());
+        assert!(res.is_ok());
+
+        // manifests should be created without a platform sub-directory
+        let manifests_dir = temp.path().join(".gleon").join("manifests");
+        assert!(manifests_dir.exists());
+    }
+
+    #[test]
+    fn test_init_gitignore_append_newline() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        // Write .gitignore without trailing newline
+        std::fs::write(gleon_dir.join(".gitignore"), "some_ignored_file").unwrap();
+
+        let ctx = ResolvedContext::default();
+        let res = init_workspace(&ctx, temp.path());
+        assert!(res.is_ok());
+
+        let content = std::fs::read_to_string(gleon_dir.join(".gitignore")).unwrap();
+        assert!(content.contains("some_ignored_file\n"));
+        assert!(content.contains("runs/"));
     }
 }

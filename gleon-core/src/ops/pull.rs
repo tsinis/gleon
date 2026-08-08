@@ -32,11 +32,11 @@ pub enum PullError {
 
     /// Missing remote blob on Object Store.
     #[error(
-        "Missing remote blob for hash '{sha256}' referenced in manifest at platform '{platform}'. Blob was not found in remote storage."
+        "Missing remote blob for hash '{hash}' referenced in manifest at platform '{platform}'. Blob was not found in remote storage."
     )]
     MissingRemoteBlob {
-        /// The SHA256 hex string of the missing blob.
-        sha256: String,
+        /// The string representation of the missing hash.
+        hash: String,
         /// The platform directory key where the reference was found.
         platform: String,
     },
@@ -90,7 +90,7 @@ pub async fn pull_blobs(
     };
 
     let manifests_root = gleon_dir.join("manifests");
-    let blobs_dir = gleon_dir.join("blobs").join("sha256");
+    let blobs_root = gleon_dir.join("blobs");
 
     let platform_dirs = if all_platforms {
         match list_platform_dirs(&manifests_root) {
@@ -140,15 +140,15 @@ pub async fn pull_blobs(
     for (target_platform_key, target_dir) in platform_dirs {
         let index = WorkspaceIndex::load(&target_dir).map_err(PullError::Manifest)?;
 
-        for entry in index.entries().values() {
-            let hash_value = entry.hash.value();
-            if !referenced_hashes.contains(hash_value) {
-                referenced_hashes.insert(hash_value.to_string());
-                let blob_path = blobs_dir.join(hash_value);
-                if blob_path.is_file() {
+        for manifest in index.entries().values() {
+            let hash = &manifest.hash;
+            if !referenced_hashes.contains(hash) {
+                referenced_hashes.insert(hash.clone());
+                let local_blob_path = blobs_root.join(hash.scheme()).join(hash.value());
+                if local_blob_path.is_file() {
                     skipped_blobs += 1;
                 } else {
-                    missing_blobs.push((hash_value.to_string(), target_platform_key.clone()));
+                    missing_blobs.push((hash.clone(), target_platform_key.clone()));
                 }
             }
         }
@@ -173,14 +173,17 @@ pub async fn pull_blobs(
     let mut download_stream =
         futures::stream::iter(missing_blobs.into_iter().map(|(hash, _plat)| {
             let adapter = adapter.clone();
-            let dest_path = blobs_dir.join(&hash);
+            let dest_path = blobs_root.join(hash.scheme()).join(hash.value());
             let pb = progress_bar.clone();
             async move {
-                pb.set_message(format!("Downloading {}", &hash[..8.min(hash.len())]));
+                pb.set_message(format!(
+                    "Downloading {}",
+                    &hash.value()[..8.min(hash.value().len())]
+                ));
                 let res = match adapter.download_blob(&hash, &dest_path).await {
                     Ok(_) => Ok(()),
                     Err(StorageError::BlobNotFound(_)) => Err(PullError::MissingRemoteBlob {
-                        sha256: hash,
+                        hash: hash.value().to_string(),
                         platform: _plat,
                     }),
                     Err(e) => Err(PullError::Storage(e)),
@@ -218,7 +221,7 @@ mod tests {
         assert!(err1.to_string().contains("not initialized"));
 
         let err2 = PullError::MissingRemoteBlob {
-            sha256: "xyz".to_string(),
+            hash: "xyz".to_string(),
             platform: "linux-x86_64".to_string(),
         };
         assert!(err2.to_string().contains("Missing remote blob"));
@@ -261,9 +264,9 @@ mod tests {
         let cfg = StorageConfig::new("memory://");
 
         // Invalid platform override segment
-        let err = pull_blobs(&ctx, temp.path(), Some(&cfg), false, Some("../invalid")).await;
+        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, Some("../invalid")).await;
         assert!(matches!(
-            err,
+            res,
             Err(PullError::Context(ContextError::Platform(_)))
         ));
 
@@ -272,6 +275,126 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.total_manifest_blobs, 0);
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    #[tokio::test]
+    async fn test_pull_manifests_root_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        let manifests_dir = gleon_dir.join("manifests");
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+
+        let mut perms = std::fs::metadata(&manifests_dir).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&manifests_dir, perms.clone()).unwrap();
+
+        let ctx = ResolvedContext::default();
+        let cfg = StorageConfig::new("memory://");
+        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), true, None).await;
+        assert!(matches!(res, Err(PullError::Io(_))));
+
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&manifests_dir, perms).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_pull_invalid_platform_key() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+        let mut ctx = ResolvedContext::default();
+        ctx.platform.os = "invalid/os".to_string();
+
+        let cfg = StorageConfig::new("memory://");
+        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
+        assert!(matches!(
+            res,
+            Err(PullError::Context(ContextError::Platform(_)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_pull_empty_fallback_platform() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+
+        let plat_key = "5:linux-6:x86_64";
+        let fb_key = "5:macos-7:aarch64";
+        std::fs::create_dir_all(gleon_dir.join("manifests").join(plat_key)).unwrap();
+        std::fs::create_dir_all(gleon_dir.join("manifests").join(fb_key)).unwrap();
+
+        let mut ctx = ResolvedContext::default();
+        // Since we created both platform dir and fallback dir, setting platform key via os segment string won't work perfectly since plat_key contains colon.
+        // Wait, how do I mock ctx.platform.to_key() to return "5:linux-6:x86_64"?
+        ctx.platform.os = "linux".to_string();
+        ctx.platform.arch = Some("x86_64".to_string());
+        ctx.platform.renderer = None;
+        ctx.fallback_platform_key = Some(fb_key.to_string());
+
+        let cfg = StorageConfig::new("memory://");
+        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().total_manifest_blobs, 0);
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    #[tokio::test]
+    async fn test_pull_storage_io_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(gleon_dir.join("manifests")).unwrap();
+
+        let plat_key = "5:linux-6:x86_64";
+        let manifests_dir = gleon_dir.join("manifests").join(plat_key);
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+
+        let hash = "1111111111111111111111111111111111111111111111111111111111111111";
+        let manifest = crate::manifest::SingleTestManifest::new(
+            crate::manifest::ImageHash::new("sha256", hash).unwrap(),
+            crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap(),
+            1,
+            1,
+        )
+        .unwrap();
+        manifest.save(manifests_dir.join("test.json")).unwrap();
+
+        let mut ctx = ResolvedContext::default();
+        ctx.platform.os = "linux".to_string();
+        ctx.platform.arch = Some("x86_64".to_string());
+
+        let remote_dir = temp.path().join("remote_blobs");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        // Use a valid file storage URL
+        let cfg = StorageConfig::new(format!("file://{}", remote_dir.display()));
+        let adapter = crate::storage::ObjectStoreAdapter::from_config(&cfg).unwrap();
+        // Create an empty file to upload
+        let empty_file = temp.path().join("empty");
+        std::fs::write(&empty_file, "").unwrap();
+        // Upload the dummy blob so it exists remotely
+        adapter
+            .upload_blob(
+                &crate::manifest::ImageHash::new("sha256", hash).unwrap(),
+                &empty_file,
+            )
+            .await
+            .ok();
+
+        // Make the local blobs directory unreadable to trigger an IO error during download
+        let local_blobs = temp.path().join(".gleon").join("blobs");
+        std::fs::create_dir_all(&local_blobs).unwrap();
+
+        let mut perms = std::fs::metadata(&local_blobs).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&local_blobs, perms.clone()).unwrap();
+
+        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
+        assert!(matches!(res, Err(PullError::Storage(_))));
+
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&local_blobs, perms).unwrap();
     }
 
     #[tokio::test]
