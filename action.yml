@@ -1,4 +1,4 @@
-name: "Gleon Visual Regression"
+name: "gleon Visual Regression"
 description: "Runs visual diff checks and handles approval pipelines"
 branding:
   color: "orange"
@@ -6,10 +6,10 @@ branding:
 
 inputs:
   version:
-    description: "Gleon version tag to download (e.g. 'v1.0.0')"
+    description: "gleon version tag to download (e.g. 'v1.0.0')"
     required: true
   license-key:
-    description: "Gleon BSL License Key for private repositories"
+    description: "gleon BSL License Key for private repositories"
     required: false
     default: ""
   strict:
@@ -21,15 +21,15 @@ inputs:
     required: false
     default: "${{ github.base_ref || github.event.repository.default_branch || 'main' }}"
   command:
-    description: "Gleon command to execute (e.g. 'diff', 'pull', 'approve')"
+    description: "gleon command to execute (e.g. 'diff', 'pull', 'approve')"
     required: false
     default: "diff"
   working-directory:
-    description: "Directory to run Gleon from (useful for monorepos)"
+    description: "Directory to run gleon from (useful for monorepos)"
     required: false
     default: "."
   args:
-    description: "Additional flags for gleon diff"
+    description: "Additional flags for the selected gleon command (e.g. '--from=.gleon/diffs' for approve)"
     required: false
     default: ""
   github-token:
@@ -84,7 +84,7 @@ runs:
         echo "bin_name=$BIN_NAME" >> $GITHUB_OUTPUT
         echo "setup_dir=$SETUP_DIR" >> $GITHUB_OUTPUT
 
-    - name: Fetch and Verify Gleon Binary
+    - name: Fetch and Verify gleon Binary
       shell: bash
       env:
         GLEON_VERSION: ${{ inputs.version }}
@@ -131,13 +131,13 @@ runs:
         }
         "
 
-    - name: Add Gleon Binary to PATH
+    - name: Add gleon Binary to PATH
       shell: bash
       run: |
         chmod +x "${{ steps.resolve.outputs.setup_dir }}/${{ steps.resolve.outputs.bin_name }}"
         echo "${{ steps.resolve.outputs.setup_dir }}" >> $GITHUB_PATH
 
-    - name: Execute Gleon Engine
+    - name: Execute gleon Engine
       shell: bash
       env:
         GLEON_LICENSE_KEY: ${{ inputs.license-key }}
