@@ -23,7 +23,7 @@
 
 ## GitHub Action Usage
 
-Gleon provides a Composite GitHub Action (`tsinis/gleon`) for running visual regression testing in CI:
+`gleon` provides a Composite GitHub Action (`tsinis/gleon`) for running visual regression testing in CI:
 
 ```yaml
 steps:
@@ -32,7 +32,7 @@ steps:
     with:
       fetch-depth: 0 # Required for merge-base resolution
 
-  - name: Run Gleon Visual Regression
+  - name: Run gleon Visual Regression
     uses: tsinis/gleon@a1b2c3d4e5f67890123456789012345678901234 # Pin full commit SHA for action immutability
     with:
       version: "v1.0.0" # Immutable release version tag
@@ -42,15 +42,17 @@ steps:
 
 ### Action Inputs
 
-| Input           | Description                                                                                                                                         | Default                       |
-| :-------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------- |
-| `version`       | Gleon release version tag to download (e.g. `'v1.0.0'`)                                                                                             | **Required**                  |
-| `github-token`  | GitHub token (`${{ secrets.GITHUB_TOKEN }}`) to prevent API rate limits when downloading the binary. **Highly recommended** for active CI pipelines | `''`                          |
-| `checksum`      | Expected SHA256 digest of the binary for independent trust root verification                                                                        | **Required**                  |
-| `license-key`   | Commercial BSL license key for private repositories                                                                                                 | `''`                          |
-| `strict`        | Fail build on license violation (`'true'` / `'false'`)                                                                                              | `'false'`                     |
-| `target-branch` | Target branch for baseline comparison                                                                                                               | PR base ref or default branch |
-| `args`          | Additional flags for `gleon diff`                                                                                                                   | `''`                          |
+| Input               | Description                                                                                                                                         | Default                       |
+| :------------------ | :-------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------- |
+| `version`           | gleon release version tag to download (e.g. `'v1.0.0'`)                                                                                             | **Required**                  |
+| `github-token`      | GitHub token (`${{ secrets.GITHUB_TOKEN }}`) to prevent API rate limits when downloading the binary. **Highly recommended** for active CI pipelines | `''`                          |
+| `checksum`          | Expected SHA256 digest of the binary for independent trust root verification                                                                        | **Required**                  |
+| `license-key`       | Commercial BSL license key for private repositories                                                                                                 | `''`                          |
+| `strict`            | Fail build on license violation (`'true'` / `'false'`)                                                                                              | `'false'`                     |
+| `target-branch`     | Target branch for baseline comparison                                                                                                               | PR base ref or default branch |
+| `command`           | gleon command to execute (e.g. `'diff'`, `'pull'`, `'approve'`)                                                                                     | `'diff'`                      |
+| `working-directory` | Directory to run gleon from (useful for monorepos)                                                                                                  | `'.'`                         |
+| `args`              | Additional flags for the selected gleon command (e.g. `'--from=.gleon/diffs'` for approve)                                                          | `''`                          |
 
 ### Ephemeral Diff Branch Cleanup Workflow
 
@@ -59,7 +61,7 @@ When visual diffs are detected in a PR, ephemeral branches (`gleon/diffs/pr-<PR_
 To prevent orphan branches from accumulating in consumer repositories, add `.github/workflows/gleon-cleanup.yml` to your repository:
 
 ```yaml
-name: Gleon Ephemeral Branch Cleanup
+name: gleon Ephemeral Branch Cleanup
 
 on:
   pull_request_target:

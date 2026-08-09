@@ -1,4 +1,4 @@
-name: Gleon Cleanup
+name: gleon Cleanup
 
 on:
   pull_request_target:

@@ -1,4 +1,4 @@
-name: Gleon Baseline Approval
+name: gleon Baseline Approval
 
 on:
   issue_comment:
@@ -45,7 +45,7 @@ jobs:
             }
             core.setOutput('head_ref', pr.data.head.ref);
             core.setOutput('head_sha', pr.data.head.sha);
-            
+
             try {
               const ref = await github.rest.git.getRef({
                 owner: repo.owner,
@@ -67,7 +67,7 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
-      - name: Install Trusted Gleon Binary
+      - name: Install Trusted gleon Binary
         run: cargo install --path gleon
 
       - name: Fetch PR Branch & Screenshots
@@ -158,7 +158,7 @@ jobs:
           set -eo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
+
           export GIT_INDEX_FILE=.git/tmp_index
           rm -f "$GIT_INDEX_FILE"
           git read-tree "$HEAD_SHA"
