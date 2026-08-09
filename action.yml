@@ -20,6 +20,14 @@ inputs:
     description: "Target branch for baseline comparison (defaults to PR base ref or default branch)"
     required: false
     default: "${{ github.base_ref || github.event.repository.default_branch || 'main' }}"
+  command:
+    description: "Gleon command to execute (e.g. 'diff', 'pull', 'approve')"
+    required: false
+    default: "diff"
+  working-directory:
+    description: "Directory to run Gleon from (useful for monorepos)"
+    required: false
+    default: "."
   args:
     description: "Additional flags for gleon diff"
     required: false
@@ -135,6 +143,8 @@ runs:
         GLEON_LICENSE_KEY: ${{ inputs.license-key }}
         GLEON_STRICT: ${{ inputs.strict }}
         GLEON_TARGET_BRANCH: ${{ inputs.target-branch }}
+        GLEON_COMMAND: ${{ inputs.command }}
+        GLEON_WORKING_DIRECTORY: ${{ inputs.working-directory }}
         GLEON_ARGS: ${{ inputs.args }}
       run: |
         args=()
@@ -146,4 +156,5 @@ runs:
           done < "$ARGS_FILE"
           rm -f "$ARGS_FILE"
         fi
-        gleon diff "${args[@]}"
+        cd "$GLEON_WORKING_DIRECTORY"
+        gleon "$GLEON_COMMAND" "${args[@]}"
