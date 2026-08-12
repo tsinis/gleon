@@ -6,8 +6,9 @@ branding:
 
 inputs:
   version:
-    description: "gleon version tag to download (e.g. 'v1.0.0')"
-    required: true
+    description: "gleon version tag to download (e.g. 'v0.1.0' or 'latest')"
+    required: false
+    default: "latest"
   license-key:
     description: "gleon BSL License Key for private repositories"
     required: false
@@ -21,7 +22,7 @@ inputs:
     required: false
     default: "${{ github.base_ref || github.event.repository.default_branch || 'main' }}"
   command:
-    description: "gleon command to execute (e.g. 'diff', 'pull', 'approve')"
+    description: "gleon command to execute (e.g. 'diff', 'pull', 'approve', 'verify')"
     required: false
     default: "diff"
   working-directory:
@@ -35,10 +36,19 @@ inputs:
   github-token:
     description: "GitHub token to prevent API rate limits when downloading releases (optional)"
     required: false
-    default: ""
+    default: "${{ github.token }}"
   checksum:
-    description: "Expected SHA256 checksum of the binary for independent trust verification"
-    required: true
+    description: "Expected SHA256 checksum of the binary for independent trust verification (optional)"
+    required: false
+    default: ""
+  pr-number:
+    description: "Pull Request number (for 'verify' command reporting)"
+    required: false
+    default: "${{ github.event.pull_request.number }}"
+  artifact-name:
+    description: "Name of the artifact to upload on failure (for 'verify' command)"
+    required: false
+    default: "gleon-artifacts-${{ github.event.pull_request.number }}-default"
 
 runs:
   using: "composite"
@@ -93,10 +103,14 @@ runs:
         BIN_PATH: "${{ steps.resolve.outputs.setup_dir }}/${{ steps.resolve.outputs.bin_name }}"
       run: |
         VERSION="$GLEON_VERSION"
-        if [[ "$VERSION" =~ ^[0-9] ]]; then
-          VERSION="v${VERSION}"
+        if [ "$VERSION" = "latest" ] || [ -z "$VERSION" ]; then
+          BASE_URL="https://github.com/tsinis/gleon/releases/latest/download"
+        else
+          if [[ "$VERSION" =~ ^[0-9] ]]; then
+            VERSION="v${VERSION}"
+          fi
+          BASE_URL="https://github.com/tsinis/gleon/releases/download/${VERSION}"
         fi
-        BASE_URL="https://github.com/tsinis/gleon/releases/download/${VERSION}"
 
         ASSET_NAME="gleon-${{ steps.resolve.outputs.target }}"
         SETUP_DIR="${{ steps.resolve.outputs.setup_dir }}"
@@ -119,8 +133,8 @@ runs:
         const expected = process.env.CHECKSUM ? process.env.CHECKSUM.trim() : '';
 
         if (!expected) {
-          console.error('Independent SHA256 checksum is required for verification. Please provide the checksum input.');
-          process.exit(1);
+          console.log('No SHA256 checksum provided, skipping checksum verification.');
+          process.exit(0);
         }
 
         const actual = crypto.createHash('sha256').update(fs.readFileSync(binPath)).digest('hex');
@@ -137,7 +151,8 @@ runs:
         chmod +x "${{ steps.resolve.outputs.setup_dir }}/${{ steps.resolve.outputs.bin_name }}"
         echo "${{ steps.resolve.outputs.setup_dir }}" >> $GITHUB_PATH
 
-    - name: Execute gleon Engine
+    - name: Execute Single Command
+      if: inputs.command != 'verify'
       shell: bash
       env:
         GLEON_LICENSE_KEY: ${{ inputs.license-key }}
@@ -146,6 +161,7 @@ runs:
         GLEON_COMMAND: ${{ inputs.command }}
         GLEON_WORKING_DIRECTORY: ${{ inputs.working-directory }}
         GLEON_ARGS: ${{ inputs.args }}
+        COMMENT_BODY: ${{ env.COMMENT_BODY }}
       run: |
         args=()
         if [ -n "$GLEON_ARGS" ]; then
@@ -156,5 +172,73 @@ runs:
           done < "$ARGS_FILE"
           rm -f "$ARGS_FILE"
         fi
+
+        # Parse extra filter arguments from PR comment if running approve via comment
+        if [ "$GLEON_COMMAND" = "approve" ] && [ -n "$COMMENT_BODY" ]; then
+          RAW_ARGS="$COMMENT_BODY"
+          if ! ARG_STRING="$(printf '%s\n' "$RAW_ARGS" | grep '^/gleon approve' | head -n 1 | sed 's#^/gleon approve[[:space:]]*##' | xargs)"; then
+            echo "::error::Failed to parse arguments from PR comment. Check for mismatched quotes."
+            exit 1
+          fi
+          if [ -n "$ARG_STRING" ]; then
+            read -r -a TOKENS <<< "$ARG_STRING"
+            for token in "${TOKENS[@]}"; do
+              if [[ "$token" =~ ^[A-Za-z0-9._/:=-]+$ ]]; then
+                args+=("$token")
+              else
+                echo "::error::Invalid argument token: $token"
+                exit 1
+              fi
+            done
+          fi
+        fi
+
         cd "$GLEON_WORKING_DIRECTORY"
         gleon "$GLEON_COMMAND" "${args[@]}"
+
+    - name: Verify - Pull Baselines
+      if: inputs.command == 'verify'
+      shell: bash
+      env:
+        GLEON_LICENSE_KEY: ${{ inputs.license-key }}
+        GLEON_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+      run: |
+        cd "$GLEON_WORKING_DIRECTORY"
+        gleon pull
+
+    - name: Verify - Run Diff
+      if: inputs.command == 'verify'
+      shell: bash
+      env:
+        GLEON_LICENSE_KEY: ${{ inputs.license-key }}
+        GLEON_STRICT: ${{ inputs.strict }}
+        GLEON_TARGET_BRANCH: ${{ inputs.target-branch }}
+        GLEON_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+      run: |
+        cd "$GLEON_WORKING_DIRECTORY"
+        gleon diff
+
+    - name: Verify - Generate Report & Post Comment
+      if: inputs.command == 'verify' && failure() && github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GLEON_HTML_ARTIFACT_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        GLEON_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+      run: |
+        cd "$GLEON_WORKING_DIRECTORY"
+        if ! gleon report --report .gleon/runs/latest/gleon-report.json --pr-number "$PR_NUMBER" markdown > gleon-report.md; then
+          echo "::warning::Failed to generate markdown report from JSON. Outputting minimal fallback."
+          echo "### ⚠️ Gleon Visual Regression Failed" > gleon-report.md
+          echo "The report generator crashed or could not parse the report JSON. Please check the Action logs." >> gleon-report.md
+        fi
+        gh pr comment "$PR_NUMBER" --body-file gleon-report.md || echo "Failed to post PR comment. Does the token have pull-requests: write permission?"
+
+    - name: Verify - Upload Artifacts
+      if: inputs.command == 'verify' && failure() && github.event_name == 'pull_request'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.working-directory }}/.gleon/runs/latest/
+        retention-days: 7

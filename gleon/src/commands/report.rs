@@ -80,19 +80,18 @@ pub async fn run_report(
                 };
 
                 for p in paths {
-                    if let Some(path_str) = p.to_str() {
-                        let path_buf = p.to_path_buf();
-                        let path_string = path_str.to_string();
-                        let adapter = adapter.clone();
-                        let sem = semaphore.clone();
-                        join_set.spawn(async move {
-                            let _permit = sem.acquire_owned().await.expect("Semaphore closed");
-                            adapter
-                                .sign_blob_url(&path_string, expires_in)
-                                .await
-                                .map(|signed| (path_buf, signed))
-                        });
-                    }
+                    let normalized_key =
+                        gleon_core::scanner::FileScanner::normalize_path_str(p).to_string();
+                    let path_buf = p.to_path_buf();
+                    let adapter = adapter.clone();
+                    let sem = semaphore.clone();
+                    join_set.spawn(async move {
+                        let _permit = sem.acquire_owned().await.expect("Semaphore closed");
+                        adapter
+                            .sign_blob_url(&normalized_key, expires_in)
+                            .await
+                            .map(|signed| (path_buf, signed))
+                    });
                 }
             }
 
@@ -115,9 +114,17 @@ pub async fn run_report(
     let artifact_env = env.get_var("GLEON_HTML_ARTIFACT_URL");
     let html_artifact_url = artifact_env.as_deref().filter(|s| !s.is_empty());
 
+    let is_ci = env.get_var("GITHUB_ACTIONS").is_some() || pr_number.is_some();
+    let context = if is_ci {
+        gleon_core::report::ExecutionContext::GitHubActions
+    } else {
+        gleon_core::report::ExecutionContext::LocalTerminal
+    };
+
     let has_signed_urls = !signed_urls.is_empty();
     let resolver = |p: &std::path::Path| signed_urls.get(p).cloned();
     let options = MarkdownReportOptions {
+        context,
         base_image_url,
         html_artifact_url,
         image_url_resolver: if has_signed_urls {
@@ -127,7 +134,17 @@ pub async fn run_report(
         },
     };
 
-    let md_content = ReportGenerator::render_pr_comment(&report_data, &options);
+    let report_content = match format.to_lowercase().as_str() {
+        "markdown" | "comment" => ReportGenerator::render_pr_comment(&report_data, &options),
+        "html" => ReportGenerator::generate_html(&report_data, None)
+            .with_context(|| "Failed to generate HTML report")?
+            .unwrap_or_else(|| "<html><body>All tests passed!</body></html>".to_string()),
+        "junit" | "junit.xml" | "xml" => ReportGenerator::generate_junit_xml(&report_data)
+            .with_context(|| "Failed to generate JUnit XML report")?,
+        "json" => serde_json::to_string_pretty(&report_data)
+            .with_context(|| "Failed to serialize report to JSON")?,
+        other => return Err(anyhow!("Unsupported report format: '{}'", other)),
+    };
 
     if let Some(out_path) = out {
         let parent = out_path
@@ -139,11 +156,11 @@ pub async fn run_report(
                 parent.display()
             )
         })?;
-        gleon_core::io::save_file_atomically(out_path, md_content.as_bytes())
+        gleon_core::io::save_file_atomically(out_path, report_content.as_bytes())
             .with_context(|| format!("Failed to write output to '{}'", out_path.display()))?;
-        tracing::info!("Generated markdown report at {}", out_path.display());
+        tracing::info!("Generated {} report at {}", format, out_path.display());
     } else {
-        println!("{}", md_content);
+        println!("{}", report_content);
     }
 
     Ok(0)
@@ -220,5 +237,69 @@ mod tests {
         let md = std::fs::read_to_string(&out_path).unwrap();
         assert!(md.contains("Encode Error"));
         assert!(md.contains("actual_enc.png"));
+    }
+
+    #[tokio::test]
+    async fn test_run_report_formats() {
+        let temp = tempfile::tempdir().unwrap();
+        let report_json_path = temp.path().join("report.json");
+        let tc = TestCaseResult {
+            name: "test_fmt".to_string(),
+            result: gleon_core::scanner::TestImageResult::EncodeError {
+                relative_path: std::path::PathBuf::from("enc.png"),
+                actual_path: std::path::PathBuf::from("actual_enc.png"),
+                error: "Encode failure".to_string(),
+            },
+        };
+        gleon_core::io::save_json_atomically(&report_json_path, &vec![tc]).unwrap();
+
+        struct DummyEnv;
+        impl gleon_core::git::EnvProvider for DummyEnv {
+            fn get_var(&self, _key: &str) -> Option<String> {
+                None
+            }
+        }
+
+        // Test JUnit format
+        let junit_out = temp.path().join("output.xml");
+        let res_junit = run_report(
+            &DummyEnv,
+            None,
+            "junit",
+            &report_json_path,
+            None,
+            Some(&junit_out),
+        )
+        .await;
+        assert!(res_junit.is_ok());
+        let xml = std::fs::read_to_string(&junit_out).unwrap();
+        assert!(xml.contains("<testsuites") || xml.contains("<testsuite"));
+
+        // Test HTML format
+        let html_out = temp.path().join("output.html");
+        let res_html = run_report(
+            &DummyEnv,
+            None,
+            "html",
+            &report_json_path,
+            None,
+            Some(&html_out),
+        )
+        .await;
+        assert!(res_html.is_ok());
+        let html = std::fs::read_to_string(&html_out).unwrap();
+        assert!(html.contains("<!DOCTYPE html>") || html.contains("<html"));
+
+        // Test unsupported format
+        let res_unsupported = run_report(
+            &DummyEnv,
+            None,
+            "invalid_fmt",
+            &report_json_path,
+            None,
+            None,
+        )
+        .await;
+        assert!(res_unsupported.is_err());
     }
 }
