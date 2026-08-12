@@ -75,6 +75,33 @@ pub struct StageResult {
     pub total_screenshots_staged: usize,
 }
 
+/// Applies the given path filters to a list of test cases in-place.
+pub(crate) fn filter_test_cases(
+    test_cases: &mut Vec<crate::scanner::TestCase>,
+    filter_paths: Option<&[PathBuf]>,
+) {
+    if let Some(filters) = filter_paths {
+        let normalized_filters: Vec<_> = filters
+            .iter()
+            .map(|f| (f, FileScanner::normalize_path_str(f).to_lowercase()))
+            .collect();
+
+        test_cases.retain(|case| {
+            let rel_norm = FileScanner::normalize_path_str(&case.image.relative_path);
+            normalized_filters.iter().any(|(f, norm_f)| {
+                case.image.absolute_path.starts_with(f)
+                    || case.image.relative_path.starts_with(f)
+                    || (rel_norm.len() >= norm_f.len()
+                        && rel_norm.as_bytes()[..norm_f.len()]
+                            .eq_ignore_ascii_case(norm_f.as_bytes())
+                        && (rel_norm.len() == norm_f.len()
+                            || norm_f.as_bytes().last() == Some(&b'/')
+                            || rel_norm.as_bytes()[norm_f.len()] == b'/'))
+            })
+        });
+    }
+}
+
 /// Executes staging pipeline across the workspace.
 pub fn stage_workspace(
     context: &ResolvedContext,
@@ -82,7 +109,7 @@ pub fn stage_workspace(
     filter_paths: Option<&[PathBuf]>,
 ) -> Result<StageResult, StageError> {
     let gleon_dir = base_dir.join(".gleon");
-    if !gleon_dir.exists() {
+    if std::fs::metadata(&gleon_dir).is_err() {
         return Err(StageError::NotInitialized);
     }
 
@@ -98,13 +125,15 @@ pub fn stage_workspace(
 
     let config = context.config.as_ref().cloned().unwrap_or_default();
 
-    // Scan workspace screenshots
-    let test_cases = FileScanner::scan_workspace(&config, base_dir).map_err(StageError::Scanner)?;
+    let mut test_cases =
+        FileScanner::scan_workspace(&config, base_dir).map_err(StageError::Scanner)?;
+
+    filter_test_cases(&mut test_cases, filter_paths);
+
+    let pb = crate::ui::create_progress_bar(test_cases.len() as u64);
+    pb.set_message("Staging screenshots...");
 
     let mut workspace_index = WorkspaceIndex::load(&manifests_dir).map_err(StageError::Manifest)?;
-
-    let mut staged_test_cases = Vec::new();
-    let mut total_screenshots_staged = 0;
 
     use rayon::prelude::*;
 
@@ -118,16 +147,6 @@ pub fn stage_workspace(
 
     let processed_results: Result<Vec<StagedItem>, StageError> = test_cases
         .into_par_iter()
-        .filter(|case| {
-            if let Some(filters) = filter_paths {
-                filters.iter().any(|f| {
-                    case.image.absolute_path.starts_with(f)
-                        || case.image.relative_path.starts_with(f)
-                })
-            } else {
-                true
-            }
-        })
         .map(|case| {
             let png_bytes = std::fs::read(&case.image.absolute_path).map_err(StageError::Io)?;
             let dynamic_img =
@@ -146,6 +165,8 @@ pub fn stage_workspace(
             let blob_path = blobs_dir.join(&sha256_hex);
             crate::io::save_file_atomically(&blob_path, &png_bytes).map_err(StageError::from)?;
 
+            pb.inc(1);
+
             Ok(StagedItem {
                 case_name: case.name,
                 sha256_hex,
@@ -156,7 +177,16 @@ pub fn stage_workspace(
         })
         .collect();
 
-    let processed_results = processed_results?;
+    let processed_results = match processed_results {
+        Ok(res) => {
+            pb.finish_and_clear();
+            res
+        }
+        Err(e) => {
+            pb.finish_and_clear();
+            return Err(e);
+        }
+    };
 
     // Clean up orphan manifests when performing a full workspace stage (no path filters)
     if filter_paths.is_none() {
@@ -164,15 +194,21 @@ pub fn stage_workspace(
             .iter()
             .map(|item| item.case_name.as_str())
             .collect();
-        let existing_names: Vec<_> = workspace_index.entries().keys().cloned().collect();
-        for existing in existing_names {
-            if !scanned_names.contains(existing.as_str()) {
-                workspace_index
-                    .remove_test(&manifests_dir, &existing)
-                    .map_err(StageError::Manifest)?;
-            }
+        let orphan_names: Vec<_> = workspace_index
+            .entries()
+            .keys()
+            .filter(|k| !scanned_names.contains(k.as_str()))
+            .cloned()
+            .collect();
+        for existing in orphan_names {
+            workspace_index
+                .remove_test(&manifests_dir, &existing)
+                .map_err(StageError::Manifest)?;
         }
     }
+
+    let mut staged_test_cases = Vec::new();
+    let mut total_screenshots_staged = 0;
 
     for item in processed_results {
         let hash = ImageHash::new("sha256", &item.sha256_hex).map_err(StageError::Manifest)?;
@@ -264,5 +300,81 @@ mod tests {
         assert!(!format!("{:?}", res).is_empty());
         let default_res = StageResult::default();
         assert_eq!(default_res.total_screenshots_staged, 0);
+    }
+
+    #[test]
+    fn test_filter_test_cases() {
+        use crate::scanner::{TestCase, TestImage};
+        use std::sync::Arc;
+
+        let rule = Arc::new(crate::config::ScreenshotRule {
+            include: vec![],
+            mode: crate::config::Mode::Pixel,
+            diff: crate::config::DiffConfig::default(),
+            masks: vec![],
+        });
+
+        let cases = vec![
+            TestCase {
+                name: "test1".to_string(),
+                image: TestImage {
+                    relative_path: PathBuf::from("a/test1.png"),
+                    absolute_path: PathBuf::from("/base/a/test1.png"),
+                },
+                rule: rule.clone(),
+            },
+            TestCase {
+                name: "test2".to_string(),
+                image: TestImage {
+                    relative_path: PathBuf::from("b/test2.png"),
+                    absolute_path: PathBuf::from("/base/b/test2.png"),
+                },
+                rule: rule.clone(),
+            },
+        ];
+
+        // 1. None should keep all
+        let mut cases_clone = cases.clone();
+        filter_test_cases(&mut cases_clone, None);
+        assert_eq!(cases_clone.len(), 2);
+
+        // 2. Filter keeping only test1 via absolute path
+        let mut cases_clone2 = cases.clone();
+        let filter1 = vec![PathBuf::from("/base/a")];
+        filter_test_cases(&mut cases_clone2, Some(&filter1));
+        assert_eq!(cases_clone2.len(), 1);
+        assert_eq!(cases_clone2[0].name, "test1");
+
+        // 3. Filter with mixed casing (e.g. "A/TEST1.PNG")
+        let mut cases_clone3 = cases.clone();
+        let filter_mixed = vec![PathBuf::from("A/TEST1.PNG")];
+        filter_test_cases(&mut cases_clone3, Some(&filter_mixed));
+        assert_eq!(cases_clone3.len(), 1);
+        assert_eq!(cases_clone3[0].name, "test1");
+
+        // 4. Filter string prefix bug (e.g. "a" should not match "a_other")
+        let cases_prefix = vec![
+            TestCase {
+                name: "test_a".to_string(),
+                image: TestImage {
+                    relative_path: PathBuf::from("a/test1.png"),
+                    absolute_path: PathBuf::from("/base/a/test1.png"),
+                },
+                rule: rule.clone(),
+            },
+            TestCase {
+                name: "test_a_other".to_string(),
+                image: TestImage {
+                    relative_path: PathBuf::from("a_other/test1.png"),
+                    absolute_path: PathBuf::from("/base/a_other/test1.png"),
+                },
+                rule: rule.clone(),
+            },
+        ];
+        let mut cases_prefix_clone = cases_prefix.clone();
+        let filter_prefix = vec![PathBuf::from("a")];
+        filter_test_cases(&mut cases_prefix_clone, Some(&filter_prefix));
+        assert_eq!(cases_prefix_clone.len(), 1);
+        assert_eq!(cases_prefix_clone[0].name, "test_a");
     }
 }

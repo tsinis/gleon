@@ -59,32 +59,38 @@ pub fn make_relative_path(target: &std::path::Path, base: &std::path::Path) -> s
         return target.to_path_buf();
     }
 
-    fn normalize_lex(p: &std::path::Path) -> PathBuf {
-        let mut out = PathBuf::new();
-        for comp in p.components() {
-            match comp {
-                Component::ParentDir => match out.components().next_back() {
-                    Some(Component::Normal(_)) => {
-                        out.pop();
-                    }
-                    _ => {
-                        out.push(comp);
-                    }
-                },
-                Component::CurDir => {}
-                _ => {
-                    out.push(comp);
+    let mut norm_target = Vec::new();
+    for comp in target.components() {
+        match comp {
+            Component::ParentDir => {
+                if let Some(Component::Normal(_)) = norm_target.last() {
+                    norm_target.pop();
+                } else {
+                    norm_target.push(comp);
                 }
             }
+            Component::CurDir => {}
+            _ => norm_target.push(comp),
         }
-        out
     }
 
-    let norm_target = normalize_lex(target);
-    let norm_base = normalize_lex(base);
+    let mut norm_base = Vec::new();
+    for comp in base.components() {
+        match comp {
+            Component::ParentDir => {
+                if let Some(Component::Normal(_)) = norm_base.last() {
+                    norm_base.pop();
+                } else {
+                    norm_base.push(comp);
+                }
+            }
+            Component::CurDir => {}
+            _ => norm_base.push(comp),
+        }
+    }
 
-    let mut target_comps = norm_target.components();
-    let mut base_comps = norm_base.components();
+    let mut target_comps = norm_target.into_iter();
+    let mut base_comps = norm_base.into_iter();
 
     #[cfg(windows)]
     if let (Some(Component::Prefix(p1)), Some(Component::Prefix(p2))) =
@@ -132,6 +138,7 @@ pub fn make_relative_path(target: &std::path::Path, base: &std::path::Path) -> s
 
 pub type ImageUrlResolver<'a> = dyn Fn(&std::path::Path) -> Option<String> + Sync + 'a;
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExecutionContext {
     #[default]
@@ -149,7 +156,11 @@ pub struct MarkdownReportOptions<'a> {
 
 pub struct ReportGenerator;
 
-impl ReportGenerator {}
+impl ReportGenerator {
+    pub const FOOTER_GITHUB_ACTIONS: &'static str = "\n---\n*Reply with `/gleon approve` to update baseline images for this PR (see repository README for workflow setup instructions).*\n";
+    pub const FOOTER_LOCAL_TERMINAL: &'static str =
+        "\n---\n*Run `gleon approve` to accept failed screenshots as new baselines locally.*\n";
+}
 
 // Zero-copy serialization wrapper for formatting a single path
 struct FormattedPath<'a> {
@@ -1147,14 +1158,10 @@ impl ReportGenerator {
 
         match options.context {
             ExecutionContext::GitHubActions => {
-                out.push_str(
-                    "\n---\n*Reply with `/gleon approve` to update baseline images for this PR (see repository README for workflow setup instructions).*\n",
-                );
+                out.push_str(Self::FOOTER_GITHUB_ACTIONS);
             }
             ExecutionContext::LocalTerminal => {
-                out.push_str(
-                    "\n---\n*Run `gleon approve` to accept failed screenshots as new baselines locally.*\n",
-                );
+                out.push_str(Self::FOOTER_LOCAL_TERMINAL);
             }
         }
         out
@@ -1783,19 +1790,13 @@ mod tests {
             ..Default::default()
         };
         let md_gh = ReportGenerator::render_pr_comment(&tests, &opts_gh);
-        assert!(
-            md_gh.contains("Reply with `/gleon approve` to update baseline images for this PR")
-        );
+        assert!(md_gh.contains(ReportGenerator::FOOTER_GITHUB_ACTIONS));
 
         let opts_local = MarkdownReportOptions {
             context: ExecutionContext::LocalTerminal,
             ..Default::default()
         };
         let md_local = ReportGenerator::render_pr_comment(&tests, &opts_local);
-        assert!(
-            md_local.contains(
-                "Run `gleon approve` to accept failed screenshots as new baselines locally"
-            )
-        );
+        assert!(md_local.contains(ReportGenerator::FOOTER_LOCAL_TERMINAL));
     }
 }

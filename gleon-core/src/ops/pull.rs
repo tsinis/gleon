@@ -72,7 +72,7 @@ pub async fn pull_blobs(
     platform_override: Option<&str>,
 ) -> Result<PullResult, PullError> {
     let gleon_dir = base_dir.join(".gleon");
-    if !gleon_dir.exists() {
+    if std::fs::metadata(&gleon_dir).is_err() {
         return Err(PullError::NotInitialized);
     }
 

@@ -130,11 +130,16 @@ runs:
         const crypto = require('crypto');
 
         const binPath = process.env.BIN_PATH;
-        const expected = process.env.CHECKSUM ? process.env.CHECKSUM.trim() : '';
+        let expected = process.env.CHECKSUM ? process.env.CHECKSUM.trim() : '';
 
         if (!expected) {
           console.log('No SHA256 checksum provided, skipping checksum verification.');
           process.exit(0);
+        }
+
+        const colonIdx = expected.indexOf(':');
+        if (colonIdx !== -1) {
+          expected = expected.substring(colonIdx + 1);
         }
 
         const actual = crypto.createHash('sha256').update(fs.readFileSync(binPath)).digest('hex');
@@ -166,7 +171,7 @@ runs:
         args=()
         if [ -n "$GLEON_ARGS" ]; then
           ARGS_FILE=$(mktemp)
-          python3 -c "import os, json, sys; args = json.loads(os.environ.get('GLEON_ARGS', '[]')); sys.exit('GLEON_ARGS must be a JSON array') if not isinstance(args, list) else None; open(sys.argv[1], 'wb').write(b'\0'.join(str(a).encode('utf-8') for a in args) + (b'\0' if args else b''))" "$ARGS_FILE" || exit 1
+          python3 -c "import os, json, shlex, sys; raw = os.environ.get('GLEON_ARGS', '').strip(); args = json.loads(raw) if raw.startswith('[') else shlex.split(raw) if raw else []; open(sys.argv[1], 'wb').write(b'\0'.join(str(a).encode('utf-8') for a in args) + (b'\0' if args else b''))" "$ARGS_FILE" || exit 1
           while IFS= read -r -d '' arg; do
             args+=("$arg")
           done < "$ARGS_FILE"
@@ -237,7 +242,7 @@ runs:
 
     - name: Verify - Upload Artifacts
       if: inputs.command == 'verify' && failure() && github.event_name == 'pull_request'
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: ${{ inputs.artifact-name }}
         path: ${{ inputs.working-directory }}/.gleon/runs/latest/

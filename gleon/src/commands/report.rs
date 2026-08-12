@@ -134,17 +134,28 @@ pub async fn run_report(
         },
     };
 
-    let report_content = match format.to_lowercase().as_str() {
-        "markdown" | "comment" => ReportGenerator::render_pr_comment(&report_data, &options),
-        "html" => ReportGenerator::generate_html(&report_data, None)
-            .with_context(|| "Failed to generate HTML report")?
-            .unwrap_or_else(|| "<html><body>All tests passed!</body></html>".to_string()),
-        "junit" | "junit.xml" | "xml" => ReportGenerator::generate_junit_xml(&report_data)
-            .with_context(|| "Failed to generate JUnit XML report")?,
-        "json" => serde_json::to_string_pretty(&report_data)
-            .with_context(|| "Failed to serialize report to JSON")?,
-        other => return Err(anyhow!("Unsupported report format: '{}'", other)),
-    };
+    let report_content =
+        if format.eq_ignore_ascii_case("markdown") || format.eq_ignore_ascii_case("comment") {
+            ReportGenerator::render_pr_comment(&report_data, &options)
+        } else if format.eq_ignore_ascii_case("html") {
+            // TODO: support options in generate_html
+            ReportGenerator::generate_html(&report_data, None)
+                .with_context(|| "Failed to generate HTML report")?
+                .unwrap_or_else(|| "<html><body>All tests passed!</body></html>".to_string())
+        } else if format.eq_ignore_ascii_case("junit")
+            || format.eq_ignore_ascii_case("junit.xml")
+            || format.eq_ignore_ascii_case("xml")
+        {
+            // TODO: support options in generate_junit_xml
+            ReportGenerator::generate_junit_xml(&report_data)
+                .with_context(|| "Failed to generate JUnit XML report")?
+        } else if format.eq_ignore_ascii_case("json") {
+            // TODO: support options in json
+            serde_json::to_string_pretty(&report_data)
+                .with_context(|| "Failed to serialize report to JSON")?
+        } else {
+            return Err(anyhow!("Unsupported report format: '{}'", format));
+        };
 
     if let Some(out_path) = out {
         let parent = out_path

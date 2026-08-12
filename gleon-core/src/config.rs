@@ -460,6 +460,10 @@ impl Default for GleonConfig {
                 GlobPattern::new("node_modules/**").expect("Valid pattern"),
                 #[allow(clippy::expect_used)]
                 GlobPattern::new("target/**").expect("Valid pattern"),
+                #[allow(clippy::expect_used)]
+                GlobPattern::new("build/**").expect("Valid pattern"),
+                #[allow(clippy::expect_used)]
+                GlobPattern::new("example/**").expect("Valid pattern"),
             ],
         }
     }

@@ -226,7 +226,8 @@ pub(crate) fn process_diff_case(
                     error: format!("Failed to create directory for diff: {}", e),
                 };
             }
-            let diff_file_name = format!("diff_{raw_file_name}");
+            let mut diff_file_name = std::ffi::OsString::from("diff_");
+            diff_file_name.push(&*raw_file_name);
             let diff_file_path = case_diff_dir.join(&diff_file_name);
 
             let mut cursor = std::io::Cursor::new(Vec::new());
@@ -262,7 +263,7 @@ pub fn run_diff(
     base_dir: &Path,
 ) -> Result<DiffReportResult, DiffOpError> {
     let gleon_dir = base_dir.join(".gleon");
-    if !gleon_dir.exists() {
+    if std::fs::metadata(&gleon_dir).is_err() {
         return Err(DiffOpError::NotInitialized);
     }
 

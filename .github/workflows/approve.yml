@@ -65,7 +65,7 @@ jobs:
             });
 
             // Security: Reject PRs from forks to prevent untrusted code execution
-            if (pr.data.head.repo.full_name !== pr.data.base.repo.full_name) {
+            if (!pr.data.head.repo || pr.data.head.repo.full_name !== pr.data.base.repo.full_name) {
               core.setFailed("Refusing to approve PRs from forks due to security risks.");
             }
 
@@ -73,14 +73,14 @@ jobs:
             core.setOutput("head_ref", pr.data.head.ref);
 
       - name: Checkout PR Branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           token: ${{ inputs.pat-token || github.token }}
           # Security: Target the PR HEAD SHA specifically.
           ref: ${{ steps.pr-info.outputs.head_sha }}
 
       - name: Download Artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: gleon-artifacts-${{ github.event.issue.number }}-*
           path: .gleon-downloads/
