@@ -1559,6 +1559,7 @@ dependencies = [
  "dialoguer",
  "gleon-core",
  "predicates",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",

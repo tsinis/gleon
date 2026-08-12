@@ -32,27 +32,28 @@ steps:
     with:
       fetch-depth: 0 # Required for merge-base resolution
 
-  - name: Run gleon Visual Regression
-    uses: tsinis/gleon@a1b2c3d4e5f67890123456789012345678901234 # Pin full commit SHA for action immutability
+  - name: Run gleon Visual Regression Verify
+    uses: tsinis/gleon@v0.1.0
     with:
-      version: "v1.0.0" # Immutable release version tag
-      license-key: ${{ secrets.GLEON_LICENSE_KEY }}
-      strict: "false"
+      command: "verify"
+      github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
 ### Action Inputs
 
 | Input               | Description                                                                                                                                         | Default                       |
 | :------------------ | :-------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------- |
-| `version`           | gleon release version tag to download (e.g. `'v1.0.0'`)                                                                                             | **Required**                  |
+| `version`           | gleon release version tag to download (e.g. `'v0.1.0'` or `'latest'`)                                                                               | `'latest'`                    |
 | `github-token`      | GitHub token (`${{ secrets.GITHUB_TOKEN }}`) to prevent API rate limits when downloading the binary. **Highly recommended** for active CI pipelines | `''`                          |
-| `checksum`          | Expected SHA256 digest of the binary for independent trust root verification                                                                        | **Required**                  |
+| `checksum`          | Expected SHA256 digest of the binary for independent trust root verification (optional)                                                             | `''`                          |
 | `license-key`       | Commercial BSL license key for private repositories                                                                                                 | `''`                          |
 | `strict`            | Fail build on license violation (`'true'` / `'false'`)                                                                                              | `'false'`                     |
 | `target-branch`     | Target branch for baseline comparison                                                                                                               | PR base ref or default branch |
-| `command`           | gleon command to execute (e.g. `'diff'`, `'pull'`, `'approve'`)                                                                                     | `'diff'`                      |
+| `command`           | gleon command to execute (`'verify'`, `'diff'`, `'pull'`, `'approve'`)                                                                              | `'diff'`                      |
 | `working-directory` | Directory to run gleon from (useful for monorepos)                                                                                                  | `'.'`                         |
 | `args`              | Additional flags for the selected gleon command (e.g. `'--from=.gleon/diffs'` for approve)                                                          | `''`                          |
+| `pr-number`         | Pull Request number for markdown report generation                                                                                                  | PR number                     |
+| `artifact-name`     | Name of uploaded artifact on verification failure                                                                                                   | `gleon-artifacts-...`         |
 
 ### Ephemeral Diff Branch Cleanup Workflow
 
@@ -123,7 +124,24 @@ To accept the new visual changes as the new baseline:
 
 ### GitHub Actions Workflow Setup
 
-To enable `/gleon approve` comments in your repository, refer to the shipped workflow template in [.github/workflows/gleon-approve.yml](./workflows/gleon-approve.yml). Ensure your workflow uses proper collaborator permission checks, fork rejection, and branch SHA pinning before granting write access or pushing baseline updates.
+To enable `/gleon approve` comments in your repository, simply add `.github/workflows/gleon-approve.yml` referencing the shipped reusable workflow:
+
+```yaml
+name: Gleon Approve
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  approve:
+    uses: tsinis/gleon/.github/workflows/approve.yml@v0.1.0
+    secrets:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      GLEON_STORAGE_URL: ${{ secrets.GLEON_STORAGE_URL }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+```
 
 ## How to Build and Run Locally
 

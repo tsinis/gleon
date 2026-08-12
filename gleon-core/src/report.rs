@@ -59,12 +59,32 @@ pub fn make_relative_path(target: &std::path::Path, base: &std::path::Path) -> s
         return target.to_path_buf();
     }
 
-    let mut target_comps = target
-        .components()
-        .filter(|c| !matches!(c, Component::CurDir));
-    let mut base_comps = base
-        .components()
-        .filter(|c| !matches!(c, Component::CurDir));
+    fn normalize_lex(p: &std::path::Path) -> PathBuf {
+        let mut out = PathBuf::new();
+        for comp in p.components() {
+            match comp {
+                Component::ParentDir => match out.components().next_back() {
+                    Some(Component::Normal(_)) => {
+                        out.pop();
+                    }
+                    _ => {
+                        out.push(comp);
+                    }
+                },
+                Component::CurDir => {}
+                _ => {
+                    out.push(comp);
+                }
+            }
+        }
+        out
+    }
+
+    let norm_target = normalize_lex(target);
+    let norm_base = normalize_lex(base);
+
+    let mut target_comps = norm_target.components();
+    let mut base_comps = norm_base.components();
 
     #[cfg(windows)]
     if let (Some(Component::Prefix(p1)), Some(Component::Prefix(p2))) =
@@ -112,11 +132,19 @@ pub fn make_relative_path(target: &std::path::Path, base: &std::path::Path) -> s
 
 pub type ImageUrlResolver<'a> = dyn Fn(&std::path::Path) -> Option<String> + Sync + 'a;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecutionContext {
+    #[default]
+    LocalTerminal,
+    GitHubActions,
+}
+
 #[derive(Default)]
 pub struct MarkdownReportOptions<'a> {
     pub base_image_url: Option<&'a str>,
     pub html_artifact_url: Option<&'a str>,
     pub image_url_resolver: Option<&'a ImageUrlResolver<'a>>,
+    pub context: ExecutionContext,
 }
 
 pub struct ReportGenerator;
@@ -1117,9 +1145,18 @@ impl ReportGenerator {
             }
         }
 
-        out.push_str(
-            "\n---\n*Reply with `/gleon approve` to update baseline images for this PR.*\n",
-        );
+        match options.context {
+            ExecutionContext::GitHubActions => {
+                out.push_str(
+                    "\n---\n*Reply with `/gleon approve` to update baseline images for this PR (see repository README for workflow setup instructions).*\n",
+                );
+            }
+            ExecutionContext::LocalTerminal => {
+                out.push_str(
+                    "\n---\n*Run `gleon approve` to accept failed screenshots as new baselines locally.*\n",
+                );
+            }
+        }
         out
     }
 
@@ -1253,6 +1290,7 @@ mod tests {
             },
         };
         let options = MarkdownReportOptions {
+            context: Default::default(),
             base_image_url: Some("https://storage.cdn.com/run-1"),
             html_artifact_url: Some("https://github.com/org/repo/actions/runs/1/artifacts/2"),
             image_url_resolver: None,
@@ -1279,6 +1317,7 @@ mod tests {
             });
         }
         let options = MarkdownReportOptions {
+            context: Default::default(),
             base_image_url: None,
             html_artifact_url: Some("https://artifact.url/report.html"),
             image_url_resolver: None,
@@ -1317,6 +1356,7 @@ mod tests {
             },
         ];
         let options = MarkdownReportOptions {
+            context: Default::default(),
             base_image_url: Some("http://test.com"),
             html_artifact_url: None,
             image_url_resolver: None,
@@ -1364,6 +1404,7 @@ mod tests {
             },
         ];
         let options = MarkdownReportOptions {
+            context: Default::default(),
             base_image_url: None,
             html_artifact_url: None,
             image_url_resolver: None,
@@ -1396,6 +1437,7 @@ mod tests {
     fn test_render_pr_comment_pass_path() {
         let test_cases = vec![];
         let options = MarkdownReportOptions {
+            context: Default::default(),
             base_image_url: None,
             html_artifact_url: None,
             image_url_resolver: None,
@@ -1420,6 +1462,7 @@ mod tests {
             });
         }
         let options = MarkdownReportOptions {
+            context: Default::default(),
             base_image_url: Some("http://example.com"),
             html_artifact_url: None,
             image_url_resolver: None,
@@ -1442,6 +1485,7 @@ mod tests {
             },
         };
         let options = MarkdownReportOptions {
+            context: Default::default(),
             base_image_url: None,
             html_artifact_url: None,
             image_url_resolver: None,
@@ -1472,6 +1516,7 @@ mod tests {
             }
         };
         let options = MarkdownReportOptions {
+            context: Default::default(),
             base_image_url: None,
             html_artifact_url: None,
             image_url_resolver: Some(&resolver),
@@ -1641,6 +1686,7 @@ mod tests {
         }
 
         let opts = MarkdownReportOptions {
+            context: Default::default(),
             base_image_url: Some("https://storage.url"),
             html_artifact_url: Some("https://artifact.url"),
             image_url_resolver: None,
@@ -1700,5 +1746,56 @@ mod tests {
         let md = ReportGenerator::render_pr_comment(&tests, &opts);
         assert!(md.contains("IO Error") || md.contains("IoError"));
         assert!(md.contains("Encode Error") || md.contains("EncodeError"));
+    }
+
+    #[test]
+    fn test_make_relative_path_lexical_normalization() {
+        // Test that `..` is correctly normalized lexically without touching FS.
+        let base = PathBuf::from("runs/latest");
+        let target = PathBuf::from("runs/latest/../baseline/auth_login.png");
+        let expected = PathBuf::from("../baseline/auth_login.png");
+        assert_eq!(super::make_relative_path(&target, &base), expected);
+
+        let target2 = PathBuf::from("baseline/auth_login.png");
+        let base2 = PathBuf::from("runs/latest");
+        let expected2 = PathBuf::from("../../baseline/auth_login.png");
+        assert_eq!(super::make_relative_path(&target2, &base2), expected2);
+
+        let target3 = PathBuf::from("../outside/image.png");
+        let base3 = PathBuf::from("reports");
+        let expected3 = PathBuf::from("../../outside/image.png");
+        assert_eq!(super::make_relative_path(&target3, &base3), expected3);
+    }
+
+    #[test]
+    fn test_execution_context_footer() {
+        let tc = crate::scanner::TestCaseResult {
+            name: "fail".to_string(),
+            result: crate::scanner::TestImageResult::MissingBaseline {
+                relative_path: PathBuf::from("a"),
+                reason: "no baseline".to_string(),
+            },
+        };
+        let tests = vec![tc];
+
+        let opts_gh = MarkdownReportOptions {
+            context: ExecutionContext::GitHubActions,
+            ..Default::default()
+        };
+        let md_gh = ReportGenerator::render_pr_comment(&tests, &opts_gh);
+        assert!(
+            md_gh.contains("Reply with `/gleon approve` to update baseline images for this PR")
+        );
+
+        let opts_local = MarkdownReportOptions {
+            context: ExecutionContext::LocalTerminal,
+            ..Default::default()
+        };
+        let md_local = ReportGenerator::render_pr_comment(&tests, &opts_local);
+        assert!(
+            md_local.contains(
+                "Run `gleon approve` to accept failed screenshots as new baselines locally"
+            )
+        );
     }
 }
