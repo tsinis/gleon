@@ -107,7 +107,7 @@ pub fn check_status(
     base_dir: &Path,
 ) -> Result<StatusReport, StatusError> {
     let gleon_dir = base_dir.join(".gleon");
-    if !gleon_dir.exists() {
+    if std::fs::metadata(&gleon_dir).is_err() {
         return Err(StatusError::NotInitialized);
     }
 

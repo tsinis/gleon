@@ -63,12 +63,14 @@ pub struct PushResult {
 pub(crate) fn list_platform_dirs(
     manifests_root: &Path,
 ) -> Result<Vec<(String, PathBuf)>, std::io::Error> {
-    if !manifests_root.exists() {
-        return Ok(Vec::new());
-    }
+    let entries = match std::fs::read_dir(manifests_root) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
 
     let mut platforms = Vec::new();
-    for entry in std::fs::read_dir(manifests_root)? {
+    for entry in entries {
         let entry = entry?;
         let path = entry.path();
         let is_dir = path.is_dir();
@@ -99,7 +101,7 @@ pub async fn push_blobs(
     platform_override: Option<&str>,
 ) -> Result<PushResult, PushError> {
     let gleon_dir = base_dir.join(".gleon");
-    if !gleon_dir.exists() {
+    if std::fs::metadata(&gleon_dir).is_err() {
         return Err(PushError::NotInitialized);
     }
 
@@ -141,7 +143,7 @@ pub async fn push_blobs(
     let mut referenced_hashes = BTreeSet::new();
 
     for (plat_key, plat_dir) in &platform_dirs {
-        if !plat_dir.exists() {
+        if std::fs::metadata(plat_dir).is_err() {
             continue;
         }
         let index = match WorkspaceIndex::load(plat_dir) {

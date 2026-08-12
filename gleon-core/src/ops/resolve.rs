@@ -73,7 +73,7 @@ pub fn scan_conflicts(
         None => manifests_root.clone(),
     };
 
-    if !search_dir.exists() {
+    if std::fs::metadata(&search_dir).is_err() {
         return Err(ResolveError::ManifestDirNotFound(search_dir));
     }
 

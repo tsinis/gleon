@@ -10,3 +10,5 @@ screenshots:
 exclude:
 - node_modules/**
 - target/**
+- build/**
+- example/**

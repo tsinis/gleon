@@ -89,7 +89,7 @@ pub fn approve_workspace(
     from_dir: Option<&Path>,
 ) -> Result<ApproveResult, ApproveError> {
     let gleon_dir = base_dir.join(".gleon");
-    if !gleon_dir.exists() {
+    if std::fs::metadata(&gleon_dir).is_err() {
         return Err(ApproveError::NotInitialized);
     }
 
@@ -104,7 +104,7 @@ pub fn approve_workspace(
         None => gleon_dir.join("runs").join("latest").join("actual"),
     };
 
-    if !source_dir.exists() {
+    if std::fs::metadata(&source_dir).is_err() {
         return Err(ApproveError::NoActualScreenshots { path: source_dir });
     }
 
@@ -164,27 +164,38 @@ pub fn approve_workspace(
             Err(_) => continue,
         };
 
-        let mut raw_test_name = String::new();
-        for comp in rel_to_source.with_extension("").components() {
-            if let std::path::Component::Normal(c) = comp {
-                if !raw_test_name.is_empty() {
-                    raw_test_name.push('/');
-                }
-                raw_test_name.push_str(&c.to_string_lossy());
-            }
-        }
-        let test_name = crate::manifest::normalize_test_name(&raw_test_name).into_owned();
-
         // Apply path filter if provided (matching on exact component boundaries)
         if !paths.is_empty() {
-            let rel_no_ext = rel_to_source.with_extension("");
-            let matches_filter = paths
-                .iter()
-                .any(|p| rel_to_source.starts_with(p) || rel_no_ext.starts_with(p));
+            let matches_filter = paths.iter().any(|p| {
+                rel_to_source.starts_with(p) || rel_to_source.with_extension("").starts_with(p)
+            });
             if !matches_filter {
                 continue;
             }
         }
+
+        let mut raw_test_name = String::new();
+        let mut comps = rel_to_source.components().peekable();
+        while let Some(comp) = comps.next() {
+            if let std::path::Component::Normal(c) = comp {
+                if !raw_test_name.is_empty() {
+                    raw_test_name.push('/');
+                }
+                let s = c.to_string_lossy();
+                if comps.peek().is_none() {
+                    if let Some(stripped) =
+                        s.strip_suffix(".png").or_else(|| s.strip_suffix(".PNG"))
+                    {
+                        raw_test_name.push_str(stripped);
+                    } else {
+                        raw_test_name.push_str(&s);
+                    }
+                } else {
+                    raw_test_name.push_str(&s);
+                }
+            }
+        }
+        let test_name = crate::manifest::normalize_test_name(&raw_test_name).into_owned();
 
         let rel_to_source_buf = rel_to_source.to_path_buf();
         if let Some(existing_path) = resolved_tests.insert(test_name.clone(), file_path.clone()) {
