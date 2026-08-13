@@ -379,6 +379,73 @@ impl GitResolver {
 
         Ok(head_commit.id.to_string())
     }
+
+    /// Untracks given relative or absolute paths from the Git index (equivalent to `git rm --cached`).
+    /// Returns the list of paths that were actually present in the Git index and removed.
+    /// Gracefully returns an empty Vec if base_dir is not in a Git repository.
+    pub fn untrack_from_index<P: AsRef<Path>>(
+        base_dir: &Path,
+        paths: &[P],
+    ) -> Result<Vec<std::path::PathBuf>, GitError> {
+        let repo = match gix::discover(base_dir) {
+            Ok(repo) => repo,
+            Err(_) => return Ok(vec![]),
+        };
+
+        let repo_root = match repo.workdir() {
+            Some(dir) => dir,
+            None => return Ok(vec![]),
+        };
+        let repo_root = normalize_path(repo_root)?;
+
+        let mut index = match repo.open_index() {
+            Ok(idx) => idx,
+            Err(_) => return Ok(vec![]),
+        };
+
+        let mut to_remove = Vec::new();
+
+        for p in paths {
+            let raw_path = if p.as_ref().is_absolute() {
+                p.as_ref().to_path_buf()
+            } else {
+                base_dir.join(p.as_ref())
+            };
+            let abs_path = normalize_path(&raw_path)?;
+
+            if let Ok(rel_to_repo) = abs_path.strip_prefix(&repo_root) {
+                let norm_str = crate::scanner::FileScanner::normalize_path_str(rel_to_repo);
+                if let Ok(entry_idx) = index.entry_index_by_path(norm_str.as_bytes().into()) {
+                    to_remove.push((entry_idx, p.as_ref().to_path_buf()));
+                }
+            }
+        }
+
+        if to_remove.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Sort by index descending so removing higher indices does not invalidate or shift lower indices
+        to_remove.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
+
+        let mut untracked = Vec::with_capacity(to_remove.len());
+        for (entry_idx, original_path) in to_remove {
+            index.remove_entry_at_index(entry_idx);
+            untracked.push(original_path);
+        }
+
+        index
+            .write(gix::index::write::Options::default())
+            .map_err(|e| GitError::Io(std::io::Error::other(e.to_string())))?;
+
+        // Restore original path discovery order
+        untracked.reverse();
+        tracing::debug!(
+            "Successfully untracked {} files from Git index",
+            untracked.len()
+        );
+        Ok(untracked)
+    }
 }
 
 fn normalize_path(path: &Path) -> Result<std::path::PathBuf, GitError> {
@@ -1061,7 +1128,9 @@ mod tests {
         let dir = tempdir().unwrap();
         create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
         let exclude_path = dir.path().join(".git/info/exclude");
-        std::fs::create_dir_all(exclude_path.parent().unwrap()).unwrap();
+        if let Some(parent) = exclude_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
         std::fs::write(&exclude_path, "*.png").unwrap();
         std::fs::set_permissions(&exclude_path, std::fs::Permissions::from_mode(0o000)).unwrap();
 

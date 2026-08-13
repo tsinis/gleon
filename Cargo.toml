@@ -26,7 +26,7 @@ dotenvy = "0.15.7"
 ed25519-dalek = "3.0.0"
 base64 = "0.23.1"
 futures = "0.3.33"
-gix = { version = "0.86.0", default-features = false, features = ["sha1", "revision"] }
+gix = { version = "0.86.0", default-features = false, features = ["sha1", "revision", "index"] }
 globset = "0.4.19"
 hex = "0.4.3"
 http = "1.2.0"

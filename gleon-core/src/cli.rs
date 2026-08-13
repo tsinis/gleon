@@ -169,6 +169,20 @@ pub enum Commands {
     },
     /// Clean up unreferenced baseline blobs
     Gc,
+    /// Clean local screenshot files, untrack them from Git, and update .gitignore
+    Clean {
+        /// Preview changes without deleting files or modifying Git state
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip appending ignore rules to .gitignore
+        #[arg(long)]
+        skip_gitignore: bool,
+
+        /// Skip deleting .gleon/runs and .gleon/diffs temporary directories
+        #[arg(long)]
+        keep_runs: bool,
+    },
     /// Generate a PR comment from a JSON report
     Report {
         /// Format of the report (e.g., markdown, html, junit, json)

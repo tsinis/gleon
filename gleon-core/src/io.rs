@@ -126,10 +126,16 @@ where
                 E::from(IoError::Io(e.error))
             })
         })
-        .map(|_| {
+        .and_then(|_| {
             if let Ok(dir) = std::fs::File::open(parent) {
-                let _ = dir.sync_all(); // Ignore directory fsync errors, especially on Windows
+                #[cfg(not(windows))]
+                if let Err(e) = dir.sync_all() {
+                    return Err(E::from(IoError::Io(e)));
+                }
+                #[cfg(windows)]
+                let _ = dir.sync_all();
             }
+            Ok(())
         })
 }
 

@@ -77,8 +77,9 @@ pub(crate) fn list_platform_dirs(
         let valid_name = entry
             .file_name()
             .to_str()
-            .filter(|n| is_dir && validate_segment(n).is_ok())
-            .map(|n| n.to_string());
+            .filter(|_| is_dir)
+            .and_then(|n| crate::platform::validate_segment(n).ok())
+            .map(|n| n.into_owned());
 
         if let Some(name) = valid_name {
             platforms.push((name, path));
