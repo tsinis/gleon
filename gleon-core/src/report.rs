@@ -1777,12 +1777,43 @@ mod tests {
                     actual_path: PathBuf::from("actual_encode.png"),
                 },
             },
+            TestCaseResult {
+                name: "ssim_test".to_string(),
+                result: TestImageResult::Mismatch {
+                    relative_path: PathBuf::from("ssim.png"),
+                    actual_path: PathBuf::from("actual.png"),
+                    baseline_path: PathBuf::from("baseline.png"),
+                    diff_path: PathBuf::from("diff.png"),
+                    detail: MismatchDetail::Ssim { ssim_score: 0.95 },
+                },
+            },
         ];
 
         let opts = MarkdownReportOptions::default();
         let md = ReportGenerator::render_pr_comment(&tests, &opts);
         assert!(md.contains("IO Error") || md.contains("IoError"));
         assert!(md.contains("Encode Error") || md.contains("EncodeError"));
+
+        let opts_with_url = MarkdownReportOptions {
+            base_image_url: Some("http://cdn.com"),
+            ..Default::default()
+        };
+        let md_url = ReportGenerator::render_pr_comment(&tests, &opts_with_url);
+        assert!(md_url.contains("IO Error"));
+        assert!(md_url.contains("Encode Error"));
+        assert!(md_url.contains("0.9500 SSIM"));
+    }
+
+    #[test]
+    fn test_make_relative_path_curdir_and_empty_posix() {
+        let target = PathBuf::from("./a/./b/../c");
+        let base = PathBuf::from("./a/./d/../e");
+        let rel = super::make_relative_path(&target, &base);
+        assert!(!rel.to_string_lossy().is_empty());
+
+        let empty_p = PathBuf::from("");
+        let posix_empty = super::PosixPathFormatter(&empty_p).to_string();
+        assert_eq!(posix_empty, ".");
     }
 
     #[test]
@@ -1828,5 +1859,79 @@ mod tests {
         };
         let md_local = ReportGenerator::render_pr_comment(&tests, &opts_local);
         assert!(md_local.contains(ReportGenerator::FOOTER_LOCAL_TERMINAL));
+    }
+
+    #[test]
+    fn test_generate_junit_xml_all_variants() {
+        let tests = vec![
+            TestCaseResult {
+                name: "mismatch".to_string(),
+                result: TestImageResult::Mismatch {
+                    relative_path: PathBuf::from("rel.png"),
+                    actual_path: PathBuf::from("actual.png"),
+                    baseline_path: PathBuf::from("baseline.png"),
+                    diff_path: PathBuf::from("diff.png"),
+                    detail: MismatchDetail::Pixel { diff_count: 5 },
+                },
+            },
+            TestCaseResult {
+                name: "dim_mismatch".to_string(),
+                result: TestImageResult::DimensionMismatch {
+                    relative_path: PathBuf::from("rel.png"),
+                    actual_path: PathBuf::from("actual.png"),
+                    baseline_path: PathBuf::from("baseline.png"),
+                    actual_size: (10, 10),
+                    baseline_size: (20, 20),
+                },
+            },
+            TestCaseResult {
+                name: "missing".to_string(),
+                result: TestImageResult::MissingBaseline {
+                    relative_path: PathBuf::from("rel.png"),
+                    reason: "missing baseline".to_string(),
+                },
+            },
+            TestCaseResult {
+                name: "decode".to_string(),
+                result: TestImageResult::DecodeError {
+                    relative_path: PathBuf::from("rel.png"),
+                    error: "corrupt".to_string(),
+                },
+            },
+            TestCaseResult {
+                name: "io".to_string(),
+                result: TestImageResult::IoError {
+                    relative_path: PathBuf::from("rel.png"),
+                    error: "disk error".to_string(),
+                },
+            },
+            TestCaseResult {
+                name: "encode".to_string(),
+                result: TestImageResult::EncodeError {
+                    relative_path: PathBuf::from("rel.png"),
+                    actual_path: PathBuf::from("actual.png"),
+                    error: "encode fail".to_string(),
+                },
+            },
+            TestCaseResult {
+                name: "pass".to_string(),
+                result: TestImageResult::Success {
+                    relative_path: PathBuf::from("rel.png"),
+                },
+            },
+        ];
+
+        let xml = ReportGenerator::generate_junit_xml(&tests).unwrap();
+        assert!(xml.contains("mismatch"));
+        assert!(xml.contains("dim_mismatch"));
+        assert!(xml.contains("missing"));
+        assert!(xml.contains("decode"));
+        assert!(xml.contains("io"));
+        assert!(xml.contains("encode"));
+
+        let html = ReportGenerator::generate_html(&tests, None)
+            .unwrap()
+            .unwrap();
+        assert!(html.contains("mismatch"));
     }
 }
