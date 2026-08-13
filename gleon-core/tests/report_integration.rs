@@ -98,8 +98,8 @@ fn test_report_generation_with_real_images_and_durability() {
             relative_path: PathBuf::from("sidebar_navigation.png"),
             baseline_size: (1920, 1080),
             actual_size: (1920, 1200),
-            baseline_path: baseline_path.clone(),
-            actual_path: actual_path.clone(),
+            baseline_path,
+            actual_path,
         },
     };
     let tc_res5 = TestCaseResult {

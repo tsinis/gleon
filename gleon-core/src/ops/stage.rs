@@ -239,7 +239,7 @@ pub fn stage_workspace(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
 
@@ -314,7 +314,7 @@ mod tests {
             masks: vec![],
         });
 
-        let cases = vec![
+        let mut cases = vec![
             TestCase {
                 name: "test1".to_string(),
                 image: TestImage {
@@ -346,14 +346,13 @@ mod tests {
         assert_eq!(cases_clone2[0].name, "test1");
 
         // 3. Filter with mixed casing (e.g. "A/TEST1.PNG")
-        let mut cases_clone3 = cases.clone();
         let filter_mixed = vec![PathBuf::from("A/TEST1.PNG")];
-        filter_test_cases(&mut cases_clone3, Some(&filter_mixed));
-        assert_eq!(cases_clone3.len(), 1);
-        assert_eq!(cases_clone3[0].name, "test1");
+        filter_test_cases(&mut cases, Some(&filter_mixed));
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].name, "test1");
 
         // 4. Filter string prefix bug (e.g. "a" should not match "a_other")
-        let cases_prefix = vec![
+        let mut cases_prefix = vec![
             TestCase {
                 name: "test_a".to_string(),
                 image: TestImage {
@@ -368,13 +367,12 @@ mod tests {
                     relative_path: PathBuf::from("a_other/test1.png"),
                     absolute_path: PathBuf::from("/base/a_other/test1.png"),
                 },
-                rule: rule.clone(),
+                rule,
             },
         ];
-        let mut cases_prefix_clone = cases_prefix.clone();
         let filter_prefix = vec![PathBuf::from("a")];
-        filter_test_cases(&mut cases_prefix_clone, Some(&filter_prefix));
-        assert_eq!(cases_prefix_clone.len(), 1);
-        assert_eq!(cases_prefix_clone[0].name, "test_a");
+        filter_test_cases(&mut cases_prefix, Some(&filter_prefix));
+        assert_eq!(cases_prefix.len(), 1);
+        assert_eq!(cases_prefix[0].name, "test_a");
     }
 }

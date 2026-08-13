@@ -123,13 +123,13 @@ pub async fn pull_blobs(
                     );
                     vec![(fallback_key.clone(), fb_dir)]
                 } else {
-                    vec![(platform_key.clone(), plat_dir)]
+                    vec![(platform_key, plat_dir)]
                 }
             } else {
-                vec![(platform_key.clone(), plat_dir)]
+                vec![(platform_key, plat_dir)]
             }
         } else {
-            vec![(platform_key.clone(), plat_dir)]
+            vec![(platform_key, plat_dir)]
         }
     };
 

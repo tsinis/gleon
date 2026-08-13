@@ -57,6 +57,14 @@ impl WorkspaceIndex {
         let mut source_paths = BTreeMap::new();
         let walker = WalkBuilder::new(manifest_dir)
             .standard_filters(false)
+            .filter_entry(|e| {
+                if e.file_type().is_some_and(|ft| ft.is_dir())
+                    && matches!(e.file_name().to_str(), Some(name) if name != ".gleon" && crate::scanner::DEFAULT_PRUNED_DIRECTORIES.contains(&name))
+                {
+                    return false;
+                }
+                true
+            })
             .build();
 
         for entry_res in walker {

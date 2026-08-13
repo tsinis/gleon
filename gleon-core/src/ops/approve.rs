@@ -143,7 +143,9 @@ pub fn approve_workspace(
     let walker = ignore::WalkBuilder::new(&source_dir)
         .standard_filters(false)
         .filter_entry(|e| {
-            if matches!(e.file_name().to_str(), Some(name) if name.starts_with('.') || name == "node_modules") {
+            if e.file_type().is_some_and(|ft| ft.is_dir())
+                && matches!(e.file_name().to_str(), Some(name) if name.starts_with('.') || crate::scanner::DEFAULT_PRUNED_DIRECTORIES.contains(&name))
+            {
                 return false;
             }
             true

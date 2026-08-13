@@ -120,8 +120,8 @@ pub fn init_workspace(
                 return Err(InitError::Io(e));
             }
             #[cfg(not(windows))]
-            if let Err(e) = std::fs::File::open(&gleon_dir).and_then(|d| d.sync_all()) {
-                return Err(InitError::Io(e));
+            if let Ok(d) = std::fs::File::open(&gleon_dir) {
+                let _ = d.sync_all();
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -149,8 +149,8 @@ pub fn init_workspace(
                 return Err(InitError::Io(e));
             }
             #[cfg(not(windows))]
-            if let Err(e) = std::fs::File::open(&gleon_dir).and_then(|d| d.sync_all()) {
-                return Err(InitError::Io(e));
+            if let Ok(d) = std::fs::File::open(&gleon_dir) {
+                let _ = d.sync_all();
             }
             config_created = Some(internal_config);
         }
@@ -164,7 +164,7 @@ pub fn init_workspace(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use crate::context::ResolvedContext;

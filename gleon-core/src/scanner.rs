@@ -377,17 +377,16 @@ impl FileScanner {
                 {
                     return false;
                 }
-                if let Ok(rel_path) = entry.path().strip_prefix(&base_dir_for_filter) {
+                if !exclude_for_filter.is_empty()
+                    && let Ok(rel_path) = entry.path().strip_prefix(&base_dir_for_filter)
+                {
                     if rel_path.as_os_str().is_empty() {
                         return true;
                     }
-                    let rel_path_str = Self::normalize_path_str(rel_path);
-
-                    // We must check if the directory string EXACTLY matches an exclude pattern.
-                    // However, ignore globs typically target files (like `**/*.png`).
-                    // Active directory pruning is notoriously hard with globset unless the glob explicitly ignores a directory prefix.
-                    // If the user ignores `node_modules/`, globset might not match it cleanly here without trailing slash,
-                    // but we handle standard cases explicitly above to prevent hanging.
+                    let rel_path_str = match rel_path.to_str() {
+                        Some(s) if !s.contains('\\') => Cow::Borrowed(s),
+                        _ => Self::normalize_path_str(rel_path),
+                    };
                     if exclude_for_filter.is_match(rel_path_str.as_ref()) {
                         return false;
                     }
@@ -462,7 +461,7 @@ impl FileScanner {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
 

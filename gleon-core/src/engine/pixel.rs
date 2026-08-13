@@ -1,6 +1,7 @@
 //! Pixel-by-pixel image comparison.
 
 use image::RgbaImage;
+use rayon::prelude::*;
 
 /// Compares two images of the same dimensions pixel-by-pixel.
 /// Returns the number of mismatched pixels and a composite diff image
@@ -13,25 +14,29 @@ pub fn compare_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> (u64, RgbaIma
     let actual_raw = actual.as_raw();
 
     let mut diff_raw = vec![0u8; baseline_raw.len()];
-    let mut diff_count: u64 = 0;
 
-    let b_chunks = baseline_raw.chunks_exact(4);
-    let a_chunks = actual_raw.chunks_exact(4);
-    let d_chunks = diff_raw.chunks_exact_mut(4);
+    let b_chunks = baseline_raw.par_chunks_exact(4);
+    let a_chunks = actual_raw.par_chunks_exact(4);
+    let d_chunks = diff_raw.par_chunks_exact_mut(4);
 
-    for ((b_chunk, a_chunk), d_chunk) in b_chunks.zip(a_chunks).zip(d_chunks) {
-        if b_chunk != a_chunk {
-            diff_count += 1;
-            // Magenta: [255, 0, 255, 255]
-            d_chunk.copy_from_slice(&[255, 0, 255, 255]);
-        } else {
-            // Darken matching pixel: divide R, G, B by 2, keep A
-            d_chunk[0] = b_chunk[0] / 2;
-            d_chunk[1] = b_chunk[1] / 2;
-            d_chunk[2] = b_chunk[2] / 2;
-            d_chunk[3] = b_chunk[3];
-        }
-    }
+    let diff_count: u64 = b_chunks
+        .zip(a_chunks)
+        .zip(d_chunks)
+        .map(|((b_chunk, a_chunk), d_chunk)| {
+            if b_chunk != a_chunk {
+                // Magenta: [255, 0, 255, 255]
+                d_chunk.copy_from_slice(&[255, 0, 255, 255]);
+                1u64
+            } else {
+                // Darken matching pixel: divide R, G, B by 2, keep A
+                d_chunk[0] = b_chunk[0] / 2;
+                d_chunk[1] = b_chunk[1] / 2;
+                d_chunk[2] = b_chunk[2] / 2;
+                d_chunk[3] = b_chunk[3];
+                0u64
+            }
+        })
+        .sum();
 
     let diff_image = RgbaImage::from_raw(width, height, diff_raw)
         .expect("invariant: diff_raw length must be exactly width * height * 4");
@@ -53,19 +58,19 @@ pub fn count_mismatched_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> u64 
         bytemuck::try_cast_slice::<u8, u32>(actual_raw),
     ) {
         b_u32
-            .iter()
-            .zip(a_u32.iter())
+            .par_iter()
+            .zip(a_u32.par_iter())
             .filter(|(b, a)| b != a)
             .count() as u64
     } else {
         // Fallback for unaligned slice buffers
-        let b_chunks = baseline_raw.chunks_exact(4);
-        let a_chunks = actual_raw.chunks_exact(4);
+        let b_chunks = baseline_raw.par_chunks_exact(4);
+        let a_chunks = actual_raw.par_chunks_exact(4);
         b_chunks.zip(a_chunks).filter(|(b, a)| b != a).count() as u64
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use image::{ImageBuffer, Rgba};

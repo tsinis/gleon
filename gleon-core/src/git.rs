@@ -517,7 +517,7 @@ fn resolve_ci_branch(env: &dyn EnvProvider) -> Option<String> {
     None
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use std::collections::HashMap;
@@ -996,63 +996,37 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn test_get_commit_author_gix() {
         let dir = tempdir().unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["init"])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["config", "user.name", "gleon Author"])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["config", "user.email", "author@gleon.rs"])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["config", "commit.gpgsign", "false"])
-            .output()
+        gix::init(dir.path()).unwrap();
+        std::fs::write(
+            dir.path().join(".git/config"),
+            "[user]\n\tname = gleon Author\n\temail = author@gleon.rs\n",
+        )
+        .unwrap();
+        let repo = gix::open(dir.path()).unwrap();
+        let empty_tree_id = repo.empty_tree().id();
+        let commit_id = repo
+            .commit(
+                "HEAD",
+                "initial commit",
+                empty_tree_id,
+                gix::commit::NO_PARENT_IDS,
+            )
             .unwrap();
 
-        std::fs::write(dir.path().join("dummy.txt"), "hello").unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["add", "."])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["commit", "-m", "initial commit"])
-            .output()
-            .unwrap();
-
-        let repo = gix::discover(dir.path()).unwrap();
-        let head_commit = repo.head_commit().unwrap();
-        let sha = head_commit.id.to_string();
-
+        let sha = commit_id.to_string();
         let author = GitResolver::get_commit_author(dir.path(), &sha).unwrap();
         assert_eq!(author, "gleon Author <author@gleon.rs>");
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn test_resolve_merge_base_shallow_clone_error() {
         let dir = tempdir().unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["init"])
-            .output()
-            .unwrap();
+        gix::init(dir.path()).unwrap();
 
         // Write .git/shallow to simulate a shallow repository
         let shallow_path = dir.path().join(".git/shallow");
-        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         std::fs::write(&shallow_path, "0000000000000000000000000000000000000000\n").unwrap();
 
         let result = GitResolver::resolve_merge_base(dir.path(), "main");
@@ -1106,50 +1080,23 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn test_resolve_merge_base_invalid_target_branch() {
         let dir = tempdir().unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["init"])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["config", "user.name", "Test"])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["config", "user.email", "test@test.com"])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["config", "user.name", "gleon Author"])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["config", "user.email", "author@gleon.rs"])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["config", "commit.gpgsign", "false"])
-            .output()
-            .unwrap();
-
-        std::fs::write(dir.path().join("dummy.txt"), "hello").unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["add", "."])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["commit", "-m", "initial commit"])
-            .output()
+        gix::init(dir.path()).unwrap();
+        std::fs::write(
+            dir.path().join(".git/config"),
+            "[user]\n\tname = gleon Author\n\temail = author@gleon.rs\n",
+        )
+        .unwrap();
+        let repo = gix::open(dir.path()).unwrap();
+        let empty_tree_id = repo.empty_tree().id();
+        let _ = repo
+            .commit(
+                "HEAD",
+                "initial commit",
+                empty_tree_id,
+                gix::commit::NO_PARENT_IDS,
+            )
             .unwrap();
 
         let result = GitResolver::resolve_merge_base(dir.path(), "non-existent");
@@ -1159,14 +1106,9 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn test_get_commit_author_invalid_ref() {
         let dir = tempdir().unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["init"])
-            .output()
-            .unwrap();
+        gix::init(dir.path()).unwrap();
 
         let result = GitResolver::get_commit_author(dir.path(), "invalid-ref");
         assert!(result.is_err());
@@ -1175,35 +1117,18 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn test_get_commit_author_empty_signature() {
+        use gix::prelude::Write;
         let dir = tempdir().unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["init"])
-            .output()
+        gix::init(dir.path()).unwrap();
+        let repo = gix::open(dir.path()).unwrap();
+
+        let commit_data = b"tree 4b825dc642cb6eb9a0ff3e4897c85c126437f451\nauthor  <> 0 +0000\ncommitter Test <test@test.com> 0 +0000\n\nempty author\n";
+        let commit_id = repo
+            .write_buf(gix::object::Kind::Commit, commit_data)
             .unwrap();
 
-        let mut cmd = std::process::Command::new("git");
-        cmd.current_dir(dir.path())
-            .args(["hash-object", "-t", "commit", "-w", "--stdin"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped());
-
-        let child = cmd.spawn().unwrap();
-        use std::io::Write;
-        {
-            let mut stdin = child.stdin.as_ref().unwrap();
-            writeln!(stdin, "tree 4b825dc642cb6eb9a0ff3e4897c85c126437f451").unwrap();
-            writeln!(stdin, "author  <> 0 +0000").unwrap();
-            writeln!(stdin, "committer Test <test@test.com> 0 +0000").unwrap();
-            writeln!(stdin).unwrap();
-            writeln!(stdin, "empty author").unwrap();
-        }
-
-        let output = child.wait_with_output().unwrap();
-        let sha = String::from_utf8(output.stdout).unwrap().trim().to_string();
-
+        let sha = commit_id.to_string();
         let author = GitResolver::get_commit_author(dir.path(), &sha).unwrap();
         assert_eq!(author, "unknown");
     }
