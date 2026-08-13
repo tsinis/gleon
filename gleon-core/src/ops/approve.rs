@@ -239,15 +239,14 @@ pub fn approve_workspace(
         .into_par_iter()
         .map(|(test_name, file_path, rel_to_source)| {
             let raw_png_bytes = std::fs::read(&file_path).map_err(ApproveError::Io)?;
-            SingleTestManifest::validate_image_bytes(&raw_png_bytes)
-                .map_err(ApproveError::Manifest)?;
-
-            let dynamic_img = image::load_from_memory(&raw_png_bytes).map_err(|source| {
-                ApproveError::ImageDecode {
-                    path: rel_to_source.clone(),
-                    source,
-                }
-            })?;
+            let dynamic_img =
+                SingleTestManifest::load_image_from_bytes(&raw_png_bytes).map_err(|e| match e {
+                    crate::manifest::ManifestError::Image(source) => ApproveError::ImageDecode {
+                        path: rel_to_source.clone(),
+                        source,
+                    },
+                    other => ApproveError::Manifest(other),
+                })?;
 
             let width = dynamic_img.width();
             let height = dynamic_img.height();

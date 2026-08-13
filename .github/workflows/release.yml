@@ -76,6 +76,7 @@ jobs:
 
           # Update action ref in approve.yml, cleanup.yml, and README.md to exact immutable release tag
           sed -i -E "s|uses: tsinis/gleon@[a-zA-Z0-9_./-]+|uses: tsinis/gleon@${TAG_NAME}|g" .github/workflows/approve.yml
+          sed -i -E "s|uses: tsinis/gleon@[a-zA-Z0-9_./-]+|uses: tsinis/gleon@${TAG_NAME}|g" .github/README.md
           sed -i -E "s|uses: tsinis/gleon/\.github/workflows/([a-zA-Z0-9_-]+)\.yml@[a-zA-Z0-9_./-]+|uses: tsinis/gleon/.github/workflows/\1.yml@${TAG_NAME}|g" .github/README.md
 
           git config user.name "github-actions[bot]"

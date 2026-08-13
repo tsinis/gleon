@@ -193,8 +193,12 @@ runs:
         if [ "$GLEON_COMMAND" = "approve" ] && [ -n "$COMMENT_BODY" ]; then
           if ! ARG_STRING="$(node -e "
             const raw = process.env.COMMENT_BODY || '';
-            const line = raw.split('\n').find(l => l.trim().startsWith('/gleon approve')) || '';
-            const rest = line.trim().replace(/^\/gleon approve\s*/, '');
+            const command = raw.match(/(?:^|\n)\s*\/gleon approve(?:\s+([^\r\n]*))?\s*(?:\r?\n|$)/);
+            if (!command) {
+              console.error('::error::No standalone /gleon approve command found in comment.');
+              process.exit(1);
+            }
+            const rest = (command[1] || '').trim();
             if (rest) {
               const tokens = rest.split(/\s+/).filter(Boolean);
               for (const token of tokens) {

@@ -140,9 +140,9 @@ impl SingleTestManifest {
         Ok(())
     }
 
-    /// Safely validates image dimensions from raw bytes before fully decoding the image.
-    /// This prevents OOM (Out Of Memory) DoS attacks from decompression bombs.
-    pub fn validate_image_bytes(bytes: &[u8]) -> Result<(), ManifestError> {
+    fn make_limited_reader(
+        bytes: &[u8],
+    ) -> Result<image::ImageReader<std::io::Cursor<&[u8]>>, ManifestError> {
         let mut limits = image::Limits::default();
         limits.max_image_width = Some(MAX_DIMENSION);
         limits.max_image_height = Some(MAX_DIMENSION);
@@ -152,9 +152,22 @@ impl SingleTestManifest {
             .with_guessed_format()
             .map_err(ManifestError::StdIo)?;
         reader.limits(limits);
+        Ok(reader)
+    }
 
+    /// Safely validates image dimensions from raw bytes before fully decoding the image.
+    /// This prevents OOM (Out Of Memory) DoS attacks from decompression bombs.
+    pub fn validate_image_bytes(bytes: &[u8]) -> Result<(), ManifestError> {
+        let reader = Self::make_limited_reader(bytes)?;
         let (width, height) = reader.into_dimensions().map_err(ManifestError::Image)?;
         Self::validate_dimensions(width, height)
+    }
+
+    /// Safely decodes an image with enforced resource and dimension limits.
+    pub fn load_image_from_bytes(bytes: &[u8]) -> Result<image::DynamicImage, ManifestError> {
+        Self::validate_image_bytes(bytes)?;
+        let reader = Self::make_limited_reader(bytes)?;
+        reader.decode().map_err(ManifestError::Image)
     }
 
     /// Load a single test manifest from a JSON file.
@@ -238,6 +251,12 @@ mod tests {
         )
         .unwrap();
         assert!(SingleTestManifest::validate_image_bytes(&img_bytes).is_ok());
+
+        let decoded = SingleTestManifest::load_image_from_bytes(&img_bytes).unwrap();
+        assert_eq!(decoded.width(), 1);
+        assert_eq!(decoded.height(), 1);
+
+        assert!(SingleTestManifest::load_image_from_bytes(invalid_png_bytes).is_err());
     }
 
     #[test]

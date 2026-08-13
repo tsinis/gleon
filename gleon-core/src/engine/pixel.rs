@@ -7,6 +7,14 @@ use rayon::prelude::*;
 /// Returns the number of mismatched pixels and a composite diff image
 /// where matching areas are darkened and mismatched areas are painted magenta.
 pub fn compare_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> (u64, RgbaImage) {
+    assert_eq!(
+        baseline.dimensions(),
+        actual.dimensions(),
+        "Image dimensions must match for compare_pixels: baseline={:?}, actual={:?}",
+        baseline.dimensions(),
+        actual.dimensions()
+    );
+
     let width = baseline.width();
     let height = baseline.height();
 
@@ -46,6 +54,14 @@ pub fn compare_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> (u64, RgbaIma
 
 /// Counts the number of mismatched pixels without allocating a diff image.
 pub fn count_mismatched_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> u64 {
+    assert_eq!(
+        baseline.dimensions(),
+        actual.dimensions(),
+        "Image dimensions must match for count_mismatched_pixels: baseline={:?}, actual={:?}",
+        baseline.dimensions(),
+        actual.dimensions()
+    );
+
     let baseline_raw = baseline.as_raw();
     let actual_raw = actual.as_raw();
 
@@ -84,6 +100,8 @@ mod tests {
         assert_eq!(diff_count, 0);
         // Matching pixels should be darkened: 255 / 2 = 127
         assert_eq!(*diff_img.get_pixel(0, 0), Rgba([127, 0, 0, 255]));
+
+        assert_eq!(count_mismatched_pixels(&img1, &img2), 0);
     }
 
     #[test]
@@ -98,5 +116,23 @@ mod tests {
         assert_eq!(*diff_img.get_pixel(5, 5), Rgba([255, 0, 255, 255]));
         // The matching pixel should be darkened
         assert_eq!(*diff_img.get_pixel(0, 0), Rgba([127, 0, 0, 255]));
+
+        assert_eq!(count_mismatched_pixels(&img1, &img2), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Image dimensions must match")]
+    fn test_compare_pixels_unequal_dimensions_panics() {
+        let img1 = ImageBuffer::from_pixel(10, 10, Rgba([255, 0, 0, 255]));
+        let img2 = ImageBuffer::from_pixel(20, 10, Rgba([255, 0, 0, 255]));
+        compare_pixels(&img1, &img2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Image dimensions must match")]
+    fn test_count_mismatched_pixels_unequal_dimensions_panics() {
+        let img1 = ImageBuffer::from_pixel(10, 10, Rgba([255, 0, 0, 255]));
+        let img2 = ImageBuffer::from_pixel(10, 20, Rgba([255, 0, 0, 255]));
+        count_mismatched_pixels(&img1, &img2);
     }
 }

@@ -182,10 +182,5 @@ screenshots:
     let result = approve_workspace(&ctx_approve, base_path, &[], None);
     assert!(result.is_err());
 
-    assert!(matches!(
-        result,
-        Err(ApproveError::Manifest(
-            gleon_core::manifest::ManifestError::Image(_)
-        ))
-    ));
+    assert!(matches!(result, Err(ApproveError::ImageDecode { .. })));
 }

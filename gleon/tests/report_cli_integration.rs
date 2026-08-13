@@ -56,6 +56,30 @@ fn test_cli_report_supports_all_formats() {
         .stdout(predicate::str::contains("<testsuite"))
         .stdout(predicate::str::contains("auth&#x2f;login"));
 
+    // Test junit.xml alias format
+    let mut cmd_junit_xml = Command::cargo_bin("gleon").unwrap();
+    cmd_junit_xml
+        .arg("report")
+        .arg("junit.xml")
+        .arg("--report")
+        .arg(&report_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<testsuite"))
+        .stdout(predicate::str::contains("auth&#x2f;login"));
+
+    // Test xml alias format
+    let mut cmd_xml = Command::cargo_bin("gleon").unwrap();
+    cmd_xml
+        .arg("report")
+        .arg("xml")
+        .arg("--report")
+        .arg(&report_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<testsuite"))
+        .stdout(predicate::str::contains("auth&#x2f;login"));
+
     // Test json format
     let mut cmd_json = Command::cargo_bin("gleon").unwrap();
     cmd_json

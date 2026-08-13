@@ -384,7 +384,11 @@ impl FileScanner {
                         return true;
                     }
                     let rel_path_str = match rel_path.to_str() {
-                        Some(s) if !s.contains('\\') => Cow::Borrowed(s),
+                        Some(s)
+                            if !s.contains('\\') && !s.bytes().any(|b| b.is_ascii_uppercase()) =>
+                        {
+                            Cow::Borrowed(s)
+                        }
                         _ => Self::normalize_path_str(rel_path),
                     };
                     if exclude_for_filter.is_match(rel_path_str.as_ref()) {
@@ -588,6 +592,40 @@ mod tests {
         .unwrap();
 
         // Only billing/stripe/form should remain
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].name, "billing/stripe/form");
+    }
+
+    #[test]
+    fn test_scan_files_with_uppercase_excludes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_path = temp_dir.path();
+
+        let billing_dir = base_path.join("Billing").join("Stripe");
+        std::fs::create_dir_all(&billing_dir).unwrap();
+        std::fs::write(billing_dir.join("Form.png"), VALID_PNG_BYTES).unwrap();
+
+        let settings_dir = base_path.join("Settings");
+        std::fs::create_dir_all(&settings_dir).unwrap();
+        std::fs::write(settings_dir.join("Profile.png"), VALID_PNG_BYTES).unwrap();
+
+        let include = vec![GlobPattern::new("**/*.png").unwrap()];
+        // Exclude with lowercase glob matching uppercase folder
+        let exclude = vec![GlobPattern::new("settings/**/*.png").unwrap()];
+
+        let cases = FileScanner::scan_files(
+            &include,
+            &exclude,
+            base_path,
+            std::sync::Arc::new(crate::config::ScreenshotRule {
+                include: include.clone(),
+                mode: crate::config::Mode::Pixel,
+                diff: crate::config::DiffConfig::default(),
+                masks: vec![],
+            }),
+        )
+        .unwrap();
+
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0].name, "billing/stripe/form");
     }
