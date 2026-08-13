@@ -143,8 +143,10 @@ pub async fn push_blobs(
     let mut referenced_hashes = BTreeSet::new();
 
     for (plat_key, plat_dir) in &platform_dirs {
-        if std::fs::metadata(plat_dir).is_err() {
-            continue;
+        match std::fs::metadata(plat_dir) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(PushError::Io(e)),
         }
         let index = match WorkspaceIndex::load(plat_dir) {
             Ok(idx) => idx,
@@ -459,5 +461,32 @@ mod tests {
         let cfg = StorageConfig::new("memory://");
         let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
         assert!(matches!(res, Err(PushError::MissingLocalBlob { .. })));
+    }
+
+    #[tokio::test]
+    #[cfg(all(unix, not(miri)))]
+    async fn test_push_metadata_io_error_propagation() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let mut ctx = ResolvedContext::default();
+        ctx.platform.os = "linux".to_string();
+        let key = ctx.platform.to_key().unwrap();
+
+        let manifests_dir = temp.path().join(".gleon").join("manifests");
+        let plat_dir = manifests_dir.join(&key);
+        std::fs::create_dir_all(&plat_dir).unwrap();
+
+        // Set parent directory permissions to 000 so stat on plat_dir fails with PermissionDenied
+        use std::os::unix::fs::PermissionsExt;
+        let original_perms = std::fs::metadata(&manifests_dir).unwrap().permissions();
+        std::fs::set_permissions(&manifests_dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let cfg = StorageConfig::new("memory://");
+        let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
+
+        // Clean up permissions before asserting so tempdir cleanup succeeds
+        let _ = std::fs::set_permissions(&manifests_dir, original_perms);
+
+        assert!(matches!(res, Err(PushError::Io(_))));
     }
 }
