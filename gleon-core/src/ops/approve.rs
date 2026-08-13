@@ -89,8 +89,12 @@ pub fn approve_workspace(
     from_dir: Option<&Path>,
 ) -> Result<ApproveResult, ApproveError> {
     let gleon_dir = base_dir.join(".gleon");
-    if std::fs::metadata(&gleon_dir).is_err() {
-        return Err(ApproveError::NotInitialized);
+    match std::fs::metadata(&gleon_dir) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ApproveError::NotInitialized);
+        }
+        Err(e) => return Err(ApproveError::Io(e)),
     }
 
     let source_dir = match from_dir {
@@ -104,8 +108,12 @@ pub fn approve_workspace(
         None => gleon_dir.join("runs").join("latest").join("actual"),
     };
 
-    if std::fs::metadata(&source_dir).is_err() {
-        return Err(ApproveError::NoActualScreenshots { path: source_dir });
+    match std::fs::metadata(&source_dir) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ApproveError::NoActualScreenshots { path: source_dir });
+        }
+        Err(e) => return Err(ApproveError::Io(e)),
     }
 
     let platform_key = match context.platform.to_key() {
@@ -503,5 +511,31 @@ mod tests {
         let res = approve_workspace(&ctx, temp.path(), &[], None).unwrap();
         assert_eq!(res.total_approved, 1);
         assert_eq!(res.approved_test_cases, vec!["test_case".to_string()]);
+    }
+
+    #[test]
+    #[cfg(all(unix, not(miri)))]
+    fn test_approve_metadata_io_error_propagation() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("restricted");
+        let gleon_dir = parent.join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        use std::os::unix::fs::PermissionsExt;
+        let original_perms = std::fs::metadata(&parent).unwrap().permissions();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let ctx = ResolvedContext::default();
+        let res = approve_workspace(&ctx, &parent, &[], None);
+
+        let was_permission_denied = std::fs::metadata(&gleon_dir).is_err();
+        let _ = std::fs::set_permissions(&parent, original_perms);
+
+        if was_permission_denied {
+            assert!(matches!(res, Err(ApproveError::Io(_))));
+        } else {
+            // Superuser/root runners bypass 000 directory permissions
+            assert!(res.is_err());
+        }
     }
 }

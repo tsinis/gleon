@@ -101,8 +101,12 @@ pub async fn push_blobs(
     platform_override: Option<&str>,
 ) -> Result<PushResult, PushError> {
     let gleon_dir = base_dir.join(".gleon");
-    if std::fs::metadata(&gleon_dir).is_err() {
-        return Err(PushError::NotInitialized);
+    match std::fs::metadata(&gleon_dir) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(PushError::NotInitialized);
+        }
+        Err(e) => return Err(PushError::Io(e)),
     }
 
     let storage_cfg = match storage_config {
@@ -484,9 +488,14 @@ mod tests {
         let cfg = StorageConfig::new("memory://");
         let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
 
-        // Clean up permissions before asserting so tempdir cleanup succeeds
+        let was_permission_denied = std::fs::metadata(&plat_dir).is_err();
         let _ = std::fs::set_permissions(&manifests_dir, original_perms);
 
-        assert!(matches!(res, Err(PushError::Io(_))));
+        if was_permission_denied {
+            assert!(matches!(res, Err(PushError::Io(_))));
+        } else {
+            // Superuser/root runners bypass 000 directory permissions
+            assert!(res.is_ok());
+        }
     }
 }

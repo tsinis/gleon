@@ -79,6 +79,7 @@ jobs:
           token: ${{ inputs.pat-token || github.token }}
           # Security: Target the PR HEAD SHA specifically.
           ref: ${{ steps.pr-info.outputs.head_sha }}
+          persist-credentials: false
 
       - name: Download Artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -89,10 +90,12 @@ jobs:
 
       - name: Reconstruct Runs Directory
         shell: bash
+        env:
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
         run: |
-          mkdir -p ${{ inputs.working-directory }}/.gleon/runs/latest
+          mkdir -p "$WORKING_DIRECTORY/.gleon/runs/latest"
           if [ -d .gleon-downloads ] && [ "$(ls -A .gleon-downloads 2>/dev/null)" ]; then
-            cp -r .gleon-downloads/* ${{ inputs.working-directory }}/.gleon/runs/latest/
+            cp -r .gleon-downloads/* "$WORKING_DIRECTORY/.gleon/runs/latest/"
           else
             echo "::error::No verification artifacts found in .gleon-downloads for PR #${{ github.event.issue.number }}."
             exit 1
@@ -116,8 +119,12 @@ jobs:
 
       - name: Commit and Push
         shell: bash
+        env:
+          HEAD_REF: ${{ steps.pr-info.outputs.head_ref }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          PUSH_TOKEN: ${{ inputs.pat-token || github.token }}
         run: |
-          cd ${{ inputs.working-directory }}
+          cd "$WORKING_DIRECTORY"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -125,7 +132,7 @@ jobs:
 
           if ! git diff --staged --quiet; then
             git commit -m "chore(gleon): update baseline images"
-            git push origin HEAD:refs/heads/${{ steps.pr-info.outputs.head_ref }}
+            git push "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$HEAD_REF"
           else
             echo "No changes to commit."
           fi

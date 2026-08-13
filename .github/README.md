@@ -137,7 +137,7 @@ jobs:
   approve:
     permissions:
       contents: write
-      pull-requests: write
+      pull-requests: read
     uses: tsinis/gleon/.github/workflows/approve.yml@v0.1.0
     secrets:
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
