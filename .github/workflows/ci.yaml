@@ -39,7 +39,6 @@ jobs:
         # TODO: Replace with real YAML parser or actionlint once available in CI
         run: node -e "require('fs').readFileSync('action.yml', 'utf8')"
 
-
       - name: 💾 Cache cargo-deny and cargo-audit databases
         uses: actions/cache@v6.1.0
         with:
