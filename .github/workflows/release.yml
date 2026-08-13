@@ -74,12 +74,13 @@ jobs:
           TAG_NAME="${GITHUB_REF_NAME}"
           echo "Updating action reference in workflows to exact tag ${TAG_NAME}..."
 
-          # Update action ref in approve.yml to exact immutable release tag
+          # Update action ref in approve.yml, cleanup.yml, and README.md to exact immutable release tag
           sed -i -E "s|uses: tsinis/gleon@[a-zA-Z0-9_./-]+|uses: tsinis/gleon@${TAG_NAME}|g" .github/workflows/approve.yml
+          sed -i -E "s|uses: tsinis/gleon/\.github/workflows/([a-zA-Z0-9_-]+)\.yml@[a-zA-Z0-9_./-]+|uses: tsinis/gleon/.github/workflows/\1.yml@${TAG_NAME}|g" .github/README.md
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .github/workflows/approve.yml
+          git add .github/workflows/approve.yml .github/README.md
 
           if ! git diff --staged --quiet; then
             git commit -m "chore(release): update action ref to ${TAG_NAME}"

@@ -45,6 +45,7 @@ pub async fn run_report(
             let mut join_set = tokio::task::JoinSet::new();
             let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(adapter.concurrency()));
 
+            let mut unique_paths = std::collections::HashSet::new();
             for tc in to_sign {
                 let paths: Vec<&std::path::Path> = match &tc.result {
                     gleon_core::scanner::TestImageResult::Mismatch {
@@ -80,19 +81,23 @@ pub async fn run_report(
                 };
 
                 for p in paths {
-                    let normalized_key =
-                        gleon_core::scanner::FileScanner::normalize_path_str(p).to_string();
-                    let path_buf = p.to_path_buf();
-                    let adapter = adapter.clone();
-                    let sem = semaphore.clone();
-                    join_set.spawn(async move {
-                        let _permit = sem.acquire_owned().await.expect("Semaphore closed");
-                        adapter
-                            .sign_blob_url(&normalized_key, expires_in)
-                            .await
-                            .map(|signed| (path_buf, signed))
-                    });
+                    unique_paths.insert(p);
                 }
+            }
+
+            for p in unique_paths {
+                let normalized_key =
+                    gleon_core::scanner::FileScanner::normalize_path_str(p).to_string();
+                let path_buf = p.to_path_buf();
+                let adapter = adapter.clone();
+                let sem = semaphore.clone();
+                join_set.spawn(async move {
+                    let _permit = sem.acquire_owned().await.expect("Semaphore closed");
+                    adapter
+                        .sign_blob_url(&normalized_key, expires_in)
+                        .await
+                        .map(|signed| (path_buf, signed))
+                });
             }
 
             while let Some(res) = join_set.join_next().await {

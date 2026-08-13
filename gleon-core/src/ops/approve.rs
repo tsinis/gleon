@@ -5,9 +5,19 @@ use crate::context::{ContextError, ResolvedContext};
 use crate::engine::phash::compute_phash;
 use crate::manifest::{ImageHash, ManifestError, SingleTestManifest, WorkspaceIndex};
 use crate::scanner::ScannerError;
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+
+struct ApprovedItem {
+    test_name: String,
+    raw_png_bytes: Vec<u8>,
+    sha256_hex: String,
+    phash_str: String,
+    width: u32,
+    height: u32,
+}
 
 /// Errors that can occur during baseline approval.
 #[derive(Debug, Error)]
@@ -116,11 +126,11 @@ pub fn approve_workspace(
         Err(e) => return Err(ApproveError::Io(e)),
     }
 
-    let platform_key = match context.platform.to_key() {
-        Ok(key) => key,
-        Err(e) => return Err(ApproveError::Context(ContextError::Platform(e))),
-    };
-
+    let platform_key = context
+        .platform
+        .to_key()
+        .map_err(ContextError::Platform)
+        .map_err(ApproveError::Context)?;
     let blobs_dir = gleon_dir.join("blobs").join("sha256");
     let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
     std::fs::create_dir_all(&blobs_dir).map_err(ApproveError::Io)?;
@@ -132,6 +142,12 @@ pub fn approve_workspace(
     let mut candidate_files = Vec::new();
     let walker = ignore::WalkBuilder::new(&source_dir)
         .standard_filters(false)
+        .filter_entry(|e| {
+            if matches!(e.file_name().to_str(), Some(name) if name.starts_with('.') || name == "node_modules") {
+                return false;
+            }
+            true
+        })
         .build();
 
     for result in walker {
@@ -174,9 +190,10 @@ pub fn approve_workspace(
 
         // Apply path filter if provided (matching on exact component boundaries)
         if !paths.is_empty() {
-            let matches_filter = paths.iter().any(|p| {
-                rel_to_source.starts_with(p) || rel_to_source.with_extension("").starts_with(p)
-            });
+            let rel_without_ext = rel_to_source.with_extension("");
+            let matches_filter = paths
+                .iter()
+                .any(|p| rel_to_source.starts_with(p) || rel_without_ext.starts_with(p));
             if !matches_filter {
                 continue;
             }
@@ -215,47 +232,63 @@ pub fn approve_workspace(
         files_to_process.push((test_name, file_path, rel_to_source_buf));
     }
 
+    // Pass 2: Parallel image decoding, hashing & pHash computation
+    let processed_items: Result<Vec<ApprovedItem>, ApproveError> = files_to_process
+        .into_par_iter()
+        .map(|(test_name, file_path, rel_to_source)| {
+            let raw_png_bytes = std::fs::read(&file_path).map_err(ApproveError::Io)?;
+            SingleTestManifest::validate_image_bytes(&raw_png_bytes)
+                .map_err(ApproveError::Manifest)?;
+
+            let dynamic_img = image::load_from_memory(&raw_png_bytes).map_err(|source| {
+                ApproveError::ImageDecode {
+                    path: rel_to_source.clone(),
+                    source,
+                }
+            })?;
+
+            let width = dynamic_img.width();
+            let height = dynamic_img.height();
+            let rgba_img = dynamic_img.to_rgba8();
+
+            let phash_str = compute_phash(&rgba_img);
+            let sha256_hex = hex::encode(Sha256::digest(&raw_png_bytes));
+
+            Ok(ApprovedItem {
+                test_name,
+                raw_png_bytes,
+                sha256_hex,
+                phash_str,
+                width,
+                height,
+            })
+        })
+        .collect();
+
+    let processed_items = processed_items?;
     let mut approved_test_cases = Vec::new();
     let mut total_approved = 0;
 
-    // Pass 2: Actually process the approved images
-    for (test_name, file_path, rel_to_source) in files_to_process {
-        let raw_png_bytes = std::fs::read(&file_path).map_err(ApproveError::Io)?;
+    // Pass 3: Save blobs and manifests to workspace index
+    for item in processed_items {
+        let blob_path = blobs_dir.join(&item.sha256_hex);
+        crate::io::save_file_atomically(&blob_path, &item.raw_png_bytes)
+            .map_err(ApproveError::from)?;
 
-        SingleTestManifest::validate_image_bytes(&raw_png_bytes).map_err(ApproveError::Manifest)?;
-
-        let dynamic_img = image::load_from_memory(&raw_png_bytes).map_err(|source| {
-            ApproveError::ImageDecode {
-                path: rel_to_source.clone(),
-                source,
-            }
-        })?;
-
-        let width = dynamic_img.width();
-        let height = dynamic_img.height();
-
-        let rgba_img = dynamic_img.to_rgba8();
-
-        let phash_str = compute_phash(&rgba_img);
-        let sha256_hex = hex::encode(Sha256::digest(&raw_png_bytes));
-
-        // Save raw blob to .gleon/blobs/sha256/<sha256_hex>
-        let blob_path = blobs_dir.join(&sha256_hex);
-        crate::io::save_file_atomically(&blob_path, &raw_png_bytes).map_err(ApproveError::from)?;
-
-        let hash = ImageHash::new("sha256", &sha256_hex).map_err(ApproveError::Manifest)?;
-        let phash = phash_str
+        let hash = ImageHash::new("sha256", &item.sha256_hex).map_err(ApproveError::Manifest)?;
+        let phash = item
+            .phash_str
             .parse::<ImageHash>()
             .map_err(ApproveError::Manifest)?;
 
-        let new_manifest =
-            SingleTestManifest::new(hash, phash, width, height).map_err(ApproveError::Manifest)?;
-
-        workspace_index
-            .save_test(&manifests_dir, &test_name, &new_manifest)
+        let new_manifest = SingleTestManifest::new(hash, phash, item.width, item.height)
             .map_err(ApproveError::Manifest)?;
 
-        approved_test_cases.push(test_name);
+        workspace_index
+            .save_test(&manifests_dir, &item.test_name, &new_manifest)
+            .map_err(ApproveError::Manifest)?;
+
+        approved_test_cases.push(item.test_name);
         total_approved += 1;
     }
 

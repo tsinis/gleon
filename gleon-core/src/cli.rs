@@ -171,8 +171,8 @@ pub enum Commands {
     Gc,
     /// Generate a PR comment from a JSON report
     Report {
-        /// Format of the report (e.g., markdown)
-        #[arg(value_name = "FORMAT", value_parser = ["markdown"])]
+        /// Format of the report (e.g., markdown, html, junit, json)
+        #[arg(value_name = "FORMAT", value_parser = ["markdown", "html", "junit", "junit.xml", "xml", "json"])]
         format: String,
         /// Path to the JSON report file
         #[arg(long)]
