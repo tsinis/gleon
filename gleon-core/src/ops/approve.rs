@@ -183,10 +183,9 @@ pub fn approve_workspace(
                 }
                 let s = c.to_string_lossy();
                 if comps.peek().is_none() {
-                    if let Some(stripped) =
-                        s.strip_suffix(".png").or_else(|| s.strip_suffix(".PNG"))
-                    {
-                        raw_test_name.push_str(stripped);
+                    let len = s.len();
+                    if len >= 4 && s[len - 4..].eq_ignore_ascii_case(".png") {
+                        raw_test_name.push_str(&s[..len - 4]);
                     } else {
                         raw_test_name.push_str(&s);
                     }
@@ -488,5 +487,21 @@ mod tests {
         let ctx = ResolvedContext::default();
         let res = approve_workspace(&ctx, temp.path(), &[], None);
         assert!(matches!(res, Err(ApproveError::NoActualScreenshots { .. })));
+    }
+
+    #[test]
+    fn test_approve_mixed_case_png_extension() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        let actual_dir = gleon_dir.join("runs").join("latest").join("actual");
+        std::fs::create_dir_all(&actual_dir).unwrap();
+
+        let img = image::RgbaImage::new(1, 1);
+        img.save(actual_dir.join("test_case.PnG")).unwrap();
+
+        let ctx = ResolvedContext::default();
+        let res = approve_workspace(&ctx, temp.path(), &[], None).unwrap();
+        assert_eq!(res.total_approved, 1);
+        assert_eq!(res.approved_test_cases, vec!["test_case".to_string()]);
     }
 }

@@ -138,8 +138,8 @@ pub async fn run_report(
         if format.eq_ignore_ascii_case("markdown") || format.eq_ignore_ascii_case("comment") {
             ReportGenerator::render_pr_comment(&report_data, &options)
         } else if format.eq_ignore_ascii_case("html") {
-            // TODO: support options in generate_html
-            ReportGenerator::generate_html(&report_data, None)
+            let report_dir = out.and_then(|p| p.parent());
+            ReportGenerator::generate_html(&report_data, report_dir)
                 .with_context(|| "Failed to generate HTML report")?
                 .unwrap_or_else(|| "<html><body>All tests passed!</body></html>".to_string())
         } else if format.eq_ignore_ascii_case("junit")
@@ -312,5 +312,55 @@ mod tests {
         )
         .await;
         assert!(res_unsupported.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_run_report_invalid_json_and_html_custom_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let corrupt_report_path = temp.path().join("corrupt.json");
+        std::fs::write(&corrupt_report_path, "not json data").unwrap();
+
+        struct DummyEnv;
+        impl gleon_core::git::EnvProvider for DummyEnv {
+            fn get_var(&self, _key: &str) -> Option<String> {
+                None
+            }
+        }
+
+        // Corrupt report JSON returns error
+        let res_err = run_report(
+            &DummyEnv,
+            None,
+            "markdown",
+            &corrupt_report_path,
+            None,
+            None,
+        )
+        .await;
+        assert!(res_err.is_err());
+
+        // Test HTML format written to custom nested directory
+        let valid_report = temp.path().join("valid.json");
+        let tc = TestCaseResult {
+            name: "test_html_dir".to_string(),
+            result: gleon_core::scanner::TestImageResult::MissingBaseline {
+                relative_path: std::path::PathBuf::from("sub/missing.png"),
+                reason: "no baseline".to_string(),
+            },
+        };
+        gleon_core::io::save_json_atomically(&valid_report, &vec![tc]).unwrap();
+
+        let nested_html_out = temp.path().join("nested").join("dir").join("report.html");
+        let res_html = run_report(
+            &DummyEnv,
+            None,
+            "html",
+            &valid_report,
+            None,
+            Some(&nested_html_out),
+        )
+        .await;
+        assert!(res_html.is_ok());
+        assert!(nested_html_out.exists());
     }
 }

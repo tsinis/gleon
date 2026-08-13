@@ -44,7 +44,7 @@ steps:
 | Input               | Description                                                                                                                                         | Default                       |
 | :------------------ | :-------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------- |
 | `version`           | gleon release version tag to download (e.g. `'v0.1.0'` or `'latest'`)                                                                               | `'latest'`                    |
-| `github-token`      | GitHub token (`${{ secrets.GITHUB_TOKEN }}`) to prevent API rate limits when downloading the binary. **Highly recommended** for active CI pipelines | `''`                          |
+| `github-token`      | GitHub token (`${{ secrets.GITHUB_TOKEN }}`) to prevent API rate limits when downloading the binary. **Highly recommended** for active CI pipelines | `${{ github.token }}`         |
 | `checksum`          | Expected SHA256 digest of the binary for independent trust root verification (optional)                                                             | `''`                          |
 | `license-key`       | Commercial BSL license key for private repositories                                                                                                 | `''`                          |
 | `strict`            | Fail build on license violation (`'true'` / `'false'`)                                                                                              | `'false'`                     |
@@ -135,6 +135,9 @@ on:
 
 jobs:
   approve:
+    permissions:
+      contents: write
+      pull-requests: write
     uses: tsinis/gleon/.github/workflows/approve.yml@v0.1.0
     secrets:
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}

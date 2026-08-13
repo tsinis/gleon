@@ -1706,20 +1706,50 @@ mod tests {
     }
 
     #[test]
-    #[cfg(windows)]
     fn test_make_relative_path_edge_cases() {
         let abs = PathBuf::from("/a/b/c");
         let rel = PathBuf::from("a/b/c");
         // Mixed absolute and relative returns target unchanged
         assert_eq!(super::make_relative_path(&abs, &rel), abs);
 
-        // Prefix mismatches
-        let mut p1 = PathBuf::new();
-        p1.push("C:\\a\\b");
-        let mut p2 = PathBuf::new();
-        p2.push("D:\\a\\b");
-        // Mismatched prefix returns target unchanged
-        assert_eq!(super::make_relative_path(&p1, &p2), p1);
+        #[cfg(windows)]
+        {
+            // Prefix mismatches on Windows
+            let mut p1 = PathBuf::new();
+            p1.push("C:\\a\\b");
+            let mut p2 = PathBuf::new();
+            p2.push("D:\\a\\b");
+            assert_eq!(super::make_relative_path(&p1, &p2), p1);
+        }
+    }
+
+    #[test]
+    fn test_generate_html_empty_and_junit_errors() {
+        // generate_html with empty list returns Ok(None)
+        let html_res = ReportGenerator::generate_html(&[], None).unwrap();
+        assert!(html_res.is_none());
+
+        // generate_junit_xml with IoError and EncodeError
+        let tests = vec![
+            TestCaseResult {
+                name: "io_fail".to_string(),
+                result: TestImageResult::IoError {
+                    relative_path: PathBuf::from("io.png"),
+                    error: "disk error".to_string(),
+                },
+            },
+            TestCaseResult {
+                name: "encode_fail".to_string(),
+                result: TestImageResult::EncodeError {
+                    relative_path: PathBuf::from("enc.png"),
+                    error: "bad data".to_string(),
+                    actual_path: PathBuf::from("actual.png"),
+                },
+            },
+        ];
+        let xml = ReportGenerator::generate_junit_xml(&tests).unwrap();
+        assert!(xml.contains("io_fail"));
+        assert!(xml.contains("encode_fail"));
     }
 
     #[test]
