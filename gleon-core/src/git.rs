@@ -406,6 +406,7 @@ impl GitResolver {
             Err(_) => return Ok(vec![]),
         };
 
+        let mut seen_indices = std::collections::HashSet::new();
         let mut to_remove = Vec::new();
 
         for p in paths {
@@ -424,7 +425,9 @@ impl GitResolver {
 
             if let Ok(rel_to_repo) = abs_path.strip_prefix(&repo_root) {
                 let norm_str = crate::scanner::FileScanner::normalize_path_str(rel_to_repo);
-                if let Ok(entry_idx) = index.entry_index_by_path(norm_str.as_bytes().into()) {
+                if let Ok(entry_idx) = index.entry_index_by_path(norm_str.as_bytes().into())
+                    && seen_indices.insert(entry_idx)
+                {
                     to_remove.push((entry_idx, p.as_ref().to_path_buf()));
                 }
             }
@@ -1225,5 +1228,60 @@ mod tests {
         let result = GitResolver::verify_ignored_impl(&paths, dir.path()).unwrap();
         // Since no ignore rules are defined that match the root itself, it should return false
         assert!(!result);
+    }
+
+    #[test]
+    fn test_untrack_from_index_unit() {
+        use std::path::PathBuf;
+        let dir = tempdir().unwrap();
+        let base_path = dir.path();
+
+        // 1. Outside git repository
+        let untracked =
+            GitResolver::untrack_from_index(base_path, &[PathBuf::from("foo.png")]).unwrap();
+        assert!(untracked.is_empty());
+
+        // 2. Inside initialized git repository
+        let _repo = gix::init(base_path).unwrap();
+
+        // Populate index with test entries
+        let index_path = base_path.join(".git").join("index");
+        let state = gix::index::State::new(gix::hash::Kind::Sha1);
+        let mut index = gix::index::File::from_state(state, index_path);
+        let rel_path1 = "test/a.png";
+        let rel_path2 = "test/b.png";
+        index.dangerously_push_entry(
+            gix::index::entry::Stat::default(),
+            gix::hash::ObjectId::empty_tree(gix::hash::Kind::Sha1),
+            gix::index::entry::Flags::empty(),
+            gix::index::entry::Mode::FILE,
+            rel_path1.as_bytes().into(),
+        );
+        index.dangerously_push_entry(
+            gix::index::entry::Stat::default(),
+            gix::hash::ObjectId::empty_tree(gix::hash::Kind::Sha1),
+            gix::index::entry::Flags::empty(),
+            gix::index::entry::Mode::FILE,
+            rel_path2.as_bytes().into(),
+        );
+        index.write(gix::index::write::Options::default()).unwrap();
+
+        // Untrack with duplicates and non-existent files
+        let paths_to_untrack = vec![
+            PathBuf::from("test/a.png"),
+            base_path.join("test/a.png"), // Absolute duplicate
+            PathBuf::from("test/b.png"),
+            PathBuf::from("nonexistent.png"),
+        ];
+
+        let untracked = GitResolver::untrack_from_index(base_path, &paths_to_untrack).unwrap();
+        assert_eq!(untracked.len(), 2);
+        assert!(untracked.contains(&PathBuf::from("test/a.png")));
+        assert!(untracked.contains(&PathBuf::from("test/b.png")));
+
+        // Calling again on empty/already removed entries
+        let untracked_again =
+            GitResolver::untrack_from_index(base_path, &paths_to_untrack).unwrap();
+        assert!(untracked_again.is_empty());
     }
 }

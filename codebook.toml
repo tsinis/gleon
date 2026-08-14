@@ -88,6 +88,7 @@ words = [
     "gitleaks",
     "gix",
     "gleon",
+    "globbed",
     "globset",
     "goldens",
     "gpgsign",

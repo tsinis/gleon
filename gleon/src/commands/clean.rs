@@ -17,7 +17,10 @@ pub fn run_clean(
         keep_runs,
     };
 
-    let res = clean_workspace(ctx, &ctx.base_dir, &options).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let res = match clean_workspace(ctx, &ctx.base_dir, &options) {
+        Ok(r) => r,
+        Err(e) => return Err(anyhow::Error::from(e)),
+    };
 
     if dry_run {
         info!(
@@ -100,5 +103,36 @@ screenshots:
         let exit_code = run_clean(&ctx, false, false, false).unwrap();
         assert_eq!(exit_code, 0);
         assert!(!test_dir.join("login.png").exists());
+    }
+
+    #[test]
+    fn test_run_clean_error_propagation() {
+        let temp = tempdir().unwrap();
+        let base_path = temp.path();
+
+        let gleon_dir = base_path.join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include:
+      - "test/**/*.png"
+    mode: pixel
+"#;
+        std::fs::write(gleon_dir.join("gleon.yaml"), config_yaml).unwrap();
+
+        // Create .gitignore as directory to force CleanError::Io
+        std::fs::create_dir_all(base_path.join(".gitignore")).unwrap();
+
+        let cli = Cli::for_test(Commands::Clean {
+            dry_run: false,
+            skip_gitignore: false,
+            keep_runs: false,
+        });
+        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+        let err = run_clean(&ctx, false, false, false).unwrap_err();
+        assert!(err.to_string().contains("IO error"));
     }
 }

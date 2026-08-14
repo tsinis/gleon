@@ -96,33 +96,20 @@ pub fn clean_workspace(
         discovered_paths.len()
     );
 
-    // 2. Untrack from Git index if not in dry-run mode (Graceful degradation on Git failure)
+    // 2. In dry-run mode, populate preview without mutating disk or Git index
     if options.dry_run {
         result.deleted_files = discovered_paths.clone();
         result.untracked_files.clear();
     } else {
-        if !discovered_paths.is_empty() {
-            match GitResolver::untrack_from_index(base_path, &discovered_paths) {
-                Ok(untracked) => {
-                    tracing::debug!("Untracked {} screenshot(s) from Git index", untracked.len());
-                    result.untracked_files = untracked;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to untrack screenshots from Git index (continuing workspace clean): {e}"
-                    );
-                    result.untracked_files.clear();
-                }
-            }
-        }
-
         // 3. Delete files from disk and prune empty parent directories
+        let mut successfully_deleted = Vec::new();
         let mut affected_dirs = std::collections::HashSet::new();
+
         for rel_path in &discovered_paths {
             let full_path = base_path.join(rel_path);
             match std::fs::remove_file(&full_path) {
                 Ok(()) => {
-                    result.deleted_files.push(rel_path.clone());
+                    successfully_deleted.push(rel_path.clone());
                     if let Some(parent) = full_path.parent() {
                         affected_dirs.insert(parent.to_path_buf());
                     }
@@ -144,7 +131,10 @@ pub fn clean_workspace(
                         parent = dir.parent();
                     }
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Stale entry already deleted from disk, can still be untracked from Git
+                    successfully_deleted.push(rel_path.clone());
+                }
                 Err(e) => {
                     tracing::warn!("Failed to delete screenshot {:?}: {}", full_path, e);
                 }
@@ -158,10 +148,27 @@ pub fn clean_workspace(
             }
         }
 
+        result.deleted_files.clone_from(&successfully_deleted);
         tracing::debug!(
             "Deleted {} screenshot file(s) from disk and pruned empty directories",
             result.deleted_files.len()
         );
+
+        // 4. Untrack successfully deleted paths from Git index (Graceful degradation on Git failure)
+        if !successfully_deleted.is_empty() {
+            match GitResolver::untrack_from_index(base_path, &successfully_deleted) {
+                Ok(untracked) => {
+                    tracing::debug!("Untracked {} screenshot(s) from Git index", untracked.len());
+                    result.untracked_files = untracked;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to untrack screenshots from Git index (continuing workspace clean): {e}"
+                    );
+                    result.untracked_files.clear();
+                }
+            }
+        }
     }
 
     // 4. Update .gitignore with wildcard entries
@@ -517,5 +524,53 @@ screenshots:
         assert!(gitignore.contains("**/already_globbed/*.png"));
         // Existing "scoped/**/*.png" was already in .gitignore and not duplicated
         assert_eq!(gitignore.matches("scoped/**/*.png").count(), 1);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_clean_workspace_deletion_failure_handled_gracefully() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempdir().unwrap();
+        let base_path = temp.path();
+
+        let gleon_dir = base_path.join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "locked/**/*.png"
+    mode: pixel
+"#;
+        std::fs::write(gleon_dir.join("gleon.yaml"), config_yaml).unwrap();
+
+        let locked_dir = base_path.join("locked");
+        std::fs::create_dir_all(&locked_dir).unwrap();
+        let locked_file = locked_dir.join("image.png");
+        std::fs::write(&locked_file, b"sample png").unwrap();
+
+        // Make parent directory read-only so removing file fails with PermissionDenied
+        let orig_perms = std::fs::metadata(&locked_dir).unwrap().permissions();
+        let mut read_only = orig_perms.clone();
+        read_only.set_mode(0o555);
+        std::fs::set_permissions(&locked_dir, read_only).unwrap();
+
+        let cli = Cli::for_test(Commands::Clean {
+            dry_run: false,
+            skip_gitignore: false,
+            keep_runs: false,
+        });
+        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+        let opts = CleanOptions::default();
+        let res = clean_workspace(&ctx, base_path, &opts);
+
+        // Restore permissions before assertions
+        std::fs::set_permissions(&locked_dir, orig_perms).unwrap();
+
+        let clean_res = res.unwrap();
+        // File could not be deleted, so deleted_files is empty
+        assert_eq!(clean_res.deleted_files.len(), 0);
+        assert!(locked_file.exists());
     }
 }
