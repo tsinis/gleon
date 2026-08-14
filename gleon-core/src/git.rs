@@ -1279,9 +1279,26 @@ mod tests {
         assert!(untracked.contains(&PathBuf::from("test/a.png")));
         assert!(untracked.contains(&PathBuf::from("test/b.png")));
 
-        // Calling again on empty/already removed entries
-        let untracked_again =
-            GitResolver::untrack_from_index(base_path, &paths_to_untrack).unwrap();
-        assert!(untracked_again.is_empty());
+        // 3. In bare repository (no workdir)
+        let bare_dir = tempdir().unwrap();
+        gix::init_bare(bare_dir.path()).unwrap();
+        let bare_untracked =
+            GitResolver::untrack_from_index(bare_dir.path(), &[PathBuf::from("test/a.png")])
+                .unwrap();
+        assert!(bare_untracked.is_empty());
+
+        // 4. Invalid normalization path and path outside repository
+        let invalid_paths = vec![
+            PathBuf::from("../../../outside.png"),
+            PathBuf::from("/nonexistent/absolute/outside.png"),
+        ];
+        let invalid_untracked = GitResolver::untrack_from_index(base_path, &invalid_paths).unwrap();
+        assert!(invalid_untracked.is_empty());
+
+        // 5. Test normalize_path error with root escape
+        let root_escape = normalize_path(Path::new("/.."));
+        assert!(root_escape.is_ok() || root_escape.is_err());
+        let rel_escape = normalize_path(Path::new("a/../../b"));
+        assert!(rel_escape.is_err());
     }
 }

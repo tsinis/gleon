@@ -238,15 +238,15 @@ pub fn clean_workspace(
         let diffs_dir = gleon_dir.join("diffs");
 
         if !options.dry_run {
-            if let Err(e) = std::fs::remove_dir_all(&runs_dir)
-                && e.kind() != std::io::ErrorKind::NotFound
-            {
-                return Err(CleanError::Io(e));
+            match std::fs::remove_dir_all(&runs_dir) {
+                Ok(()) => {}
+                Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(CleanError::Io(e)),
             }
-            if let Err(e) = std::fs::remove_dir_all(&diffs_dir)
-                && e.kind() != std::io::ErrorKind::NotFound
-            {
-                return Err(CleanError::Io(e));
+            match std::fs::remove_dir_all(&diffs_dir) {
+                Ok(()) => {}
+                Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(CleanError::Io(e)),
             }
         }
         result.cache_cleaned = true;
@@ -572,5 +572,96 @@ screenshots:
         // File could not be deleted, so deleted_files is empty
         assert_eq!(clean_res.deleted_files.len(), 0);
         assert!(locked_file.exists());
+    }
+
+    #[test]
+    fn test_clean_workspace_prune_non_empty_and_keep_runs() {
+        let temp = tempdir().unwrap();
+        let base_path = temp.path();
+
+        let gleon_dir = base_path.join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "nested/**/*.png"
+    mode: pixel
+"#;
+        std::fs::write(gleon_dir.join("gleon.yaml"), config_yaml).unwrap();
+
+        let nested_dir = base_path.join("nested").join("deep");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+        let screenshot = nested_dir.join("test.png");
+        std::fs::write(&screenshot, b"png").unwrap();
+
+        // Other file in nested/deep so directory is not empty after screenshot deletion
+        let other_file = nested_dir.join("keep.txt");
+        std::fs::write(&other_file, b"keep me").unwrap();
+
+        let cli = Cli::for_test(Commands::Clean {
+            dry_run: false,
+            skip_gitignore: false,
+            keep_runs: true,
+        });
+        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+        let opts = CleanOptions {
+            dry_run: false,
+            skip_gitignore: false,
+            keep_runs: true,
+        };
+        let res = clean_workspace(&ctx, base_path, &opts).unwrap();
+        assert_eq!(res.deleted_files.len(), 1);
+        assert!(!screenshot.exists());
+        assert!(other_file.exists());
+        assert!(nested_dir.exists());
+        assert!(!res.cache_cleaned);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_clean_workspace_runs_dir_removal_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempdir().unwrap();
+        let base_path = temp.path();
+
+        let gleon_dir = base_path.join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "*.png"
+    mode: pixel
+"#;
+        std::fs::write(gleon_dir.join("gleon.yaml"), config_yaml).unwrap();
+
+        let runs_dir = gleon_dir.join("runs");
+        std::fs::create_dir_all(&runs_dir).unwrap();
+        let inner_file = runs_dir.join("artifact.txt");
+        std::fs::write(&inner_file, b"content").unwrap();
+
+        // Make runs_dir read-only so remove_dir_all fails
+        let orig_perms = std::fs::metadata(&runs_dir).unwrap().permissions();
+        let mut read_only = orig_perms.clone();
+        read_only.set_mode(0o555);
+        std::fs::set_permissions(&runs_dir, read_only).unwrap();
+
+        let cli = Cli::for_test(Commands::Clean {
+            dry_run: false,
+            skip_gitignore: false,
+            keep_runs: false,
+        });
+        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+        let opts = CleanOptions::default();
+        let res = clean_workspace(&ctx, base_path, &opts);
+
+        // Restore permissions before assertions
+        std::fs::set_permissions(&runs_dir, orig_perms).unwrap();
+
+        assert!(res.is_err());
+        assert!(matches!(res.unwrap_err(), CleanError::Io(_)));
     }
 }

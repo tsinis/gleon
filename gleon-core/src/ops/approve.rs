@@ -235,9 +235,19 @@ pub fn approve_workspace(
     }
 
     // Pass 2: Parallel image decoding, hashing & pHash computation
+    const MAX_IMAGE_FILE_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
     let processed_items: Result<Vec<ApprovedItem>, ApproveError> = files_to_process
         .into_par_iter()
         .map(|(test_name, file_path, rel_to_source)| {
+            let metadata = std::fs::metadata(&file_path).map_err(ApproveError::Io)?;
+            if metadata.len() > MAX_IMAGE_FILE_SIZE {
+                return Err(ApproveError::ImageDecode {
+                    path: rel_to_source.clone(),
+                    source: image::ImageError::Limits(image::error::LimitError::from_kind(
+                        image::error::LimitErrorKind::DimensionError,
+                    )),
+                });
+            }
             let raw_png_bytes = std::fs::read(&file_path).map_err(ApproveError::Io)?;
             let dynamic_img =
                 SingleTestManifest::load_image_from_bytes(&raw_png_bytes).map_err(|e| match e {

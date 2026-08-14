@@ -103,6 +103,45 @@ screenshots:
         let exit_code = run_clean(&ctx, false, false, false).unwrap();
         assert_eq!(exit_code, 0);
         assert!(!test_dir.join("login.png").exists());
+        assert!(base_path.join(".gitignore").exists());
+    }
+
+    #[test]
+    fn test_run_clean_with_keep_runs_and_skip_gitignore() {
+        let temp = tempdir().unwrap();
+        let base_path = temp.path();
+
+        let gleon_dir = base_path.join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include:
+      - "test/**/*.png"
+    mode: pixel
+"#;
+        std::fs::write(gleon_dir.join("gleon.yaml"), config_yaml).unwrap();
+
+        let test_dir = base_path.join("test");
+        std::fs::create_dir_all(&test_dir).unwrap();
+        std::fs::write(test_dir.join("login.png"), b"image").unwrap();
+
+        let cli = Cli::for_test(Commands::Clean {
+            dry_run: false,
+            skip_gitignore: true,
+            keep_runs: true,
+        });
+        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+        // 1. Dry run with keep_runs=true and skip_gitignore=true
+        let exit_code = run_clean(&ctx, true, true, true).unwrap();
+        assert_eq!(exit_code, 0);
+
+        // 2. Real run with keep_runs=true and skip_gitignore=true
+        let exit_code = run_clean(&ctx, false, true, true).unwrap();
+        assert_eq!(exit_code, 0);
+        assert!(!base_path.join(".gitignore").exists());
     }
 
     #[test]
