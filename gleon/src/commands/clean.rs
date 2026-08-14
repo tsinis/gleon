@@ -17,7 +17,7 @@ pub fn run_clean(
         keep_runs,
     };
 
-    let res = clean_workspace(ctx, &ctx.base_dir, &options)?;
+    let res = clean_workspace(ctx, &ctx.base_dir, &options).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     if dry_run {
         info!(
@@ -54,4 +54,51 @@ pub fn run_clean(
     }
 
     Ok(0)
+}
+
+#[cfg(all(test, not(miri)))]
+mod tests {
+    use super::*;
+    use gleon_core::cli::{Cli, Commands};
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_run_clean_dry_run_and_actual_flow() {
+        let temp = tempdir().unwrap();
+        let base_path = temp.path();
+
+        let gleon_dir = base_path.join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+        std::fs::create_dir_all(gleon_dir.join("runs")).unwrap();
+
+        let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include:
+      - "test/**/*.png"
+    mode: pixel
+"#;
+        std::fs::write(gleon_dir.join("gleon.yaml"), config_yaml).unwrap();
+
+        let test_dir = base_path.join("test");
+        std::fs::create_dir_all(&test_dir).unwrap();
+        std::fs::write(test_dir.join("login.png"), b"image").unwrap();
+
+        let cli = Cli::for_test(Commands::Clean {
+            dry_run: true,
+            skip_gitignore: false,
+            keep_runs: false,
+        });
+        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+        // 1. Dry run
+        let exit_code = run_clean(&ctx, true, false, false).unwrap();
+        assert_eq!(exit_code, 0);
+        assert!(test_dir.join("login.png").exists());
+
+        // 2. Real run
+        let exit_code = run_clean(&ctx, false, false, false).unwrap();
+        assert_eq!(exit_code, 0);
+        assert!(!test_dir.join("login.png").exists());
+    }
 }

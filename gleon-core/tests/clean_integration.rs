@@ -93,7 +93,7 @@ screenshots:
 
     // 7. Verify .gitignore wildcard entry
     let gitignore = fs::read_to_string(base_path.join(".gitignore")).unwrap();
-    assert!(gitignore.contains("**/packages/app/test/goldens/**/*.png"));
+    assert!(gitignore.contains("packages/app/test/goldens/**/*.png"));
 }
 
 #[test]

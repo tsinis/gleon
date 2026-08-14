@@ -396,7 +396,10 @@ impl GitResolver {
             Some(dir) => dir,
             None => return Ok(vec![]),
         };
-        let repo_root = normalize_path(repo_root)?;
+        let repo_root = match normalize_path(repo_root) {
+            Ok(root) => root,
+            Err(_) => return Ok(vec![]),
+        };
 
         let mut index = match repo.open_index() {
             Ok(idx) => idx,
@@ -411,7 +414,13 @@ impl GitResolver {
             } else {
                 base_dir.join(p.as_ref())
             };
-            let abs_path = normalize_path(&raw_path)?;
+            let abs_path = match normalize_path(&raw_path) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::debug!("Failed to normalize path {:?}: {}", raw_path, e);
+                    continue;
+                }
+            };
 
             if let Ok(rel_to_repo) = abs_path.strip_prefix(&repo_root) {
                 let norm_str = crate::scanner::FileScanner::normalize_path_str(rel_to_repo);
@@ -433,6 +442,8 @@ impl GitResolver {
             index.remove_entry_at_index(entry_idx);
             untracked.push(original_path);
         }
+
+        index.remove_tree();
 
         index
             .write(gix::index::write::Options::default())

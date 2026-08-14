@@ -81,7 +81,8 @@ pub fn clean_workspace(
     let config = context.config.as_ref().cloned().unwrap_or_default();
 
     // 1. Scan for all screenshots matched by rules in gleon.yaml
-    let test_cases = FileScanner::scan_workspace(&config, base_path)?;
+    let test_cases =
+        FileScanner::scan_workspace(&config, base_path).map_err(CleanError::Scanner)?;
     let mut discovered_paths: Vec<PathBuf> = test_cases
         .into_iter()
         .map(|case| case.image.relative_path)
@@ -95,41 +96,35 @@ pub fn clean_workspace(
         discovered_paths.len()
     );
 
-    result.deleted_files.clone_from(&discovered_paths);
-
     // 2. Untrack from Git index if not in dry-run mode (Graceful degradation on Git failure)
-    if !options.dry_run && !discovered_paths.is_empty() {
-        match GitResolver::untrack_from_index(base_path, &discovered_paths) {
-            Ok(untracked) => {
-                tracing::debug!("Untracked {} screenshot(s) from Git index", untracked.len());
-                result.untracked_files = untracked;
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to untrack screenshots from Git index (continuing workspace clean): {e}"
-                );
-                result.untracked_files.clear();
+    if options.dry_run {
+        result.deleted_files = discovered_paths.clone();
+        result.untracked_files.clear();
+    } else {
+        if !discovered_paths.is_empty() {
+            match GitResolver::untrack_from_index(base_path, &discovered_paths) {
+                Ok(untracked) => {
+                    tracing::debug!("Untracked {} screenshot(s) from Git index", untracked.len());
+                    result.untracked_files = untracked;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to untrack screenshots from Git index (continuing workspace clean): {e}"
+                    );
+                    result.untracked_files.clear();
+                }
             }
         }
-    } else {
-        result.untracked_files.clone_from(&discovered_paths);
-    }
 
-    // 3. Delete files from disk and prune empty parent directories if not dry-run
-    if !options.dry_run {
+        // 3. Delete files from disk and prune empty parent directories
+        let mut affected_dirs = std::collections::HashSet::new();
         for rel_path in &discovered_paths {
             let full_path = base_path.join(rel_path);
             match std::fs::remove_file(&full_path) {
                 Ok(()) => {
-                    // Force commit directory entry change to disk on POSIX systems
-                    let parent = full_path
-                        .parent()
-                        .unwrap_or_else(|| std::path::Path::new("."));
-                    if let Ok(dir_file) = std::fs::File::open(parent) {
-                        #[cfg(not(windows))]
-                        let _ = dir_file.sync_all(); // Ignore on clean to not fail deletions midway
-                        #[cfg(windows)]
-                        let _ = dir_file.sync_all();
+                    result.deleted_files.push(rel_path.clone());
+                    if let Some(parent) = full_path.parent() {
+                        affected_dirs.insert(parent.to_path_buf());
                     }
 
                     // Walk up and prune empty parent directories up to base_path
@@ -139,13 +134,8 @@ pub fn clean_workspace(
                             break;
                         }
                         if std::fs::remove_dir(dir).is_ok() {
-                            let grandparent =
-                                dir.parent().unwrap_or_else(|| std::path::Path::new("."));
-                            if let Ok(dir_file) = std::fs::File::open(grandparent) {
-                                #[cfg(not(windows))]
-                                let _ = dir_file.sync_all(); // Ignore on clean to not fail deletions midway
-                                #[cfg(windows)]
-                                let _ = dir_file.sync_all();
+                            if let Some(grandparent) = dir.parent() {
+                                affected_dirs.insert(grandparent.to_path_buf());
                             }
                         } else {
                             // Directory not empty or cannot remove, stop pruning upward
@@ -155,9 +145,19 @@ pub fn clean_workspace(
                     }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(CleanError::Io(e)),
+                Err(e) => {
+                    tracing::warn!("Failed to delete screenshot {:?}: {}", full_path, e);
+                }
             }
         }
+
+        // Commit directory entry changes to disk on POSIX systems (deduplicated per dir)
+        for dir in affected_dirs {
+            if let Ok(dir_file) = std::fs::File::open(dir) {
+                let _ = dir_file.sync_all();
+            }
+        }
+
         tracing::debug!(
             "Deleted {} screenshot file(s) from disk and pruned empty directories",
             result.deleted_files.len()
@@ -181,7 +181,10 @@ pub fn clean_workspace(
         for rule in &config.screenshots {
             for pattern in &rule.include {
                 let pat_str = pattern.as_str();
-                let entry: std::borrow::Cow<'_, str> = if pat_str.starts_with("**/") {
+                let entry: std::borrow::Cow<'_, str> = if pat_str.starts_with("**/")
+                    || pat_str.contains('/')
+                    || pat_str.contains('\\')
+                {
                     std::borrow::Cow::Borrowed(pat_str)
                 } else {
                     let mut s = String::with_capacity(3 + pat_str.len());
@@ -310,7 +313,7 @@ screenshots:
 
         // 4. Verify .gitignore content
         let gitignore = std::fs::read_to_string(base_path.join(".gitignore")).unwrap();
-        assert!(gitignore.contains("**/test/goldens/**/*.png"));
+        assert!(gitignore.contains("test/goldens/**/*.png"));
     }
 
     #[test]
@@ -393,7 +396,7 @@ screenshots:
         assert_eq!(res.deleted_files.len(), 1);
 
         let gitignore = std::fs::read_to_string(base_path.join(".gitignore")).unwrap();
-        assert_eq!(gitignore, "target/\n**/test/goldens/**/*.png\n");
+        assert_eq!(gitignore, "target/\ntest/goldens/**/*.png\n");
     }
 
     #[test]
@@ -440,5 +443,79 @@ screenshots:
 
         let git_err = CleanError::Git(crate::git::GitError::DetachedHead);
         assert!(git_err.to_string().contains("Git error:"));
+
+        let ctx_err = CleanError::Context(crate::context::ContextError::Git(
+            crate::git::GitError::DetachedHead,
+        ));
+        assert!(ctx_err.to_string().contains("Context error:"));
+
+        let cfg_err =
+            CleanError::Config(crate::config::ConfigError::NotFound(PathBuf::from("foo")));
+        assert!(cfg_err.to_string().contains("Config error:"));
+
+        let scan_err = CleanError::Scanner(crate::scanner::ScannerError::InvalidTestName {
+            name: "bad".to_string(),
+            reason: "invalid".to_string(),
+        });
+        assert!(scan_err.to_string().contains("Scanner error:"));
+
+        let io_from_json: CleanError =
+            crate::io::IoError::JsonParse(serde_json::from_str::<String>("bad json").unwrap_err())
+                .into();
+        assert!(matches!(io_from_json, CleanError::Io(_)));
+
+        let io_from_io: CleanError =
+            crate::io::IoError::Io(std::io::Error::other("disk crash")).into();
+        assert!(matches!(io_from_io, CleanError::Io(_)));
+
+        let res = CleanResult::default();
+        let cloned_res = res.clone();
+        assert_eq!(res, cloned_res);
+        assert_eq!(format!("{res:?}"), format!("{cloned_res:?}"));
+    }
+
+    #[test]
+    fn test_clean_workspace_bare_vs_scoped_patterns_and_duplicates() {
+        let temp = tempdir().unwrap();
+        let base_path = temp.path();
+
+        let gleon_dir = base_path.join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include:
+      - "*.png"
+      - "scoped/**/*.png"
+      - "**/already_globbed/*.png"
+    mode: pixel
+"#;
+        std::fs::write(gleon_dir.join("gleon.yaml"), config_yaml).unwrap();
+
+        // Write existing .gitignore already containing scoped/**/*.png
+        std::fs::write(base_path.join(".gitignore"), "scoped/**/*.png\n").unwrap();
+
+        let root_png = base_path.join("root.png");
+        std::fs::write(&root_png, b"png").unwrap();
+
+        let cli = Cli::for_test(Commands::Clean {
+            dry_run: false,
+            skip_gitignore: false,
+            keep_runs: false,
+        });
+        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+        let opts = CleanOptions::default();
+        let res = clean_workspace(&ctx, base_path, &opts).unwrap();
+        assert_eq!(res.deleted_files.len(), 1);
+
+        let gitignore = std::fs::read_to_string(base_path.join(".gitignore")).unwrap();
+        // Bare pattern "*.png" gets "**/" prepended
+        assert!(gitignore.contains("**/*.png"));
+        // Already globbed pattern stays as is
+        assert!(gitignore.contains("**/already_globbed/*.png"));
+        // Existing "scoped/**/*.png" was already in .gitignore and not duplicated
+        assert_eq!(gitignore.matches("scoped/**/*.png").count(), 1);
     }
 }

@@ -127,13 +127,16 @@ where
             })
         })
         .and_then(|_| {
-            if let Ok(dir) = std::fs::File::open(parent) {
-                #[cfg(not(windows))]
-                if let Err(e) = dir.sync_all() {
-                    return Err(E::from(IoError::Io(e)));
+            #[cfg(not(windows))]
+            {
+                let dir = std::fs::File::open(parent).map_err(|e| E::from(IoError::Io(e)))?;
+                dir.sync_all().map_err(|e| E::from(IoError::Io(e)))?;
+            }
+            #[cfg(windows)]
+            {
+                if let Ok(dir) = std::fs::File::open(parent) {
+                    let _ = dir.sync_all();
                 }
-                #[cfg(windows)]
-                let _ = dir.sync_all();
             }
             Ok(())
         })

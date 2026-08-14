@@ -12,7 +12,7 @@ use thiserror::Error;
 
 struct ApprovedItem {
     test_name: String,
-    raw_png_bytes: Vec<u8>,
+    file_path: PathBuf,
     sha256_hex: String,
     phash_str: String,
     width: u32,
@@ -257,7 +257,7 @@ pub fn approve_workspace(
 
             Ok(ApprovedItem {
                 test_name,
-                raw_png_bytes,
+                file_path,
                 sha256_hex,
                 phash_str,
                 width,
@@ -273,8 +273,8 @@ pub fn approve_workspace(
     // Pass 3: Save blobs and manifests to workspace index
     for item in processed_items {
         let blob_path = blobs_dir.join(&item.sha256_hex);
-        crate::io::save_file_atomically(&blob_path, &item.raw_png_bytes)
-            .map_err(ApproveError::from)?;
+        let raw_png_bytes = std::fs::read(&item.file_path).map_err(ApproveError::Io)?;
+        crate::io::save_file_atomically(&blob_path, &raw_png_bytes).map_err(ApproveError::from)?;
 
         let hash = ImageHash::new("sha256", &item.sha256_hex).map_err(ApproveError::Manifest)?;
         let phash = item

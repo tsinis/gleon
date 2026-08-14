@@ -158,16 +158,16 @@ impl SingleTestManifest {
     /// Safely validates image dimensions from raw bytes before fully decoding the image.
     /// This prevents OOM (Out Of Memory) DoS attacks from decompression bombs.
     pub fn validate_image_bytes(bytes: &[u8]) -> Result<(), ManifestError> {
-        let reader = Self::make_limited_reader(bytes)?;
-        let (width, height) = reader.into_dimensions().map_err(ManifestError::Image)?;
-        Self::validate_dimensions(width, height)
+        Self::make_limited_reader(bytes)
+            .and_then(|reader| reader.into_dimensions().map_err(ManifestError::Image))
+            .and_then(|(width, height)| Self::validate_dimensions(width, height))
     }
 
     /// Safely decodes an image with enforced resource and dimension limits.
     pub fn load_image_from_bytes(bytes: &[u8]) -> Result<image::DynamicImage, ManifestError> {
-        Self::validate_image_bytes(bytes)?;
-        let reader = Self::make_limited_reader(bytes)?;
-        reader.decode().map_err(ManifestError::Image)
+        Self::validate_image_bytes(bytes)
+            .and_then(|()| Self::make_limited_reader(bytes))
+            .and_then(|reader| reader.decode().map_err(ManifestError::Image))
     }
 
     /// Load a single test manifest from a JSON file.

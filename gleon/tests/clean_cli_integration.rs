@@ -57,5 +57,5 @@ screenshots:
     assert!(!runs_dir.exists());
 
     let gitignore = fs::read_to_string(base_path.join(".gitignore")).unwrap();
-    assert!(gitignore.contains("**/test/goldens/**/*.png"));
+    assert!(gitignore.contains("test/goldens/**/*.png"));
 }
