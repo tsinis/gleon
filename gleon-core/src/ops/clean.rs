@@ -664,4 +664,114 @@ screenshots:
         assert!(res.is_err());
         assert!(matches!(res.unwrap_err(), CleanError::Io(_)));
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_clean_workspace_diffs_dir_removal_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempdir().unwrap();
+        let base_path = temp.path();
+
+        let gleon_dir = base_path.join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "*.png"
+    mode: pixel
+"#;
+        std::fs::write(gleon_dir.join("gleon.yaml"), config_yaml).unwrap();
+
+        let diffs_dir = gleon_dir.join("diffs");
+        std::fs::create_dir_all(&diffs_dir).unwrap();
+        let inner_file = diffs_dir.join("diff.png");
+        std::fs::write(&inner_file, b"content").unwrap();
+
+        // Make diffs_dir read-only so remove_dir_all fails
+        let orig_perms = std::fs::metadata(&diffs_dir).unwrap().permissions();
+        let mut read_only = orig_perms.clone();
+        read_only.set_mode(0o555);
+        std::fs::set_permissions(&diffs_dir, read_only).unwrap();
+
+        let cli = Cli::for_test(Commands::Clean {
+            dry_run: false,
+            skip_gitignore: false,
+            keep_runs: false,
+        });
+        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+        let opts = CleanOptions::default();
+        let res = clean_workspace(&ctx, base_path, &opts);
+
+        // Restore permissions before assertions
+        std::fs::set_permissions(&diffs_dir, orig_perms).unwrap();
+
+        assert!(res.is_err());
+        assert!(matches!(res.unwrap_err(), CleanError::Io(_)));
+    }
+
+    #[test]
+    #[cfg(all(unix, not(miri)))]
+    fn test_clean_workspace_git_untrack_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempdir().unwrap();
+        let base_path = temp.path();
+        let _repo = gix::init(base_path).unwrap();
+
+        let gleon_dir = base_path.join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "tracked.png"
+    mode: pixel
+"#;
+        std::fs::write(gleon_dir.join("gleon.yaml"), config_yaml).unwrap();
+
+        let screenshot_file = base_path.join("tracked.png");
+        std::fs::write(&screenshot_file, b"content").unwrap();
+
+        let git_index_path = base_path.join(".git").join("index");
+        let state = gix::index::State::new(gix::hash::Kind::Sha1);
+        let mut index = gix::index::File::from_state(state, &git_index_path);
+        let rel_path_bstr = "tracked.png";
+        index.dangerously_push_entry(
+            gix::index::entry::Stat::default(),
+            gix::hash::ObjectId::empty_tree(gix::hash::Kind::Sha1),
+            gix::index::entry::Flags::empty(),
+            gix::index::entry::Mode::FILE,
+            rel_path_bstr.as_bytes().into(),
+        );
+        index.write(gix::index::write::Options::default()).unwrap();
+
+        // Make .git directory read-only so untrack_from_index fails to write lockfile
+        let git_dir = base_path.join(".git");
+        let orig_perms = std::fs::metadata(&git_dir).unwrap().permissions();
+        let mut read_only = orig_perms.clone();
+        read_only.set_mode(0o555);
+        std::fs::set_permissions(&git_dir, read_only).unwrap();
+
+        let cli = Cli::for_test(Commands::Clean {
+            dry_run: false,
+            skip_gitignore: true,
+            keep_runs: true,
+        });
+        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+
+        let opts = CleanOptions {
+            dry_run: false,
+            skip_gitignore: true,
+            keep_runs: true,
+        };
+        let res = clean_workspace(&ctx, base_path, &opts);
+
+        // Restore permissions before assertions
+        std::fs::set_permissions(&git_dir, orig_perms).unwrap();
+
+        let clean_res = res.unwrap();
+        assert_eq!(clean_res.deleted_files.len(), 1);
+        assert!(clean_res.untracked_files.is_empty());
+    }
 }

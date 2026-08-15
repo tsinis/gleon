@@ -127,6 +127,9 @@ screenshots:
         std::fs::create_dir_all(&test_dir).unwrap();
         std::fs::write(test_dir.join("login.png"), b"image").unwrap();
 
+        let runs_dir = gleon_dir.join("runs");
+        std::fs::create_dir_all(&runs_dir).unwrap();
+
         let cli = Cli::for_test(Commands::Clean {
             dry_run: false,
             skip_gitignore: true,
@@ -142,6 +145,7 @@ screenshots:
         let exit_code = run_clean(&ctx, false, true, true).unwrap();
         assert_eq!(exit_code, 0);
         assert!(!base_path.join(".gitignore").exists());
+        assert!(runs_dir.exists());
     }
 
     #[test]

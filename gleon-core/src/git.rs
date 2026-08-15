@@ -1297,7 +1297,7 @@ mod tests {
 
         // 5. Test normalize_path error with root escape
         let root_escape = normalize_path(Path::new("/.."));
-        assert!(root_escape.is_ok() || root_escape.is_err());
+        assert!(root_escape.is_err());
         let rel_escape = normalize_path(Path::new("a/../../b"));
         assert!(rel_escape.is_err());
     }
