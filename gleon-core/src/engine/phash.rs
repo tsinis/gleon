@@ -6,7 +6,7 @@ use image_hasher::{HashAlg, HasherConfig};
 use std::sync::OnceLock;
 
 /// Errors that can occur during perceptual hashing operations.
-#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+#[derive(Debug, thiserror::Error)]
 pub enum PhashError {
     /// The phash string format is invalid.
     #[error("Invalid phash format: '{0}'")]
@@ -17,8 +17,8 @@ pub enum PhashError {
     SchemeMismatch(String, String),
 
     /// The phash string contains invalid hex characters.
-    #[error("Invalid hex in phash: {0}")]
-    InvalidHex(String),
+    #[error("Invalid hex in phash")]
+    InvalidHex(#[from] hex::FromHexError),
 
     /// The two phash strings have different lengths.
     #[error("Phash length mismatch: {0} bytes vs {1} bytes")]
@@ -59,8 +59,8 @@ pub fn calculate_hamming_distance(phash1: &str, phash2: &str) -> Result<u32, Pha
         ));
     }
 
-    let bytes1 = hex::decode(val1).map_err(|e| PhashError::InvalidHex(e.to_string()))?;
-    let bytes2 = hex::decode(val2).map_err(|e| PhashError::InvalidHex(e.to_string()))?;
+    let bytes1 = hex::decode(val1).map_err(PhashError::InvalidHex)?;
+    let bytes2 = hex::decode(val2).map_err(PhashError::InvalidHex)?;
 
     if bytes1.len() != bytes2.len() {
         return Err(PhashError::LengthMismatch(bytes1.len(), bytes2.len()));
@@ -75,14 +75,12 @@ pub fn calculate_hamming_distance(phash1: &str, phash2: &str) -> Result<u32, Pha
     Ok(distance)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
-    #[cfg(not(miri))]
     use image::{ImageBuffer, Rgba};
 
     #[test]
-    #[cfg(not(miri))]
     fn test_compute_phash_and_distance() {
         let img1 = ImageBuffer::from_pixel(100, 100, Rgba([255, 0, 0, 255]));
         let img2 = ImageBuffer::from_pixel(100, 100, Rgba([255, 0, 0, 255]));

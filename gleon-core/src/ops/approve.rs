@@ -5,9 +5,19 @@ use crate::context::{ContextError, ResolvedContext};
 use crate::engine::phash::compute_phash;
 use crate::manifest::{ImageHash, ManifestError, SingleTestManifest, WorkspaceIndex};
 use crate::scanner::ScannerError;
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+
+struct ApprovedItem {
+    test_name: String,
+    raw_png_bytes: Vec<u8>,
+    sha256_hex: String,
+    phash_str: String,
+    width: u32,
+    height: u32,
+}
 
 /// Errors that can occur during baseline approval.
 #[derive(Debug, Error)]
@@ -45,6 +55,14 @@ pub enum ApproveError {
     /// Error loading or saving manifest.
     #[error("Manifest error: {0}")]
     Manifest(#[from] ManifestError),
+
+    /// Image file exceeds maximum allowed size.
+    #[error("Image file '{path}' exceeds maximum size of {limit} bytes (actual: {size} bytes)")]
+    ImageTooLarge {
+        path: PathBuf,
+        size: u64,
+        limit: u64,
+    },
 
     /// Error decoding image file.
     #[error("Image decode error for '{path}'")]
@@ -116,11 +134,11 @@ pub fn approve_workspace(
         Err(e) => return Err(ApproveError::Io(e)),
     }
 
-    let platform_key = match context.platform.to_key() {
-        Ok(key) => key,
-        Err(e) => return Err(ApproveError::Context(ContextError::Platform(e))),
-    };
-
+    let platform_key = context
+        .platform
+        .to_key()
+        .map_err(ContextError::Platform)
+        .map_err(ApproveError::Context)?;
     let blobs_dir = gleon_dir.join("blobs").join("sha256");
     let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
     std::fs::create_dir_all(&blobs_dir).map_err(ApproveError::Io)?;
@@ -132,6 +150,15 @@ pub fn approve_workspace(
     let mut candidate_files = Vec::new();
     let walker = ignore::WalkBuilder::new(&source_dir)
         .standard_filters(false)
+        .filter_entry(|e| {
+            if e.depth() > 0
+                && e.file_type().is_some_and(|ft| ft.is_dir())
+                && matches!(e.file_name().to_str(), Some(name) if name.starts_with('.') || crate::scanner::DEFAULT_PRUNED_DIRECTORIES.contains(&name))
+            {
+                return false;
+            }
+            true
+        })
         .build();
 
     for result in walker {
@@ -174,9 +201,10 @@ pub fn approve_workspace(
 
         // Apply path filter if provided (matching on exact component boundaries)
         if !paths.is_empty() {
-            let matches_filter = paths.iter().any(|p| {
-                rel_to_source.starts_with(p) || rel_to_source.with_extension("").starts_with(p)
-            });
+            let rel_without_ext = rel_to_source.with_extension("");
+            let matches_filter = paths
+                .iter()
+                .any(|p| rel_to_source.starts_with(p) || rel_without_ext.starts_with(p));
             if !matches_filter {
                 continue;
             }
@@ -215,48 +243,95 @@ pub fn approve_workspace(
         files_to_process.push((test_name, file_path, rel_to_source_buf));
     }
 
+    // Pass 2 & 3: Bounded parallel decoding, hashing, and manifest/blob saving
+    const MAX_IMAGE_FILE_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
+    const BATCH_SIZE: usize = 32;
+
     let mut approved_test_cases = Vec::new();
     let mut total_approved = 0;
 
-    // Pass 2: Actually process the approved images
-    for (test_name, file_path, rel_to_source) in files_to_process {
-        let raw_png_bytes = std::fs::read(&file_path).map_err(ApproveError::Io)?;
+    for chunk in files_to_process.chunks(BATCH_SIZE) {
+        let processed_items: Result<Vec<ApprovedItem>, ApproveError> = chunk
+            .into_par_iter()
+            .map(|(test_name, file_path, rel_to_source)| {
+                use std::io::Read;
+                let mut file = std::fs::File::open(file_path).map_err(ApproveError::Io)?;
+                let metadata = file.metadata().map_err(ApproveError::Io)?;
+                if metadata.len() > MAX_IMAGE_FILE_SIZE {
+                    return Err(ApproveError::ImageTooLarge {
+                        path: rel_to_source.clone(),
+                        size: metadata.len(),
+                        limit: MAX_IMAGE_FILE_SIZE,
+                    });
+                }
 
-        SingleTestManifest::validate_image_bytes(&raw_png_bytes).map_err(ApproveError::Manifest)?;
+                let mut raw_png_bytes = Vec::with_capacity(metadata.len() as usize);
+                let bytes_read = (&mut file)
+                    .take(MAX_IMAGE_FILE_SIZE + 1)
+                    .read_to_end(&mut raw_png_bytes)
+                    .map_err(ApproveError::Io)? as u64;
 
-        let dynamic_img = image::load_from_memory(&raw_png_bytes).map_err(|source| {
-            ApproveError::ImageDecode {
-                path: rel_to_source.clone(),
-                source,
-            }
-        })?;
+                if bytes_read > MAX_IMAGE_FILE_SIZE {
+                    return Err(ApproveError::ImageTooLarge {
+                        path: rel_to_source.clone(),
+                        size: bytes_read,
+                        limit: MAX_IMAGE_FILE_SIZE,
+                    });
+                }
 
-        let width = dynamic_img.width();
-        let height = dynamic_img.height();
+                let dynamic_img = SingleTestManifest::load_image_from_bytes(&raw_png_bytes)
+                    .map_err(|e| match e {
+                        crate::manifest::ManifestError::Image(source) => {
+                            ApproveError::ImageDecode {
+                                path: rel_to_source.clone(),
+                                source,
+                            }
+                        }
+                        other => ApproveError::Manifest(other),
+                    })?;
 
-        let rgba_img = dynamic_img.to_rgba8();
+                let width = dynamic_img.width();
+                let height = dynamic_img.height();
+                let rgba_img = dynamic_img.into_rgba8();
 
-        let phash_str = compute_phash(&rgba_img);
-        let sha256_hex = hex::encode(Sha256::digest(&raw_png_bytes));
+                let phash_str = compute_phash(&rgba_img);
+                let sha256_hex = hex::encode(Sha256::digest(&raw_png_bytes));
 
-        // Save raw blob to .gleon/blobs/sha256/<sha256_hex>
-        let blob_path = blobs_dir.join(&sha256_hex);
-        crate::io::save_file_atomically(&blob_path, &raw_png_bytes).map_err(ApproveError::from)?;
+                Ok(ApprovedItem {
+                    test_name: test_name.clone(),
+                    raw_png_bytes,
+                    sha256_hex,
+                    phash_str,
+                    width,
+                    height,
+                })
+            })
+            .collect();
 
-        let hash = ImageHash::new("sha256", &sha256_hex).map_err(ApproveError::Manifest)?;
-        let phash = phash_str
-            .parse::<ImageHash>()
-            .map_err(ApproveError::Manifest)?;
+        let processed_items = processed_items?;
 
-        let new_manifest =
-            SingleTestManifest::new(hash, phash, width, height).map_err(ApproveError::Manifest)?;
+        for item in processed_items {
+            let blob_path = blobs_dir.join(&item.sha256_hex);
+            crate::io::save_file_atomically(&blob_path, &item.raw_png_bytes)
+                .map_err(ApproveError::from)?;
 
-        workspace_index
-            .save_test(&manifests_dir, &test_name, &new_manifest)
-            .map_err(ApproveError::Manifest)?;
+            let hash =
+                ImageHash::new("sha256", &item.sha256_hex).map_err(ApproveError::Manifest)?;
+            let phash = item
+                .phash_str
+                .parse::<ImageHash>()
+                .map_err(ApproveError::Manifest)?;
 
-        approved_test_cases.push(test_name);
-        total_approved += 1;
+            let new_manifest = SingleTestManifest::new(hash, phash, item.width, item.height)
+                .map_err(ApproveError::Manifest)?;
+
+            workspace_index
+                .save_test(&manifests_dir, &item.test_name, &new_manifest)
+                .map_err(ApproveError::Manifest)?;
+
+            approved_test_cases.push(item.test_name);
+            total_approved += 1;
+        }
     }
 
     Ok(ApproveResult {
@@ -312,6 +387,19 @@ mod tests {
         let json_err = serde_json::from_str::<serde_json::Value>("invalid json").unwrap_err();
         let err8 = ApproveError::JsonParse(json_err);
         assert!(err8.to_string().contains("JSON parse error"));
+
+        let err_too_large = ApproveError::ImageTooLarge {
+            path: PathBuf::from("large.png"),
+            size: 70 * 1024 * 1024,
+            limit: 64 * 1024 * 1024,
+        };
+        assert!(err_too_large.to_string().contains("exceeds maximum size"));
+
+        let from_io: ApproveError = crate::io::IoError::Io(std::io::Error::other("fail")).into();
+        assert!(matches!(from_io, ApproveError::Io(_)));
+        let json_err2 = serde_json::from_str::<serde_json::Value>("invalid json").unwrap_err();
+        let from_json: ApproveError = crate::io::IoError::JsonParse(json_err2).into();
+        assert!(matches!(from_json, ApproveError::JsonParse(_)));
     }
 
     #[test]
@@ -537,5 +625,21 @@ mod tests {
             // Superuser/root runners bypass 000 directory permissions
             assert!(res.is_err());
         }
+    }
+
+    #[test]
+    fn test_approve_rejects_file_exceeding_max_size() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        let actual_dir = gleon_dir.join("runs").join("latest").join("actual");
+        std::fs::create_dir_all(&actual_dir).unwrap();
+
+        let large_file = actual_dir.join("too_large.png");
+        let file = std::fs::File::create(&large_file).unwrap();
+        file.set_len(65 * 1024 * 1024).unwrap();
+
+        let ctx = ResolvedContext::default();
+        let res = approve_workspace(&ctx, temp.path(), &[], None);
+        assert!(matches!(res, Err(ApproveError::ImageTooLarge { .. })));
     }
 }

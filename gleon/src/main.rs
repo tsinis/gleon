@@ -229,6 +229,16 @@ async fn run(
                     .map_err(|e| anyhow::anyhow!(e))?;
             return commands::approve::run_approve(&ctx, paths, from.as_ref());
         }
+        Commands::Clean {
+            dry_run,
+            skip_gitignore,
+            keep_runs,
+        } => {
+            let ctx =
+                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            return commands::clean::run_clean(&ctx, *dry_run, *skip_gitignore, *keep_runs);
+        }
     }
     Ok(0)
 }

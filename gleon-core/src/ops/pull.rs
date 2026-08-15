@@ -123,13 +123,13 @@ pub async fn pull_blobs(
                     );
                     vec![(fallback_key.clone(), fb_dir)]
                 } else {
-                    vec![(platform_key.clone(), plat_dir)]
+                    vec![(platform_key, plat_dir)]
                 }
             } else {
-                vec![(platform_key.clone(), plat_dir)]
+                vec![(platform_key, plat_dir)]
             }
         } else {
-            vec![(platform_key.clone(), plat_dir)]
+            vec![(platform_key, plat_dir)]
         }
     };
 
@@ -438,12 +438,13 @@ mod tests {
         m1.save(fallback_manifests_dir.join("test1.json")).unwrap();
         m2.save(fallback_manifests_dir.join("test2.json")).unwrap();
 
-        // Pre-create the blob file locally so it counts as skipped
         let blob_path = gleon_dir
             .join("blobs")
             .join("sha256")
             .join("1111111111111111111111111111111111111111111111111111111111111111");
-        std::fs::create_dir_all(blob_path.parent().unwrap()).unwrap();
+        if let Some(parent) = blob_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
         std::fs::write(&blob_path, "blob content").unwrap();
 
         let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, None)

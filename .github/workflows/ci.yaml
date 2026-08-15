@@ -19,7 +19,7 @@ jobs:
 
     steps:
       - name: 📥 Checkout repository
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -38,7 +38,6 @@ jobs:
       - name: 🔍 Verify action.yml readability
         # TODO: Replace with real YAML parser or actionlint once available in CI
         run: node -e "require('fs').readFileSync('action.yml', 'utf8')"
-
 
       - name: 💾 Cache cargo-deny and cargo-audit databases
         uses: actions/cache@v6.1.0

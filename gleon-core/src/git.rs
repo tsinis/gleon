@@ -379,6 +379,87 @@ impl GitResolver {
 
         Ok(head_commit.id.to_string())
     }
+
+    /// Untracks given relative or absolute paths from the Git index (equivalent to `git rm --cached`).
+    /// Returns the list of paths that were actually present in the Git index and removed.
+    /// Gracefully returns an empty Vec if base_dir is not in a Git repository.
+    pub fn untrack_from_index<P: AsRef<Path>>(
+        base_dir: &Path,
+        paths: &[P],
+    ) -> Result<Vec<std::path::PathBuf>, GitError> {
+        let repo = match gix::discover(base_dir) {
+            Ok(repo) => repo,
+            Err(_) => return Ok(vec![]),
+        };
+
+        let repo_root = match repo.workdir() {
+            Some(dir) => dir,
+            None => return Ok(vec![]),
+        };
+        let repo_root = match normalize_path(repo_root) {
+            Ok(root) => root,
+            Err(_) => return Ok(vec![]),
+        };
+
+        let mut index = match repo.open_index() {
+            Ok(idx) => idx,
+            Err(_) => return Ok(vec![]),
+        };
+
+        let mut seen_indices = std::collections::HashSet::new();
+        let mut to_remove = Vec::new();
+
+        for p in paths {
+            let raw_path = if p.as_ref().is_absolute() {
+                p.as_ref().to_path_buf()
+            } else {
+                base_dir.join(p.as_ref())
+            };
+            let abs_path = match normalize_path(&raw_path) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::debug!("Failed to normalize path {:?}: {}", raw_path, e);
+                    continue;
+                }
+            };
+
+            if let Ok(rel_to_repo) = abs_path.strip_prefix(&repo_root) {
+                let norm_str = crate::scanner::FileScanner::normalize_path_str(rel_to_repo);
+                if let Ok(entry_idx) = index.entry_index_by_path(norm_str.as_bytes().into())
+                    && seen_indices.insert(entry_idx)
+                {
+                    to_remove.push((entry_idx, p.as_ref().to_path_buf()));
+                }
+            }
+        }
+
+        if to_remove.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Sort by index descending so removing higher indices does not invalidate or shift lower indices
+        to_remove.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
+
+        let mut untracked = Vec::with_capacity(to_remove.len());
+        for (entry_idx, original_path) in to_remove {
+            index.remove_entry_at_index(entry_idx);
+            untracked.push(original_path);
+        }
+
+        index.remove_tree();
+
+        index
+            .write(gix::index::write::Options::default())
+            .map_err(|e| GitError::Io(std::io::Error::other(e.to_string())))?;
+
+        // Restore original path discovery order
+        untracked.reverse();
+        tracing::debug!(
+            "Successfully untracked {} files from Git index",
+            untracked.len()
+        );
+        Ok(untracked)
+    }
 }
 
 fn normalize_path(path: &Path) -> Result<std::path::PathBuf, GitError> {
@@ -517,7 +598,7 @@ fn resolve_ci_branch(env: &dyn EnvProvider) -> Option<String> {
     None
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use std::collections::HashMap;
@@ -996,63 +1077,37 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn test_get_commit_author_gix() {
         let dir = tempdir().unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["init"])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["config", "user.name", "gleon Author"])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["config", "user.email", "author@gleon.rs"])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["config", "commit.gpgsign", "false"])
-            .output()
+        gix::init(dir.path()).unwrap();
+        std::fs::write(
+            dir.path().join(".git/config"),
+            "[user]\n\tname = gleon Author\n\temail = author@gleon.rs\n",
+        )
+        .unwrap();
+        let repo = gix::open(dir.path()).unwrap();
+        let empty_tree_id = repo.empty_tree().id();
+        let commit_id = repo
+            .commit(
+                "HEAD",
+                "initial commit",
+                empty_tree_id,
+                gix::commit::NO_PARENT_IDS,
+            )
             .unwrap();
 
-        std::fs::write(dir.path().join("dummy.txt"), "hello").unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["add", "."])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["commit", "-m", "initial commit"])
-            .output()
-            .unwrap();
-
-        let repo = gix::discover(dir.path()).unwrap();
-        let head_commit = repo.head_commit().unwrap();
-        let sha = head_commit.id.to_string();
-
+        let sha = commit_id.to_string();
         let author = GitResolver::get_commit_author(dir.path(), &sha).unwrap();
         assert_eq!(author, "gleon Author <author@gleon.rs>");
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn test_resolve_merge_base_shallow_clone_error() {
         let dir = tempdir().unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["init"])
-            .output()
-            .unwrap();
+        gix::init(dir.path()).unwrap();
 
         // Write .git/shallow to simulate a shallow repository
         let shallow_path = dir.path().join(".git/shallow");
-        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         std::fs::write(&shallow_path, "0000000000000000000000000000000000000000\n").unwrap();
 
         let result = GitResolver::resolve_merge_base(dir.path(), "main");
@@ -1087,7 +1142,9 @@ mod tests {
         let dir = tempdir().unwrap();
         create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
         let exclude_path = dir.path().join(".git/info/exclude");
-        std::fs::create_dir_all(exclude_path.parent().unwrap()).unwrap();
+        if let Some(parent) = exclude_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
         std::fs::write(&exclude_path, "*.png").unwrap();
         std::fs::set_permissions(&exclude_path, std::fs::Permissions::from_mode(0o000)).unwrap();
 
@@ -1106,50 +1163,23 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn test_resolve_merge_base_invalid_target_branch() {
         let dir = tempdir().unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["init"])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["config", "user.name", "Test"])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["config", "user.email", "test@test.com"])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["config", "user.name", "gleon Author"])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["config", "user.email", "author@gleon.rs"])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["config", "commit.gpgsign", "false"])
-            .output()
-            .unwrap();
-
-        std::fs::write(dir.path().join("dummy.txt"), "hello").unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["add", "."])
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["commit", "-m", "initial commit"])
-            .output()
+        gix::init(dir.path()).unwrap();
+        std::fs::write(
+            dir.path().join(".git/config"),
+            "[user]\n\tname = gleon Author\n\temail = author@gleon.rs\n",
+        )
+        .unwrap();
+        let repo = gix::open(dir.path()).unwrap();
+        let empty_tree_id = repo.empty_tree().id();
+        let _ = repo
+            .commit(
+                "HEAD",
+                "initial commit",
+                empty_tree_id,
+                gix::commit::NO_PARENT_IDS,
+            )
             .unwrap();
 
         let result = GitResolver::resolve_merge_base(dir.path(), "non-existent");
@@ -1159,14 +1189,9 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn test_get_commit_author_invalid_ref() {
         let dir = tempdir().unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["init"])
-            .output()
-            .unwrap();
+        gix::init(dir.path()).unwrap();
 
         let result = GitResolver::get_commit_author(dir.path(), "invalid-ref");
         assert!(result.is_err());
@@ -1175,35 +1200,18 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn test_get_commit_author_empty_signature() {
+        use gix::prelude::Write;
         let dir = tempdir().unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir.path())
-            .args(["init"])
-            .output()
+        gix::init(dir.path()).unwrap();
+        let repo = gix::open(dir.path()).unwrap();
+
+        let commit_data = b"tree 4b825dc642cb6eb9a0ff3e4897c85c126437f451\nauthor  <> 0 +0000\ncommitter Test <test@test.com> 0 +0000\n\nempty author\n";
+        let commit_id = repo
+            .write_buf(gix::object::Kind::Commit, commit_data)
             .unwrap();
 
-        let mut cmd = std::process::Command::new("git");
-        cmd.current_dir(dir.path())
-            .args(["hash-object", "-t", "commit", "-w", "--stdin"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped());
-
-        let child = cmd.spawn().unwrap();
-        use std::io::Write;
-        {
-            let mut stdin = child.stdin.as_ref().unwrap();
-            writeln!(stdin, "tree 4b825dc642cb6eb9a0ff3e4897c85c126437f451").unwrap();
-            writeln!(stdin, "author  <> 0 +0000").unwrap();
-            writeln!(stdin, "committer Test <test@test.com> 0 +0000").unwrap();
-            writeln!(stdin).unwrap();
-            writeln!(stdin, "empty author").unwrap();
-        }
-
-        let output = child.wait_with_output().unwrap();
-        let sha = String::from_utf8(output.stdout).unwrap().trim().to_string();
-
+        let sha = commit_id.to_string();
         let author = GitResolver::get_commit_author(dir.path(), &sha).unwrap();
         assert_eq!(author, "unknown");
     }
@@ -1220,5 +1228,77 @@ mod tests {
         let result = GitResolver::verify_ignored_impl(&paths, dir.path()).unwrap();
         // Since no ignore rules are defined that match the root itself, it should return false
         assert!(!result);
+    }
+
+    #[test]
+    fn test_untrack_from_index_unit() {
+        use std::path::PathBuf;
+        let dir = tempdir().unwrap();
+        let base_path = dir.path();
+
+        // 1. Outside git repository
+        let untracked =
+            GitResolver::untrack_from_index(base_path, &[PathBuf::from("foo.png")]).unwrap();
+        assert!(untracked.is_empty());
+
+        // 2. Inside initialized git repository
+        let _repo = gix::init(base_path).unwrap();
+
+        // Populate index with test entries
+        let index_path = base_path.join(".git").join("index");
+        let state = gix::index::State::new(gix::hash::Kind::Sha1);
+        let mut index = gix::index::File::from_state(state, index_path);
+        let rel_path1 = "test/a.png";
+        let rel_path2 = "test/b.png";
+        index.dangerously_push_entry(
+            gix::index::entry::Stat::default(),
+            gix::hash::ObjectId::empty_tree(gix::hash::Kind::Sha1),
+            gix::index::entry::Flags::empty(),
+            gix::index::entry::Mode::FILE,
+            rel_path1.as_bytes().into(),
+        );
+        index.dangerously_push_entry(
+            gix::index::entry::Stat::default(),
+            gix::hash::ObjectId::empty_tree(gix::hash::Kind::Sha1),
+            gix::index::entry::Flags::empty(),
+            gix::index::entry::Mode::FILE,
+            rel_path2.as_bytes().into(),
+        );
+        index.write(gix::index::write::Options::default()).unwrap();
+
+        // Untrack with duplicates and non-existent files
+        let paths_to_untrack = vec![
+            PathBuf::from("test/a.png"),
+            base_path.join("test/a.png"), // Absolute duplicate
+            PathBuf::from("test/b.png"),
+            PathBuf::from("nonexistent.png"),
+        ];
+
+        let untracked = GitResolver::untrack_from_index(base_path, &paths_to_untrack).unwrap();
+        assert_eq!(untracked.len(), 2);
+        assert!(untracked.contains(&PathBuf::from("test/a.png")));
+        assert!(untracked.contains(&PathBuf::from("test/b.png")));
+
+        // 3. In bare repository (no workdir)
+        let bare_dir = tempdir().unwrap();
+        gix::init_bare(bare_dir.path()).unwrap();
+        let bare_untracked =
+            GitResolver::untrack_from_index(bare_dir.path(), &[PathBuf::from("test/a.png")])
+                .unwrap();
+        assert!(bare_untracked.is_empty());
+
+        // 4. Invalid normalization path and path outside repository
+        let invalid_paths = vec![
+            PathBuf::from("../../../outside.png"),
+            PathBuf::from("/nonexistent/absolute/outside.png"),
+        ];
+        let invalid_untracked = GitResolver::untrack_from_index(base_path, &invalid_paths).unwrap();
+        assert!(invalid_untracked.is_empty());
+
+        // 5. Test normalize_path error with root escape
+        let root_escape = normalize_path(Path::new("/.."));
+        assert!(root_escape.is_err());
+        let rel_escape = normalize_path(Path::new("a/../../b"));
+        assert!(rel_escape.is_err());
     }
 }

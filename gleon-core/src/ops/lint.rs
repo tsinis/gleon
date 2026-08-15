@@ -76,6 +76,14 @@ pub fn lint_workspace_manifests(
 
     for entry_res in WalkBuilder::new(&search_dir)
         .standard_filters(false)
+        .filter_entry(|e| {
+            if e.file_type().is_some_and(|ft| ft.is_dir())
+                && matches!(e.file_name().to_str(), Some(name) if name != ".gleon" && crate::scanner::DEFAULT_PRUNED_DIRECTORIES.contains(&name))
+            {
+                return false;
+            }
+            true
+        })
         .build()
     {
         let entry = match entry_res {

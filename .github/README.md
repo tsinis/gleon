@@ -14,7 +14,7 @@
 >
 > ```yaml
 > - name: Checkout code
->   uses: actions/checkout@v4
+>   uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 >   with:
 >     fetch-depth: 0 # Required for gleon merge-base resolution
 > ```
@@ -28,7 +28,7 @@
 ```yaml
 steps:
   - name: Checkout repository
-    uses: actions/checkout@v4
+    uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     with:
       fetch-depth: 0 # Required for merge-base resolution
 
@@ -70,35 +70,9 @@ on:
 
 jobs:
   cleanup:
-    runs-on: ubuntu-latest
     permissions:
       contents: write
-    steps:
-      - name: Delete PR diffs branch
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          BRANCH_NAME="gleon/diffs/pr-${{ github.event.number }}"
-          RESPONSE=$(gh api --include -X DELETE "repos/${{ github.repository }}/git/refs/heads/$BRANCH_NAME" 2>&1 || true)
-          STATUS=$(echo "$RESPONSE" | grep -E '^HTTP/' | tail -n1 | awk '{print $2}')
-
-          if [ "$STATUS" = "204" ] || [ "$STATUS" = "200" ]; then
-            echo "Branch successfully deleted."
-            exit 0
-          elif [ "$STATUS" = "422" ]; then
-            if echo "$RESPONSE" | grep -q "Reference does not exist"; then
-              echo "Branch reference does not exist (422), ignoring error."
-              exit 0
-            else
-              echo "Failed to delete branch (422) due to validation or other error:"
-              echo "$RESPONSE"
-              exit 1
-            fi
-          else
-            echo "Failed to delete branch ($STATUS):"
-            echo "$RESPONSE"
-            exit 1
-          fi
+    uses: tsinis/gleon/.github/workflows/cleanup.yml@v0.1.0
 ```
 
 When a Pull Request is closed or merged, this workflow automatically deletes the ephemeral `gleon/diffs/pr-<PR_NUMBER>` branch from your repository.

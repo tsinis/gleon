@@ -81,6 +81,14 @@ pub fn scan_conflicts(
 
     for entry_res in WalkBuilder::new(&search_dir)
         .standard_filters(false)
+        .filter_entry(|e| {
+            if e.file_type().is_some_and(|ft| ft.is_dir())
+                && matches!(e.file_name().to_str(), Some(name) if name != ".gleon" && crate::scanner::DEFAULT_PRUNED_DIRECTORIES.contains(&name))
+            {
+                return false;
+            }
+            true
+        })
         .build()
     {
         let entry = match entry_res {
@@ -105,8 +113,8 @@ pub fn scan_conflicts(
                     Ok(c) => c,
                     Err(e) => {
                         tracing::warn!(
-                            "Skipping unparsable conflicted manifest at {:?}: {}",
-                            path,
+                            "Skipping unparsable conflicted manifest at {}: {}",
+                            path.display(),
                             e
                         );
                         continue;
@@ -158,7 +166,7 @@ pub fn apply_resolution(
         .map_err(|e| ResolveError::Save(manifest_file_path.to_path_buf(), e))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use tempfile::tempdir;

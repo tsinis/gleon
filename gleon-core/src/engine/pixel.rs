@@ -1,11 +1,20 @@
 //! Pixel-by-pixel image comparison.
 
 use image::RgbaImage;
+use rayon::prelude::*;
 
 /// Compares two images of the same dimensions pixel-by-pixel.
 /// Returns the number of mismatched pixels and a composite diff image
 /// where matching areas are darkened and mismatched areas are painted magenta.
 pub fn compare_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> (u64, RgbaImage) {
+    assert_eq!(
+        baseline.dimensions(),
+        actual.dimensions(),
+        "Image dimensions must match for compare_pixels: baseline={:?}, actual={:?}",
+        baseline.dimensions(),
+        actual.dimensions()
+    );
+
     let width = baseline.width();
     let height = baseline.height();
 
@@ -13,25 +22,29 @@ pub fn compare_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> (u64, RgbaIma
     let actual_raw = actual.as_raw();
 
     let mut diff_raw = vec![0u8; baseline_raw.len()];
-    let mut diff_count: u64 = 0;
 
-    let b_chunks = baseline_raw.chunks_exact(4);
-    let a_chunks = actual_raw.chunks_exact(4);
-    let d_chunks = diff_raw.chunks_exact_mut(4);
+    let b_chunks = baseline_raw.par_chunks_exact(4);
+    let a_chunks = actual_raw.par_chunks_exact(4);
+    let d_chunks = diff_raw.par_chunks_exact_mut(4);
 
-    for ((b_chunk, a_chunk), d_chunk) in b_chunks.zip(a_chunks).zip(d_chunks) {
-        if b_chunk != a_chunk {
-            diff_count += 1;
-            // Magenta: [255, 0, 255, 255]
-            d_chunk.copy_from_slice(&[255, 0, 255, 255]);
-        } else {
-            // Darken matching pixel: divide R, G, B by 2, keep A
-            d_chunk[0] = b_chunk[0] / 2;
-            d_chunk[1] = b_chunk[1] / 2;
-            d_chunk[2] = b_chunk[2] / 2;
-            d_chunk[3] = b_chunk[3];
-        }
-    }
+    let diff_count: u64 = b_chunks
+        .zip(a_chunks)
+        .zip(d_chunks)
+        .map(|((b_chunk, a_chunk), d_chunk)| {
+            if b_chunk != a_chunk {
+                // Magenta: [255, 0, 255, 255]
+                d_chunk.copy_from_slice(&[255, 0, 255, 255]);
+                1u64
+            } else {
+                // Darken matching pixel: divide R, G, B by 2, keep A
+                d_chunk[0] = b_chunk[0] / 2;
+                d_chunk[1] = b_chunk[1] / 2;
+                d_chunk[2] = b_chunk[2] / 2;
+                d_chunk[3] = b_chunk[3];
+                0u64
+            }
+        })
+        .sum();
 
     let diff_image = RgbaImage::from_raw(width, height, diff_raw)
         .expect("invariant: diff_raw length must be exactly width * height * 4");
@@ -41,6 +54,14 @@ pub fn compare_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> (u64, RgbaIma
 
 /// Counts the number of mismatched pixels without allocating a diff image.
 pub fn count_mismatched_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> u64 {
+    assert_eq!(
+        baseline.dimensions(),
+        actual.dimensions(),
+        "Image dimensions must match for count_mismatched_pixels: baseline={:?}, actual={:?}",
+        baseline.dimensions(),
+        actual.dimensions()
+    );
+
     let baseline_raw = baseline.as_raw();
     let actual_raw = actual.as_raw();
 
@@ -53,19 +74,19 @@ pub fn count_mismatched_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> u64 
         bytemuck::try_cast_slice::<u8, u32>(actual_raw),
     ) {
         b_u32
-            .iter()
-            .zip(a_u32.iter())
+            .par_iter()
+            .zip(a_u32.par_iter())
             .filter(|(b, a)| b != a)
             .count() as u64
     } else {
         // Fallback for unaligned slice buffers
-        let b_chunks = baseline_raw.chunks_exact(4);
-        let a_chunks = actual_raw.chunks_exact(4);
+        let b_chunks = baseline_raw.par_chunks_exact(4);
+        let a_chunks = actual_raw.par_chunks_exact(4);
         b_chunks.zip(a_chunks).filter(|(b, a)| b != a).count() as u64
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use image::{ImageBuffer, Rgba};
@@ -79,6 +100,8 @@ mod tests {
         assert_eq!(diff_count, 0);
         // Matching pixels should be darkened: 255 / 2 = 127
         assert_eq!(*diff_img.get_pixel(0, 0), Rgba([127, 0, 0, 255]));
+
+        assert_eq!(count_mismatched_pixels(&img1, &img2), 0);
     }
 
     #[test]
@@ -93,5 +116,23 @@ mod tests {
         assert_eq!(*diff_img.get_pixel(5, 5), Rgba([255, 0, 255, 255]));
         // The matching pixel should be darkened
         assert_eq!(*diff_img.get_pixel(0, 0), Rgba([127, 0, 0, 255]));
+
+        assert_eq!(count_mismatched_pixels(&img1, &img2), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Image dimensions must match")]
+    fn test_compare_pixels_unequal_dimensions_panics() {
+        let img1 = ImageBuffer::from_pixel(10, 10, Rgba([255, 0, 0, 255]));
+        let img2 = ImageBuffer::from_pixel(20, 10, Rgba([255, 0, 0, 255]));
+        compare_pixels(&img1, &img2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Image dimensions must match")]
+    fn test_count_mismatched_pixels_unequal_dimensions_panics() {
+        let img1 = ImageBuffer::from_pixel(10, 10, Rgba([255, 0, 0, 255]));
+        let img2 = ImageBuffer::from_pixel(10, 20, Rgba([255, 0, 0, 255]));
+        count_mismatched_pixels(&img1, &img2);
     }
 }

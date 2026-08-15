@@ -171,7 +171,18 @@ runs:
         args=()
         if [ -n "$GLEON_ARGS" ]; then
           ARGS_FILE=$(mktemp)
-          python3 -c "import os, json, shlex, sys; raw = os.environ.get('GLEON_ARGS', '').strip(); args = json.loads(raw) if raw.startswith('[') else shlex.split(raw) if raw else []; open(sys.argv[1], 'wb').write(b'\0'.join(str(a).encode('utf-8') for a in args) + (b'\0' if args else b''))" "$ARGS_FILE" || exit 1
+          node -e "
+          const fs = require('fs');
+          const raw = (process.env.GLEON_ARGS || '').trim();
+          let args = [];
+          if (raw.startsWith('[')) {
+            try { args = JSON.parse(raw); } catch (e) { process.exit(1); }
+          } else if (raw) {
+            args = raw.split(/\s+/).filter(Boolean);
+          }
+          const buf = Buffer.concat(args.map(a => Buffer.concat([Buffer.from(String(a)), Buffer.from([0])])));
+          fs.writeFileSync(process.argv[1], buf);
+          " "$ARGS_FILE" || exit 1
           while IFS= read -r -d '' arg; do
             args+=("$arg")
           done < "$ARGS_FILE"
@@ -180,21 +191,30 @@ runs:
 
         # Parse extra filter arguments from PR comment if running approve via comment
         if [ "$GLEON_COMMAND" = "approve" ] && [ -n "$COMMENT_BODY" ]; then
-          RAW_ARGS="$COMMENT_BODY"
-          if ! ARG_STRING="$(printf '%s\n' "$RAW_ARGS" | grep '^/gleon approve' | head -n 1 | sed 's#^/gleon approve[[:space:]]*##' | xargs)"; then
-            echo "::error::Failed to parse arguments from PR comment. Check for mismatched quotes."
+          if ! ARG_STRING="$(node -e "
+            const raw = process.env.COMMENT_BODY || '';
+            const command = raw.match(/(?:^|\n)\s*\/gleon approve(?:\s+([^\r\n]*))?\s*(?:\r?\n|$)/);
+            if (!command) {
+              console.error('::error::No standalone /gleon approve command found in comment.');
+              process.exit(1);
+            }
+            const rest = (command[1] || '').trim();
+            if (rest) {
+              const tokens = rest.split(/\s+/).filter(Boolean);
+              for (const token of tokens) {
+                if (!/^[A-Za-z0-9._/:=-]+$/.test(token)) {
+                  console.error('::error::Invalid argument token: ' + token);
+                  process.exit(1);
+                }
+              }
+              console.log(tokens.join(' '));
+            }
+          ")"; then
             exit 1
           fi
           if [ -n "$ARG_STRING" ]; then
             read -r -a TOKENS <<< "$ARG_STRING"
-            for token in "${TOKENS[@]}"; do
-              if [[ "$token" =~ ^[A-Za-z0-9._/:=-]+$ ]]; then
-                args+=("$token")
-              else
-                echo "::error::Invalid argument token: $token"
-                exit 1
-              fi
-            done
+            args+=("${TOKENS[@]}")
           fi
         fi
 
