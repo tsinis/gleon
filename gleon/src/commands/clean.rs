@@ -104,6 +104,7 @@ screenshots:
         assert_eq!(exit_code, 0);
         assert!(!test_dir.join("login.png").exists());
         assert!(base_path.join(".gitignore").exists());
+        assert!(!gleon_dir.join("runs").exists());
     }
 
     #[test]
@@ -140,10 +141,12 @@ screenshots:
         // 1. Dry run with keep_runs=true and skip_gitignore=true
         let exit_code = run_clean(&ctx, true, true, true).unwrap();
         assert_eq!(exit_code, 0);
+        assert!(test_dir.join("login.png").exists());
 
         // 2. Real run with keep_runs=true and skip_gitignore=true
         let exit_code = run_clean(&ctx, false, true, true).unwrap();
         assert_eq!(exit_code, 0);
+        assert!(!test_dir.join("login.png").exists());
         assert!(!base_path.join(".gitignore").exists());
         assert!(runs_dir.exists());
     }

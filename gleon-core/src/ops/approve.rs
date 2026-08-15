@@ -151,7 +151,8 @@ pub fn approve_workspace(
     let walker = ignore::WalkBuilder::new(&source_dir)
         .standard_filters(false)
         .filter_entry(|e| {
-            if e.file_type().is_some_and(|ft| ft.is_dir())
+            if e.depth() > 0
+                && e.file_type().is_some_and(|ft| ft.is_dir())
                 && matches!(e.file_name().to_str(), Some(name) if name.starts_with('.') || crate::scanner::DEFAULT_PRUNED_DIRECTORIES.contains(&name))
             {
                 return false;
@@ -291,7 +292,7 @@ pub fn approve_workspace(
 
                 let width = dynamic_img.width();
                 let height = dynamic_img.height();
-                let rgba_img = dynamic_img.to_rgba8();
+                let rgba_img = dynamic_img.into_rgba8();
 
                 let phash_str = compute_phash(&rgba_img);
                 let sha256_hex = hex::encode(Sha256::digest(&raw_png_bytes));

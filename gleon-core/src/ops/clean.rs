@@ -648,6 +648,13 @@ screenshots:
         read_only.set_mode(0o555);
         std::fs::set_permissions(&runs_dir, read_only).unwrap();
 
+        let probe = runs_dir.join(".probe");
+        if std::fs::write(&probe, b"").is_ok() {
+            let _ = std::fs::remove_file(&probe);
+            std::fs::set_permissions(&runs_dir, orig_perms).unwrap();
+            return;
+        }
+
         let cli = Cli::for_test(Commands::Clean {
             dry_run: false,
             skip_gitignore: false,
@@ -693,6 +700,13 @@ screenshots:
         let mut read_only = orig_perms.clone();
         read_only.set_mode(0o555);
         std::fs::set_permissions(&diffs_dir, read_only).unwrap();
+
+        let probe = diffs_dir.join(".probe");
+        if std::fs::write(&probe, b"").is_ok() {
+            let _ = std::fs::remove_file(&probe);
+            std::fs::set_permissions(&diffs_dir, orig_perms).unwrap();
+            return;
+        }
 
         let cli = Cli::for_test(Commands::Clean {
             dry_run: false,
@@ -752,6 +766,13 @@ screenshots:
         let mut read_only = orig_perms.clone();
         read_only.set_mode(0o555);
         std::fs::set_permissions(&git_dir, read_only).unwrap();
+
+        let probe = git_dir.join(".probe");
+        if std::fs::write(&probe, b"").is_ok() {
+            let _ = std::fs::remove_file(&probe);
+            std::fs::set_permissions(&git_dir, orig_perms).unwrap();
+            return;
+        }
 
         let cli = Cli::for_test(Commands::Clean {
             dry_run: false,
