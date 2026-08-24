@@ -102,7 +102,7 @@ jobs:
           fi
 
       - name: Run Gleon Approve
-        uses: tsinis/gleon@v0.1.0
+        uses: tsinis/gleon@main
         with:
           version: ${{ inputs.version }}
           checksum: ${{ inputs.checksum }}

@@ -64,31 +64,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Update Action Reference to Exact Tag
-        shell: bash
-        run: |
-          TAG_NAME="${GITHUB_REF_NAME}"
-          echo "Updating action reference in workflows to exact tag ${TAG_NAME}..."
-
-          # Update action ref in approve.yml, cleanup.yml, and README.md to exact immutable release tag
-          sed -i -E "s|uses: tsinis/gleon@[a-zA-Z0-9_./-]+|uses: tsinis/gleon@${TAG_NAME}|g" .github/workflows/approve.yml
-          sed -i -E "s|uses: tsinis/gleon@[a-zA-Z0-9_./-]+|uses: tsinis/gleon@${TAG_NAME}|g" .github/README.md
-          sed -i -E "s|uses: tsinis/gleon/\.github/workflows/([a-zA-Z0-9_-]+)\.yml@[a-zA-Z0-9_./-]+|uses: tsinis/gleon/.github/workflows/\1.yml@${TAG_NAME}|g" .github/README.md
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .github/workflows/approve.yml .github/README.md
-
-          if ! git diff --staged --quiet; then
-            git commit -m "chore(release): update action ref to ${TAG_NAME}"
-            git push origin HEAD:main
-          fi
-
       - name: Download all artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
