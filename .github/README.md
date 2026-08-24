@@ -33,7 +33,7 @@ steps:
       fetch-depth: 0 # Required for merge-base resolution
 
   - name: Run gleon Visual Regression Verify
-    uses: tsinis/gleon@v0.1.0
+    uses: tsinis/gleon@main
     with:
       command: "verify"
       github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -72,7 +72,7 @@ jobs:
   cleanup:
     permissions:
       contents: write
-    uses: tsinis/gleon/.github/workflows/cleanup.yml@v0.1.0
+    uses: tsinis/gleon/.github/workflows/cleanup.yml@main
 ```
 
 When a Pull Request is closed or merged, this workflow automatically deletes the ephemeral `gleon/diffs/pr-<PR_NUMBER>` branch from your repository.
@@ -112,7 +112,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
-    uses: tsinis/gleon/.github/workflows/approve.yml@v0.1.0
+    uses: tsinis/gleon/.github/workflows/approve.yml@main
     secrets:
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
       GLEON_STORAGE_URL: ${{ secrets.GLEON_STORAGE_URL }}
