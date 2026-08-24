@@ -126,7 +126,7 @@ jobs:
 
 You need the stable Rust toolchain (Edition 2024, Rust 1.97+).
 
-### Building the CLI
+### Building and Installing the CLI
 
 To compile the binary in release mode:
 
@@ -135,6 +135,12 @@ cargo build --release --workspace
 ```
 
 The compiled binary will be located at `target/release/gleon`.
+
+To install the CLI binary into your local cargo environment (`~/.cargo/bin`):
+
+```bash
+cargo install --path gleon --force
+```
 
 ### Running the CLI
 
