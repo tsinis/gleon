@@ -82,11 +82,12 @@ jobs:
           persist-credentials: false
 
       - name: Download Artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: gleon-artifacts-${{ github.event.issue.number }}-*
-          path: .gleon-downloads/
-          merge-multiple: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p .gleon-downloads
+          gh run download -p "gleon-artifacts-${{ github.event.issue.number }}-*" -D .gleon-downloads/
 
       - name: Reconstruct Runs Directory
         shell: bash
@@ -95,7 +96,8 @@ jobs:
         run: |
           mkdir -p "$WORKING_DIRECTORY/.gleon/runs/latest"
           if [ -d .gleon-downloads ] && [ "$(ls -A .gleon-downloads 2>/dev/null)" ]; then
-            cp -r .gleon-downloads/* "$WORKING_DIRECTORY/.gleon/runs/latest/"
+            find .gleon-downloads -mindepth 1 -maxdepth 1 -type d -exec cp -r {}/. "$WORKING_DIRECTORY/.gleon/runs/latest/" \;
+            find .gleon-downloads -mindepth 1 -maxdepth 1 -type f -exec cp {} "$WORKING_DIRECTORY/.gleon/runs/latest/" \;
           else
             echo "::error::No verification artifacts found in .gleon-downloads for PR #${{ github.event.issue.number }}."
             exit 1
