@@ -227,4 +227,6 @@ jobs:
           TRIGGER_WORKFLOW: ${{ inputs.trigger-workflow }}
         run: |
           echo "Triggering workflow '$TRIGGER_WORKFLOW' on ref '$HEAD_REF'..."
-          gh workflow run "$TRIGGER_WORKFLOW" --ref "$HEAD_REF"
+          if ! gh workflow run "$TRIGGER_WORKFLOW" --ref "$HEAD_REF"; then
+            echo "::warning::Failed to trigger '$TRIGGER_WORKFLOW' via workflow_dispatch. Note: GitHub requires the workflow to define 'workflow_dispatch:' in its 'on:' block on the default branch (main)."
+          fi
