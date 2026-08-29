@@ -591,11 +591,7 @@ mod tests {
         let cfg = StorageConfig::new(format!("file://{}", remote_dir.display()));
         let adapter = crate::storage::ObjectStoreAdapter::from_config(&cfg).unwrap();
 
-        let hash_a = crate::manifest::ImageHash::new(
-            "sha256",
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .unwrap();
+        let hash_a = crate::manifest::ImageHash::new("sha256", "a".repeat(64)).unwrap();
         let phash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();
 
         let dummy_file = temp.path().join("dummy");
@@ -628,11 +624,7 @@ mod tests {
         let cfg = StorageConfig::new(format!("file://{}", remote_dir.display()));
         let adapter = crate::storage::ObjectStoreAdapter::from_config(&cfg).unwrap();
 
-        let hash_b = crate::manifest::ImageHash::new(
-            "sha256",
-            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        )
-        .unwrap();
+        let hash_b = crate::manifest::ImageHash::new("sha256", "b".repeat(64)).unwrap();
         let phash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();
 
         let dummy_file = temp.path().join("dummy");
