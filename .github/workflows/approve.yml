@@ -97,9 +97,21 @@ jobs:
         run: |
           set -eo pipefail
           git fetch origin "$HEAD_SHA"
+          # Clear base manifests so deleted PR manifests are not retained
+          rm -rf "$WORKING_DIRECTORY/.gleon/manifests"
           if git ls-tree -d "$HEAD_SHA" "$WORKING_DIRECTORY/.gleon/manifests" 2>/dev/null | grep -q .; then
             git archive "$HEAD_SHA" "$WORKING_DIRECTORY/.gleon/manifests" | tar -x -C .
             echo "Restored existing manifests from PR branch $HEAD_SHA."
+          fi
+
+      - name: Validate Storage Configuration
+        shell: bash
+        env:
+          STORAGE_URL: ${{ secrets.GLEON_STORAGE_URL }}
+        run: |
+          if [ -z "$STORAGE_URL" ]; then
+            echo "::error::GLEON_STORAGE_URL secret is missing or empty. A valid remote storage URL is required to approve and sync baselines."
+            exit 1
           fi
 
       - name: Pull Existing Baseline Blobs
