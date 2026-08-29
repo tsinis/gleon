@@ -6,7 +6,7 @@ use thiserror::Error;
 use tracing::info;
 
 use crate::context::{ContextError, ResolvedContext};
-use crate::manifest::{ManifestError, WorkspaceIndex};
+use crate::manifest::{ImageHash, ManifestError, WorkspaceIndex};
 use crate::ops::push::list_platform_dirs;
 use crate::platform::validate_segment;
 use crate::storage::{ObjectStoreAdapter, StorageConfig, StorageError};
@@ -92,16 +92,41 @@ pub async fn pull_blobs(
     let manifests_root = gleon_dir.join("manifests");
     let blobs_root = gleon_dir.join("blobs");
 
-    let platform_dirs = if all_platforms {
-        match list_platform_dirs(&manifests_root) {
+    let mut referenced_hashes = std::collections::BTreeSet::new();
+    let mut missing_blobs = Vec::new();
+    let mut skipped_blobs = 0;
+
+    let mut register_blob = |hash: &ImageHash, origin_platform: &str| {
+        if referenced_hashes.insert(hash.clone()) {
+            let local_blob_path = crate::storage::local_blob_path(&blobs_root, hash);
+            if crate::storage::is_usable_blob(&local_blob_path) {
+                skipped_blobs += 1;
+            } else {
+                missing_blobs.push((hash.clone(), origin_platform.to_string()));
+            }
+        }
+    };
+
+    if all_platforms {
+        let platform_dirs = match list_platform_dirs(&manifests_root) {
             Ok(dirs) => dirs,
             Err(e) => return Err(PullError::Io(e)),
+        };
+        for (target_platform_key, target_dir) in platform_dirs {
+            let index = WorkspaceIndex::load(&target_dir).map_err(PullError::Manifest)?;
+            for manifest in index.entries().values() {
+                register_blob(&manifest.hash, &target_platform_key);
+            }
         }
     } else if let Some(p) = platform_override {
         let valid_key = validate_segment(p)
             .map_err(|e| PullError::Context(ContextError::Platform(e)))?
             .into_owned();
-        vec![(valid_key.clone(), manifests_root.join(valid_key))]
+        let target_dir = manifests_root.join(&valid_key);
+        let index = WorkspaceIndex::load(&target_dir).map_err(PullError::Manifest)?;
+        for manifest in index.entries().values() {
+            register_blob(&manifest.hash, &valid_key);
+        }
     } else {
         let platform_key = match context.platform.to_key() {
             Ok(key) => key,
@@ -109,46 +134,28 @@ pub async fn pull_blobs(
         };
         let plat_dir = manifests_root.join(&platform_key);
         let plat_idx = WorkspaceIndex::load(&plat_dir).map_err(PullError::Manifest)?;
-        let has_manifests = !plat_idx.is_empty();
 
-        if !has_manifests {
-            if let Some(ref fallback_key) = context.fallback_platform_key {
-                let fb_dir = manifests_root.join(fallback_key);
-                let fb_idx = WorkspaceIndex::load(&fb_dir).map_err(PullError::Manifest)?;
-                if !fb_idx.is_empty() {
-                    tracing::warn!(
-                        "No manifests found for platform '{}'. Falling back to pulling blobs for fallback platform '{}'.",
-                        platform_key,
-                        fallback_key
-                    );
-                    vec![(fallback_key.clone(), fb_dir)]
-                } else {
-                    vec![(platform_key, plat_dir)]
-                }
-            } else {
-                vec![(platform_key, plat_dir)]
-            }
-        } else {
-            vec![(platform_key, plat_dir)]
+        for manifest in plat_idx.entries().values() {
+            register_blob(&manifest.hash, &platform_key);
         }
-    };
 
-    let mut referenced_hashes = std::collections::BTreeSet::new();
-    let mut missing_blobs = Vec::new();
-    let mut skipped_blobs = 0;
-
-    for (target_platform_key, target_dir) in platform_dirs {
-        let index = WorkspaceIndex::load(&target_dir).map_err(PullError::Manifest)?;
-
-        for manifest in index.entries().values() {
-            let hash = &manifest.hash;
-            if !referenced_hashes.contains(hash) {
-                referenced_hashes.insert(hash.clone());
-                let local_blob_path = crate::storage::local_blob_path(&blobs_root, hash);
-                if crate::storage::is_usable_blob(&local_blob_path) {
-                    skipped_blobs += 1;
-                } else {
-                    missing_blobs.push((hash.clone(), target_platform_key.clone()));
+        if let Some(ref fallback_key) = context
+            .fallback_platform_key
+            .as_deref()
+            .filter(|&k| k != platform_key)
+        {
+            let fb_dir = manifests_root.join(fallback_key);
+            let fb_idx = WorkspaceIndex::load(&fb_dir).map_err(PullError::Manifest)?;
+            if !fb_idx.is_empty() {
+                tracing::info!(
+                    "Using fallback platform '{}' for missing blobs on platform '{}'.",
+                    fallback_key,
+                    platform_key
+                );
+                for (test_name, manifest) in fb_idx.entries() {
+                    if !plat_idx.entries().contains_key(test_name) {
+                        register_blob(&manifest.hash, fallback_key);
+                    }
                 }
             }
         }
@@ -453,5 +460,188 @@ mod tests {
 
         assert_eq!(res.total_manifest_blobs, 1);
         assert_eq!(res.skipped_blobs, 1);
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_pull_sparse_platform_with_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let linux_key = "5:linux-6:x86_64";
+        let macos_key = "5:macos-7:aarch64";
+
+        let ctx = ResolvedContext {
+            platform: crate::platform::PlatformInfo {
+                os: "linux".to_string(),
+                arch: Some("x86_64".to_string()),
+                renderer: None,
+                labels: std::collections::BTreeMap::new(),
+            },
+            fallback_platform_key: Some(macos_key.to_string()),
+            ..Default::default()
+        };
+
+        let remote_temp = tempfile::tempdir().unwrap();
+        let cfg = StorageConfig::new(format!("file://{}", remote_temp.path().display()));
+        let adapter = crate::storage::ObjectStoreAdapter::from_config(&cfg).unwrap();
+
+        let hash1 = crate::manifest::ImageHash::new(
+            "sha256",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .unwrap();
+        let hash2 = crate::manifest::ImageHash::new(
+            "sha256",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+        )
+        .unwrap();
+        let dummy_hash = crate::manifest::ImageHash::new(
+            "sha256",
+            "3333333333333333333333333333333333333333333333333333333333333333",
+        )
+        .unwrap();
+
+        let phash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();
+
+        // Upload blobs to remote
+        let dummy_file = temp.path().join("blob_tmp");
+        std::fs::write(&dummy_file, "data").unwrap();
+        adapter.upload_blob(&hash1, &dummy_file).await.unwrap();
+        adapter.upload_blob(&hash2, &dummy_file).await.unwrap();
+        adapter.upload_blob(&dummy_hash, &dummy_file).await.unwrap();
+
+        // 1. Fallback manifests (macos) contains test1 (pointing to dummy_hash) and test2 (pointing to hash2)
+        let macos_manifests_dir = gleon_dir.join("manifests").join(macos_key);
+        std::fs::create_dir_all(&macos_manifests_dir).unwrap();
+        let m_mac1 =
+            crate::manifest::SingleTestManifest::new(dummy_hash.clone(), phash.clone(), 10, 10)
+                .unwrap();
+        let m_mac2 =
+            crate::manifest::SingleTestManifest::new(hash2.clone(), phash.clone(), 20, 20).unwrap();
+        m_mac1.save(macos_manifests_dir.join("test1.json")).unwrap();
+        m_mac2.save(macos_manifests_dir.join("test2.json")).unwrap();
+
+        // 2. Linux manifests contains ONLY test1 override (pointing to hash1)
+        let linux_manifests_dir = gleon_dir.join("manifests").join(linux_key);
+        std::fs::create_dir_all(&linux_manifests_dir).unwrap();
+        let m_lin1 =
+            crate::manifest::SingleTestManifest::new(hash1.clone(), phash.clone(), 10, 10).unwrap();
+        m_lin1.save(linux_manifests_dir.join("test1.json")).unwrap();
+
+        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, None)
+            .await
+            .unwrap();
+
+        assert_eq!(res.total_manifest_blobs, 2);
+        assert_eq!(res.downloaded_blobs, 2);
+        assert_eq!(res.skipped_blobs, 0);
+
+        // Verify local blobs: hash1 and hash2 exist, dummy_hash was NOT downloaded
+        let local_blobs = gleon_dir.join("blobs").join("sha256");
+        assert!(local_blobs.join(hash1.value()).exists());
+        assert!(local_blobs.join(hash2.value()).exists());
+        assert!(!local_blobs.join(dummy_hash.value()).exists());
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_pull_uninitialized_workspace_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = ResolvedContext::default();
+        let cfg = StorageConfig::new("memory://");
+        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
+        assert!(matches!(res, Err(PullError::NotInitialized)));
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_pull_local_mode_without_storage_or_empty_url() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let ctx = ResolvedContext::default();
+        // 1. None storage config
+        let res_none = pull_blobs(&ctx, temp.path(), None, false, None)
+            .await
+            .unwrap();
+        assert!(res_none.local_mode);
+        assert_eq!(res_none.total_manifest_blobs, 0);
+
+        // 2. Empty URL storage config
+        let empty_cfg = StorageConfig::new("   ");
+        let res_empty = pull_blobs(&ctx, temp.path(), Some(&empty_cfg), false, None)
+            .await
+            .unwrap();
+        assert!(res_empty.local_mode);
+        assert_eq!(res_empty.total_manifest_blobs, 0);
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_pull_all_platforms_with_manifests() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let remote_dir = temp.path().join("remote_blobs");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        let cfg = StorageConfig::new(format!("file://{}", remote_dir.display()));
+        let adapter = crate::storage::ObjectStoreAdapter::from_config(&cfg).unwrap();
+
+        let hash_a = crate::manifest::ImageHash::new("sha256", "a".repeat(64)).unwrap();
+        let phash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();
+
+        let dummy_file = temp.path().join("dummy");
+        std::fs::write(&dummy_file, "blob data").unwrap();
+        adapter.upload_blob(&hash_a, &dummy_file).await.unwrap();
+
+        let plat_dir = gleon_dir.join("manifests").join("5:linux-6:x86_64");
+        std::fs::create_dir_all(&plat_dir).unwrap();
+        let manifest =
+            crate::manifest::SingleTestManifest::new(hash_a.clone(), phash, 10, 10).unwrap();
+        manifest.save(plat_dir.join("test_a.json")).unwrap();
+
+        let ctx = ResolvedContext::default();
+        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), true, None)
+            .await
+            .unwrap();
+        assert_eq!(res.total_manifest_blobs, 1);
+        assert_eq!(res.downloaded_blobs, 1);
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_pull_platform_override_with_manifests() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let remote_dir = temp.path().join("remote_blobs");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        let cfg = StorageConfig::new(format!("file://{}", remote_dir.display()));
+        let adapter = crate::storage::ObjectStoreAdapter::from_config(&cfg).unwrap();
+
+        let hash_b = crate::manifest::ImageHash::new("sha256", "b".repeat(64)).unwrap();
+        let phash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();
+
+        let dummy_file = temp.path().join("dummy");
+        std::fs::write(&dummy_file, "blob data b").unwrap();
+        adapter.upload_blob(&hash_b, &dummy_file).await.unwrap();
+
+        let plat_dir = gleon_dir.join("manifests").join("macos-aarch64");
+        std::fs::create_dir_all(&plat_dir).unwrap();
+        let manifest =
+            crate::manifest::SingleTestManifest::new(hash_b.clone(), phash, 10, 10).unwrap();
+        manifest.save(plat_dir.join("test_b.json")).unwrap();
+
+        let ctx = ResolvedContext::default();
+        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, Some("macos-aarch64"))
+            .await
+            .unwrap();
+        assert_eq!(res.total_manifest_blobs, 1);
+        assert_eq!(res.downloaded_blobs, 1);
     }
 }

@@ -78,8 +78,16 @@ pub(crate) fn list_platform_dirs(
             .file_name()
             .to_str()
             .filter(|_| is_dir)
-            .and_then(|n| crate::platform::validate_segment(n).ok())
-            .map(|n| n.into_owned());
+            .filter(|n| !n.starts_with('.'))
+            .and_then(|n| {
+                if n.chars().all(|c| {
+                    c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == ':'
+                }) {
+                    Some(n.to_string())
+                } else {
+                    None
+                }
+            });
 
         if let Some(name) = valid_name {
             platforms.push((name, path));
