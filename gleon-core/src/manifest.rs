@@ -36,7 +36,7 @@ pub enum ManifestError {
 }
 
 /// A strongly-typed image comparison hash, serialized as a `scheme:value` string.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ImageHash {
     /// The hashing scheme/algorithm (e.g. "sha256", "phash", "dhash", "ssim").
     scheme: String,
