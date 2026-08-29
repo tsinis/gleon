@@ -140,6 +140,7 @@ words = [
     "udeps",
     "unconflicted",
     "uninit",
+    "unmatch",
     "unparseable",
     "untracking",
     "untracks",

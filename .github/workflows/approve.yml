@@ -196,7 +196,11 @@ jobs:
           git read-tree "$HEAD_SHA"
 
           # 2. Stage updated manifests into the temporary index
-          git add "$WORKING_DIRECTORY/.gleon/manifests/" 2>/dev/null || true
+          if [ -d "$WORKING_DIRECTORY/.gleon/manifests" ]; then
+            git add -A "$WORKING_DIRECTORY/.gleon/manifests"
+          else
+            git rm -r --ignore-unmatch "$WORKING_DIRECTORY/.gleon/manifests"
+          fi
 
           # 3. Write updated tree
           NEW_TREE=$(git write-tree)
