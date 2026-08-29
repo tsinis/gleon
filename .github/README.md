@@ -197,4 +197,17 @@ When running visual tests across diverse operating systems (e.g., generating on 
 
 **Do NOT arbitrarily increase the global error threshold (e.g., 2%) to ignore these!** Inflating the tolerance threshold masks genuine regressions and defeats the purpose of visual testing.
 
-Instead, gleon natively embraces **Platform-Specific Baselines**.
+Instead, gleon natively embraces **Sparse Multi-Platform Baselines with Fallback**:
+
+1. **Set a `fallback_platform`** in your `gleon.yaml` (e.g. `os: macos`, `arch: aarch64`).
+2. Tests that render identically across platforms dynamically use the fallback baseline in memory (`gleon diff`, `gleon pull`, `gleon status`).
+3. Only genuine platform rendering differences generate override manifests in the local platform directory (`.gleon/manifests/linux-x86_64/`) when approved (`/gleon approve`).
+4. If an approved override later becomes byte-identical to the fallback platform, `gleon approve` automatically prunes the redundant local override to keep the repository 100% sparse.
+
+### How do I delete obsolete tests (Orphan Cleanup)?
+
+When a test is deleted from the codebase (e.g., removing a widget golden test and its PNG):
+
+1. `gleon status` on secondary platforms (e.g. Linux) detects the missing file and reports it as `Deleted` via the fallback overlay.
+2. Because gleon strictly enforces platform isolation, running `gleon stage` on Linux **only touches the Linux platform directory** and will not mutate the macOS fallback directory.
+3. **To completely remove the deleted test from the repository**: Run `gleon stage` on the **fallback platform (macOS)** (either locally on Mac or on a macOS CI runner) and commit the deleted manifest. Once the macOS fallback manifest is removed from Git, all platforms will automatically cease tracking the deleted test.

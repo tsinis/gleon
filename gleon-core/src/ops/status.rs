@@ -120,18 +120,20 @@ pub fn check_status(
     let mut workspace_index =
         WorkspaceIndex::load(&manifests_dir).map_err(StatusError::Manifest)?;
 
-    if workspace_index.is_empty()
-        && let Some(fallback_key) = context.fallback_platform_key.as_deref()
+    if let Some(fallback_key) = context
+        .fallback_platform_key
+        .as_deref()
+        .filter(|&k| k != platform_key)
     {
         let fallback_dir = gleon_dir.join("manifests").join(fallback_key);
         let fb_index = WorkspaceIndex::load(&fallback_dir).map_err(StatusError::Manifest)?;
         if !fb_index.is_empty() {
-            tracing::warn!(
-                "No manifests found for platform '{}'. Falling back to manifests from platform '{}'.",
-                platform_key,
-                fallback_key
+            tracing::info!(
+                "Using fallback platform '{}' for missing manifests on platform '{}'.",
+                fallback_key,
+                platform_key
             );
-            workspace_index = fb_index;
+            workspace_index.merge_fallback(fb_index);
         }
     }
 
@@ -617,5 +619,107 @@ mod tests {
         assert!(!res.is_clean());
         assert_eq!(res.modified.len(), 1);
         assert_eq!(res.modified[0].to_string_lossy(), "test.png");
+    }
+
+    #[test]
+    fn test_status_sparse_fallback_overlay() {
+        let temp = tempfile::tempdir().unwrap();
+        let base_path = temp.path();
+        let gleon_dir = base_path.join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+
+        let linux_key = "5:linux-6:x86_64";
+        let macos_key = "5:macos-7:aarch64";
+
+        let mut ctx = ResolvedContext {
+            platform: crate::platform::PlatformInfo {
+                os: "linux".to_string(),
+                arch: Some("x86_64".to_string()),
+                renderer: None,
+                labels: std::collections::BTreeMap::new(),
+            },
+            fallback_platform_key: Some(macos_key.to_string()),
+            ..Default::default()
+        };
+
+        let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include:
+      - "*.png"
+    mode: pixel
+"#;
+        let config_file = gleon_dir.join("gleon.yaml");
+        std::fs::write(&config_file, config_yaml).unwrap();
+        ctx.config = Some(crate::config::GleonConfig::load_from_file(&config_file).unwrap());
+
+        // Create images on disk: t1 (clean override), t2 (clean fallback), t3 (added)
+        let img1 = image::RgbaImage::new(10, 10);
+        img1.save(base_path.join("t1.png")).unwrap();
+        let img1_bytes = std::fs::read(base_path.join("t1.png")).unwrap();
+        let img1_sha = hex::encode(sha2::Sha256::digest(&img1_bytes));
+
+        let img2 = image::RgbaImage::new(20, 20);
+        img2.save(base_path.join("t2.png")).unwrap();
+        let img2_bytes = std::fs::read(base_path.join("t2.png")).unwrap();
+        let img2_sha = hex::encode(sha2::Sha256::digest(&img2_bytes));
+
+        let img3 = image::RgbaImage::new(30, 30);
+        img3.save(base_path.join("t3.png")).unwrap();
+
+        let blobs_dir = gleon_dir.join("blobs").join("sha256");
+        std::fs::create_dir_all(&blobs_dir).unwrap();
+        std::fs::write(blobs_dir.join(&img1_sha), &img1_bytes).unwrap();
+        std::fs::write(blobs_dir.join(&img2_sha), &img2_bytes).unwrap();
+
+        let dhash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();
+
+        // 1. Fallback manifests (macos) contains t1 (dummy), t2 (clean), t4 (deleted)
+        let macos_manifests = gleon_dir.join("manifests").join(macos_key);
+        std::fs::create_dir_all(&macos_manifests).unwrap();
+        let dummy_sha = "0".repeat(64);
+        let m_t1 = crate::manifest::SingleTestManifest::new(
+            crate::manifest::ImageHash::new("sha256", &dummy_sha).unwrap(),
+            dhash.clone(),
+            10,
+            10,
+        )
+        .unwrap();
+        m_t1.save(macos_manifests.join("t1.json")).unwrap();
+
+        let m_t2 = crate::manifest::SingleTestManifest::new(
+            crate::manifest::ImageHash::new("sha256", &img2_sha).unwrap(),
+            dhash.clone(),
+            20,
+            20,
+        )
+        .unwrap();
+        m_t2.save(macos_manifests.join("t2.json")).unwrap();
+
+        let m_t4 = crate::manifest::SingleTestManifest::new(
+            crate::manifest::ImageHash::new("sha256", &dummy_sha).unwrap(),
+            dhash.clone(),
+            40,
+            40,
+        )
+        .unwrap();
+        m_t4.save(macos_manifests.join("t4.json")).unwrap();
+
+        // 2. Linux manifests contains ONLY t1 (override matching img1)
+        let linux_manifests = gleon_dir.join("manifests").join(linux_key);
+        std::fs::create_dir_all(&linux_manifests).unwrap();
+        let l_t1 = crate::manifest::SingleTestManifest::new(
+            crate::manifest::ImageHash::new("sha256", &img1_sha).unwrap(),
+            dhash,
+            10,
+            10,
+        )
+        .unwrap();
+        l_t1.save(linux_manifests.join("t1.json")).unwrap();
+
+        let status = check_status(&ctx, base_path).unwrap();
+        assert_eq!(status.added, vec![PathBuf::from("t3.png")]);
+        assert!(status.modified.is_empty());
+        assert_eq!(status.deleted, vec![PathBuf::from("t4.png")]);
     }
 }

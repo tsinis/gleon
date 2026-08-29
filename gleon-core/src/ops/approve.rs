@@ -147,6 +147,18 @@ pub fn approve_workspace(
     let mut workspace_index =
         WorkspaceIndex::load(&manifests_dir).map_err(ApproveError::Manifest)?;
 
+    let fallback_index = match context
+        .fallback_platform_key
+        .as_deref()
+        .filter(|&k| k != platform_key)
+    {
+        Some(fb_key) => {
+            let fb_dir = gleon_dir.join("manifests").join(fb_key);
+            Some(WorkspaceIndex::load(&fb_dir).map_err(ApproveError::Manifest)?)
+        }
+        None => None,
+    };
+
     let mut candidate_files = Vec::new();
     let walker = ignore::WalkBuilder::new(&source_dir)
         .standard_filters(false)
@@ -325,9 +337,25 @@ pub fn approve_workspace(
             let new_manifest = SingleTestManifest::new(hash, phash, item.width, item.height)
                 .map_err(ApproveError::Manifest)?;
 
-            workspace_index
-                .save_test(&manifests_dir, &item.test_name, &new_manifest)
-                .map_err(ApproveError::Manifest)?;
+            let matches_fallback = fallback_index
+                .as_ref()
+                .and_then(|fb| fb.get(&item.test_name))
+                .is_some_and(|fb_manifest| fb_manifest.hash == new_manifest.hash);
+
+            if matches_fallback {
+                // If a local override existed on disk, remove it to keep repository sparse
+                let _ = workspace_index
+                    .remove_test(&manifests_dir, &item.test_name)
+                    .map_err(ApproveError::Manifest)?;
+                tracing::debug!(
+                    "Approved test '{}' matches fallback platform manifest — pruned/skipped local override.",
+                    item.test_name
+                );
+            } else {
+                workspace_index
+                    .save_test(&manifests_dir, &item.test_name, &new_manifest)
+                    .map_err(ApproveError::Manifest)?;
+            }
 
             approved_test_cases.push(item.test_name);
             total_approved += 1;
@@ -641,5 +669,82 @@ mod tests {
         let ctx = ResolvedContext::default();
         let res = approve_workspace(&ctx, temp.path(), &[], None);
         assert!(matches!(res, Err(ApproveError::ImageTooLarge { .. })));
+    }
+
+    #[test]
+    fn test_approve_removes_redundant_override_when_matching_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let base_path = temp.path();
+        let gleon_dir = base_path.join(".gleon");
+        let actual_dir = gleon_dir.join("runs").join("latest").join("actual");
+        std::fs::create_dir_all(&actual_dir).unwrap();
+
+        let linux_key = "5:linux-6:x86_64";
+        let macos_key = "5:macos-7:aarch64";
+
+        let ctx = ResolvedContext {
+            platform: crate::platform::PlatformInfo {
+                os: "linux".to_string(),
+                arch: Some("x86_64".to_string()),
+                renderer: None,
+                labels: std::collections::BTreeMap::new(),
+            },
+            fallback_platform_key: Some(macos_key.to_string()),
+            ..Default::default()
+        };
+
+        // Create actual image (10x10) in actual_dir
+        let img = image::RgbaImage::new(10, 10);
+        let actual_file = actual_dir.join("test1.png");
+        img.save(&actual_file).unwrap();
+        let actual_bytes = std::fs::read(&actual_file).unwrap();
+        let actual_sha = hex::encode(sha2::Sha256::digest(&actual_bytes));
+
+        let dhash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();
+
+        // 1. Fallback manifests (macos) contains test1 matching the actual image
+        let macos_manifests_dir = gleon_dir.join("manifests").join(macos_key);
+        std::fs::create_dir_all(&macos_manifests_dir).unwrap();
+        let mac_manifest = crate::manifest::SingleTestManifest::new(
+            crate::manifest::ImageHash::new("sha256", &actual_sha).unwrap(),
+            dhash.clone(),
+            10,
+            10,
+        )
+        .unwrap();
+        mac_manifest
+            .save(macos_manifests_dir.join("test1.json"))
+            .unwrap();
+
+        // 2. Linux manifests contains an existing override with an OLD hash
+        let linux_manifests_dir = gleon_dir.join("manifests").join(linux_key);
+        std::fs::create_dir_all(&linux_manifests_dir).unwrap();
+        let old_override = crate::manifest::SingleTestManifest::new(
+            crate::manifest::ImageHash::new("sha256", "9".repeat(64)).unwrap(),
+            dhash,
+            10,
+            10,
+        )
+        .unwrap();
+        let linux_test_file = linux_manifests_dir.join("test1.json");
+        old_override.save(&linux_test_file).unwrap();
+        assert!(linux_test_file.exists());
+
+        // Run approve on linux
+        let res = approve_workspace(&ctx, base_path, &[], None).unwrap();
+        assert_eq!(res.total_approved, 1);
+        assert_eq!(res.approved_test_cases, vec!["test1".to_string()]);
+
+        // Linux override must be removed from disk because it matches fallback
+        assert!(!linux_test_file.exists());
+
+        // Blob for actual_sha must exist
+        assert!(
+            gleon_dir
+                .join("blobs")
+                .join("sha256")
+                .join(&actual_sha)
+                .exists()
+        );
     }
 }

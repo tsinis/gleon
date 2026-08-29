@@ -164,6 +164,17 @@ impl WorkspaceIndex {
         self.entries.remove(normalized.as_ref())
     }
 
+    /// Merges entries from a fallback `WorkspaceIndex` into `self`.
+    /// Existing entries in `self` (platform overrides) take precedence and are NOT overwritten.
+    pub fn merge_fallback(&mut self, fallback: WorkspaceIndex) {
+        for (key, manifest) in fallback.entries {
+            self.entries.entry(key).or_insert(manifest);
+        }
+        for (key, path) in fallback.source_paths {
+            self.source_paths.entry(key).or_insert(path);
+        }
+    }
+
     /// Saves a single test manifest to disk under `manifest_dir` and updates memory.
     pub fn save_test<P: AsRef<Path>>(
         &mut self,
@@ -447,5 +458,97 @@ mod tests {
         // 2. Remove non-existent test
         let removed_none = index.remove_test(&manifest_dir, "non_existent").unwrap();
         assert!(removed_none.is_none());
+    }
+
+    #[test]
+    fn test_merge_fallback_disjoint() {
+        let mut target = WorkspaceIndex::new();
+        target.insert(
+            "test1".to_string(),
+            SingleTestManifest::new(
+                ImageHash::new("sha256", "1".repeat(64)).unwrap(),
+                ImageHash::new("dhash", "0000000000000000").unwrap(),
+                100,
+                100,
+            )
+            .unwrap(),
+        );
+
+        let mut fallback = WorkspaceIndex::new();
+        fallback.insert(
+            "test2".to_string(),
+            SingleTestManifest::new(
+                ImageHash::new("sha256", "2".repeat(64)).unwrap(),
+                ImageHash::new("dhash", "0000000000000000").unwrap(),
+                200,
+                200,
+            )
+            .unwrap(),
+        );
+
+        target.merge_fallback(fallback);
+
+        assert_eq!(target.len(), 2);
+        assert_eq!(target.get("test1").unwrap().hash.value(), &"1".repeat(64));
+        assert_eq!(target.get("test2").unwrap().hash.value(), &"2".repeat(64));
+    }
+
+    #[test]
+    fn test_merge_fallback_shadowing_priority() {
+        let mut target = WorkspaceIndex::new();
+        target.insert(
+            "common_test".to_string(),
+            SingleTestManifest::new(
+                ImageHash::new("sha256", "a".repeat(64)).unwrap(),
+                ImageHash::new("dhash", "0000000000000000").unwrap(),
+                100,
+                100,
+            )
+            .unwrap(),
+        );
+
+        let mut fallback = WorkspaceIndex::new();
+        fallback.insert(
+            "common_test".to_string(),
+            SingleTestManifest::new(
+                ImageHash::new("sha256", "b".repeat(64)).unwrap(),
+                ImageHash::new("dhash", "0000000000000000").unwrap(),
+                100,
+                100,
+            )
+            .unwrap(),
+        );
+        fallback.insert(
+            "fallback_only".to_string(),
+            SingleTestManifest::new(
+                ImageHash::new("sha256", "c".repeat(64)).unwrap(),
+                ImageHash::new("dhash", "0000000000000000").unwrap(),
+                100,
+                100,
+            )
+            .unwrap(),
+        );
+
+        target.merge_fallback(fallback);
+
+        assert_eq!(target.len(), 2);
+        // target's own manifest takes precedence
+        assert_eq!(
+            target.get("common_test").unwrap().hash.value(),
+            &"a".repeat(64)
+        );
+        // fallback test is added
+        assert_eq!(
+            target.get("fallback_only").unwrap().hash.value(),
+            &"c".repeat(64)
+        );
+    }
+
+    #[test]
+    fn test_merge_fallback_empty() {
+        let mut target = WorkspaceIndex::new();
+        let fallback = WorkspaceIndex::new();
+        target.merge_fallback(fallback);
+        assert!(target.is_empty());
     }
 }
