@@ -41,7 +41,7 @@ fn make_png(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {
 }
 
 #[tokio::test]
-async fn test_sparse_multiplatform_fallback_full_lifecycle() {
+async fn test_sparse_multi_platform_fallback_full_lifecycle() {
     let workspace_temp = tempdir().unwrap();
     let base_path = workspace_temp.path();
     let gleon_dir = base_path.join(".gleon");
@@ -50,8 +50,21 @@ async fn test_sparse_multiplatform_fallback_full_lifecycle() {
     let storage_temp = tempdir().unwrap();
     let storage_cfg = StorageConfig::new(format!("file://{}", storage_temp.path().display()));
 
-    let macos_key = "5:macos-7:aarch64";
-    let linux_key = "5:linux-6:x86_64";
+    let macos_platform = PlatformInfo {
+        os: "macos".to_string(),
+        arch: Some("aarch64".to_string()),
+        renderer: None,
+        labels: BTreeMap::new(),
+    };
+    let linux_platform = PlatformInfo {
+        os: "linux".to_string(),
+        arch: Some("x86_64".to_string()),
+        renderer: None,
+        labels: BTreeMap::new(),
+    };
+
+    let macos_key = macos_platform.to_key().unwrap();
+    let linux_key = linux_platform.to_key().unwrap();
 
     let config_yaml = r#"
 required_version: ">=0.1.0"
@@ -67,24 +80,16 @@ screenshots:
     std::fs::write(&config_file, config_yaml).unwrap();
     let config = GleonConfig::load_from_file(&config_file).unwrap();
 
+    #[allow(clippy::field_reassign_with_default)]
     let mut macos_ctx = ResolvedContext::default();
-    macos_ctx.platform = PlatformInfo {
-        os: "macos".to_string(),
-        arch: Some("aarch64".to_string()),
-        renderer: None,
-        labels: BTreeMap::new(),
-    };
+    macos_ctx.platform = macos_platform;
     macos_ctx.fallback_platform_key = None;
     macos_ctx.config = Some(config.clone());
 
+    #[allow(clippy::field_reassign_with_default)]
     let mut linux_ctx = ResolvedContext::default();
-    linux_ctx.platform = PlatformInfo {
-        os: "linux".to_string(),
-        arch: Some("x86_64".to_string()),
-        renderer: None,
-        labels: BTreeMap::new(),
-    };
-    linux_ctx.fallback_platform_key = Some(macos_key.to_string());
+    linux_ctx.platform = linux_platform;
+    linux_ctx.fallback_platform_key = Some(macos_key.clone());
     linux_ctx.config = Some(config);
 
     // Create goldens directory with 3 screenshot files

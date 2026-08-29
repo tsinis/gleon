@@ -201,7 +201,7 @@ Instead, gleon natively embraces **Sparse Multi-Platform Baselines with Fallback
 
 1. **Set a `fallback_platform`** in your `gleon.yaml` (e.g. `os: macos`, `arch: aarch64`).
 2. Tests that render identically across platforms dynamically use the fallback baseline in memory (`gleon diff`, `gleon pull`, `gleon status`).
-3. Only genuine platform rendering differences generate override manifests in the local platform directory (`.gleon/manifests/linux-x86_64/`) when approved (`/gleon approve`).
+3. Only genuine platform rendering differences generate override manifests in the local platform directory (`.gleon/manifests/5:linux-6:x86_64/`) when approved (`/gleon approve`).
 4. If an approved override later becomes byte-identical to the fallback platform, `gleon approve` automatically prunes the redundant local override to keep the repository 100% sparse.
 
 ### How do I delete obsolete tests (Orphan Cleanup)?
