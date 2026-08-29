@@ -1,7 +1,7 @@
 //! Push operation for uploading baseline blobs to remote storage.
 
 use futures::{StreamExt as _, TryStreamExt as _};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing::info;
@@ -144,8 +144,8 @@ pub async fn push_blobs(
         vec![(platform_key.clone(), manifests_root.join(platform_key))]
     };
 
-    // Collect all referenced unique sha256 blob hashes and verify local existence (Fail Fast)
-    let mut referenced_hashes = BTreeSet::new();
+    // Collect all referenced unique sha256 blob hashes and their platform (for error reporting)
+    let mut hash_to_platform = BTreeMap::new();
 
     for (plat_key, plat_dir) in &platform_dirs {
         match std::fs::metadata(plat_dir) {
@@ -159,20 +159,13 @@ pub async fn push_blobs(
         };
         for manifest in index.entries().values() {
             let hash = &manifest.hash;
-            if !referenced_hashes.contains(hash) {
-                let local_blob_path = crate::storage::local_blob_path(&blobs_root, hash);
-                if !crate::storage::is_usable_blob(&local_blob_path) {
-                    return Err(PushError::MissingLocalBlob {
-                        hash: hash.value().to_string(),
-                        platform: plat_key.clone(),
-                    });
-                }
-                referenced_hashes.insert(hash.clone());
-            }
+            hash_to_platform
+                .entry(hash.clone())
+                .or_insert_with(|| plat_key.clone());
         }
     }
 
-    let total_manifest_blobs = referenced_hashes.len();
+    let total_manifest_blobs = hash_to_platform.len();
     if total_manifest_blobs == 0 {
         return Ok(PushResult {
             total_manifest_blobs: 0,
@@ -184,25 +177,39 @@ pub async fn push_blobs(
 
     let adapter = ObjectStoreAdapter::from_config(storage_cfg)?;
 
+    // Query remote storage in batch per unique scheme using adapter.list_blobs()
+    let mut unique_schemes = HashSet::new();
+    for hash in hash_to_platform.keys() {
+        unique_schemes.insert(hash.scheme());
+    }
+
+    let mut existing_remote_hashes = HashSet::new();
+    for scheme in unique_schemes {
+        let remote_hashes = adapter
+            .list_blobs(scheme)
+            .await
+            .map_err(PushError::Storage)?;
+        for val in remote_hashes {
+            if let Ok(h) = crate::manifest::ImageHash::new(scheme, val) {
+                existing_remote_hashes.insert(h);
+            }
+        }
+    }
+
     let mut missing_blobs = Vec::new();
     let mut skipped_blobs = 0;
 
-    let mut check_stream = futures::stream::iter(referenced_hashes.into_iter().map(|hash| {
-        let adapter = adapter.clone();
-        async move {
-            let exists = adapter
-                .blob_exists(&hash)
-                .await
-                .map_err(PushError::Storage)?;
-            Ok::<(crate::manifest::ImageHash, bool), PushError>((hash, exists))
-        }
-    }))
-    .buffer_unordered(adapter.concurrency());
-
-    while let Some((hash, exists)) = check_stream.try_next().await? {
-        if exists {
+    for (hash, platform) in hash_to_platform {
+        if existing_remote_hashes.contains(&hash) {
             skipped_blobs += 1;
         } else {
+            let local_blob_path = crate::storage::local_blob_path(&blobs_root, &hash);
+            if !crate::storage::is_usable_blob(&local_blob_path) {
+                return Err(PushError::MissingLocalBlob {
+                    hash: hash.value().to_string(),
+                    platform,
+                });
+            }
             missing_blobs.push(hash);
         }
     }
@@ -498,5 +505,148 @@ mod tests {
             // Superuser/root runners bypass 000 directory permissions
             assert!(res.is_ok());
         }
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_push_skips_when_blob_already_in_remote_even_if_missing_locally() {
+        use crate::storage::ObjectStoreAdapter;
+
+        let temp = tempfile::tempdir().unwrap();
+
+        let mut ctx = ResolvedContext::default();
+        ctx.platform.os = "linux".to_string();
+        let key = ctx.platform.to_key().unwrap();
+
+        let plat_dir = temp.path().join(".gleon").join("manifests").join(&key);
+        std::fs::create_dir_all(&plat_dir).unwrap();
+
+        let hash_str = "3333333333333333333333333333333333333333333333333333333333333333";
+        let image_hash = crate::manifest::ImageHash::new("sha256", hash_str).unwrap();
+        let manifest = crate::manifest::SingleTestManifest::new(
+            image_hash.clone(),
+            crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap(),
+            1,
+            1,
+        )
+        .unwrap();
+        manifest.save(plat_dir.join("test_remote.json")).unwrap();
+
+        let remote_dir = temp.path().join("remote_storage");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        let cfg = StorageConfig::new(format!("file://{}", remote_dir.display()));
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+
+        // Pre-populate remote storage with the blob directly
+        let tmp_file = temp.path().join("tmp_blob.png");
+        std::fs::write(&tmp_file, b"remote blob data").unwrap();
+        adapter.upload_blob(&image_hash, &tmp_file).await.unwrap();
+
+        // Local blob directory does NOT have the blob
+        let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, None)
+            .await
+            .unwrap();
+
+        assert_eq!(res.total_manifest_blobs, 1);
+        assert_eq!(res.uploaded_blobs, 0);
+        assert_eq!(res.skipped_blobs, 1);
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_push_fails_fast_when_blob_missing_both_remotely_and_locally() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let mut ctx = ResolvedContext::default();
+        ctx.platform.os = "linux".to_string();
+        let key = ctx.platform.to_key().unwrap();
+
+        let plat_dir = temp.path().join(".gleon").join("manifests").join(&key);
+        std::fs::create_dir_all(&plat_dir).unwrap();
+
+        let hash_str = "4444444444444444444444444444444444444444444444444444444444444444";
+        let image_hash = crate::manifest::ImageHash::new("sha256", hash_str).unwrap();
+        let manifest = crate::manifest::SingleTestManifest::new(
+            image_hash,
+            crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap(),
+            1,
+            1,
+        )
+        .unwrap();
+        manifest.save(plat_dir.join("test_missing.json")).unwrap();
+
+        let cfg = StorageConfig::new("memory://");
+        let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
+
+        assert!(matches!(res, Err(PushError::MissingLocalBlob { .. })));
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_push_batch_partial_remote_and_local_upload() {
+        use crate::storage::ObjectStoreAdapter;
+
+        let temp = tempfile::tempdir().unwrap();
+
+        let mut ctx = ResolvedContext::default();
+        ctx.platform.os = "linux".to_string();
+        let key = ctx.platform.to_key().unwrap();
+
+        let plat_dir = temp.path().join(".gleon").join("manifests").join(&key);
+        std::fs::create_dir_all(&plat_dir).unwrap();
+
+        // 1. Blob that exists remotely (should be skipped)
+        let hash_remote_str = "1111111111111111111111111111111111111111111111111111111111111111";
+        let image_hash_remote = crate::manifest::ImageHash::new("sha256", hash_remote_str).unwrap();
+        let manifest_remote = crate::manifest::SingleTestManifest::new(
+            image_hash_remote.clone(),
+            crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap(),
+            1,
+            1,
+        )
+        .unwrap();
+        manifest_remote
+            .save(plat_dir.join("test_remote.json"))
+            .unwrap();
+
+        // 2. Blob that is missing remotely but exists locally (should be uploaded)
+        let hash_local_str = "2222222222222222222222222222222222222222222222222222222222222222";
+        let image_hash_local = crate::manifest::ImageHash::new("sha256", hash_local_str).unwrap();
+        let manifest_local = crate::manifest::SingleTestManifest::new(
+            image_hash_local.clone(),
+            crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap(),
+            1,
+            1,
+        )
+        .unwrap();
+        manifest_local
+            .save(plat_dir.join("test_local.json"))
+            .unwrap();
+
+        let blobs_dir = temp.path().join(".gleon").join("blobs").join("sha256");
+        std::fs::create_dir_all(&blobs_dir).unwrap();
+        std::fs::write(blobs_dir.join(hash_local_str), b"local blob data").unwrap();
+
+        let remote_dir = temp.path().join("remote_storage");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        let cfg = StorageConfig::new(format!("file://{}", remote_dir.display()));
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+
+        // Pre-populate remote storage with the remote blob only
+        let tmp_file = temp.path().join("tmp_blob.png");
+        std::fs::write(&tmp_file, b"remote blob data").unwrap();
+        adapter
+            .upload_blob(&image_hash_remote, &tmp_file)
+            .await
+            .unwrap();
+
+        let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, None)
+            .await
+            .unwrap();
+
+        assert_eq!(res.total_manifest_blobs, 2);
+        assert_eq!(res.uploaded_blobs, 1);
+        assert_eq!(res.skipped_blobs, 1);
+        assert!(!res.local_mode);
     }
 }
