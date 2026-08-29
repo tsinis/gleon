@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       version:
-        description: "gleon version tag to use (e.g. v0.1.0 or latest)"
+        description: "gleon version tag to use (e.g. v0.2.0 or latest)"
         type: string
         default: "latest"
       checksum:
@@ -17,19 +17,24 @@ on:
         type: string
         default: "."
       pat-token:
-        description: "Personal Access Token to trigger subsequent CI runs on push (strongly recommended)"
+        description: "Personal Access Token to use for git push and checkout (optional, defaults to GITHUB_TOKEN)"
+        type: string
+        required: false
+        default: ""
+      trigger-workflow:
+        description: "Name of the CI workflow file to trigger after pushing baselines (e.g. verify_packages.yaml)"
         type: string
         required: false
         default: ""
     secrets:
       R2_ACCOUNT_ID:
-        required: true
+        required: false
       GLEON_STORAGE_URL:
-        required: true
+        required: false
       AWS_ACCESS_KEY_ID:
-        required: true
+        required: false
       AWS_SECRET_ACCESS_KEY:
-        required: true
+        required: false
 
 permissions: {}
 
@@ -38,6 +43,7 @@ jobs:
     if: github.event.issue.pull_request && contains(github.event.comment.body, '/gleon approve')
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: write
       pull-requests: read
     steps:
@@ -73,13 +79,42 @@ jobs:
             core.setOutput("head_sha", pr.data.head.sha);
             core.setOutput("head_ref", pr.data.head.ref);
 
-      - name: Checkout PR Branch
+      # Security: Checkout trusted base repository code only (satisfies CodeQL).
+      - name: Checkout Base Branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ inputs.pat-token || github.token }}
-          # Security: Target the PR HEAD SHA specifically.
-          ref: ${{ steps.pr-info.outputs.head_sha }}
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
+          fetch-depth: 0
+
+      # Security: Restore existing PR baseline manifests without checking out untrusted branch code
+      - name: Fetch PR Manifests
+        shell: bash
+        env:
+          HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        run: |
+          set -eo pipefail
+          git fetch origin "$HEAD_SHA"
+          if git ls-tree -d "$HEAD_SHA" "$WORKING_DIRECTORY/.gleon/manifests" 2>/dev/null | grep -q .; then
+            git archive "$HEAD_SHA" "$WORKING_DIRECTORY/.gleon/manifests" | tar -x -C .
+            echo "Restored existing manifests from PR branch $HEAD_SHA."
+          fi
+
+      - name: Pull Existing Baseline Blobs
+        uses: tsinis/gleon@main
+        with:
+          version: ${{ inputs.version }}
+          checksum: ${{ inputs.checksum }}
+          command: "pull"
+          working-directory: ${{ inputs.working-directory }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          GLEON_STORAGE_URL: ${{ secrets.GLEON_STORAGE_URL }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
       - name: Download Artifacts
         shell: bash
@@ -119,22 +154,61 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
+      - name: Push Approved Blobs to Storage
+        uses: tsinis/gleon@main
+        with:
+          version: ${{ inputs.version }}
+          checksum: ${{ inputs.checksum }}
+          command: "push"
+          working-directory: ${{ inputs.working-directory }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          GLEON_STORAGE_URL: ${{ secrets.GLEON_STORAGE_URL }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
       - name: Commit and Push
         shell: bash
         env:
           HEAD_REF: ${{ steps.pr-info.outputs.head_ref }}
+          HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
           WORKING_DIRECTORY: ${{ inputs.working-directory }}
           PUSH_TOKEN: ${{ inputs.pat-token || github.token }}
         run: |
-          cd "$WORKING_DIRECTORY"
+          set -eo pipefail
+          export GIT_INDEX_FILE=.git/tmp_index
+          rm -f "$GIT_INDEX_FILE"
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .gleon/manifests/
+          # 1. Load PR branch tree into temporary index
+          git read-tree "$HEAD_SHA"
 
-          if ! git diff --staged --quiet; then
-            git commit -m "chore(gleon): update baseline images"
-            git push "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$HEAD_REF"
+          # 2. Stage updated manifests into the temporary index
+          git add "$WORKING_DIRECTORY/.gleon/manifests/" 2>/dev/null || true
+
+          # 3. Write updated tree
+          NEW_TREE=$(git write-tree)
+          unset GIT_INDEX_FILE
+          rm -f .git/tmp_index
+
+          HEAD_TREE=$(git rev-parse "$HEAD_SHA^{tree}")
+          if [ "$NEW_TREE" = "$HEAD_TREE" ]; then
+            echo "No baseline changes to commit."
           else
-            echo "No changes to commit."
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            NEW_COMMIT=$(git commit-tree "$NEW_TREE" -p "$HEAD_SHA" -m "chore(gleon): update baseline images")
+            git push "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$NEW_COMMIT:refs/heads/$HEAD_REF"
+            echo "Pushed new baseline commit $NEW_COMMIT to $HEAD_REF."
           fi
+
+      - name: Trigger CI Re-run
+        if: ${{ inputs.trigger-workflow != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ steps.pr-info.outputs.head_ref }}
+          TRIGGER_WORKFLOW: ${{ inputs.trigger-workflow }}
+        run: |
+          echo "Triggering workflow '$TRIGGER_WORKFLOW' on ref '$HEAD_REF'..."
+          gh workflow run "$TRIGGER_WORKFLOW" --ref "$HEAD_REF"

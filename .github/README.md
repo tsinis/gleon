@@ -110,14 +110,13 @@ on:
 jobs:
   approve:
     permissions:
+      actions: write
       contents: write
       pull-requests: read
     uses: tsinis/gleon/.github/workflows/approve.yml@main
-    secrets:
-      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-      GLEON_STORAGE_URL: ${{ secrets.GLEON_STORAGE_URL }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    with:
+      trigger-workflow: "verify.yml" # Optional: auto-rerun CI after baseline approval
+    secrets: inherit
 ```
 
 ## How to Build and Run Locally
