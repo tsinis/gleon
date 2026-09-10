@@ -122,13 +122,13 @@ pub struct ApproveResult {
 #[allow(clippy::too_many_lines)] // TODO(C3): extract shared helpers into ops/common.rs
 pub fn approve_workspace(
     context: &ResolvedContext,
-    base_dir: &Path,
     paths: &[PathBuf],
     from_dir: Option<&Path>,
 ) -> Result<ApproveResult, ApproveError> {
     const MAX_IMAGE_FILE_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
     const BATCH_SIZE: usize = 32;
 
+    let base_dir = context.base_dir.as_path();
     let gleon_paths = crate::paths::GleonPaths::new(base_dir);
     match std::fs::metadata(gleon_paths.gleon_dir()) {
         Ok(_) => {}
@@ -473,8 +473,11 @@ mod tests {
     #[test]
     fn test_approve_not_initialized() {
         let temp = tempfile::tempdir().unwrap();
-        let ctx = ResolvedContext::default();
-        let res = approve_workspace(&ctx, temp.path(), &[], None);
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
+        let res = approve_workspace(&ctx, &[], None);
         assert!(matches!(res, Err(ApproveError::NotInitialized)));
     }
 
@@ -482,8 +485,11 @@ mod tests {
     fn test_approve_no_actual_dir() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(temp.path().join(".gleon")).unwrap();
-        let ctx = ResolvedContext::default();
-        let res = approve_workspace(&ctx, temp.path(), &[], None);
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
+        let res = approve_workspace(&ctx, &[], None);
         assert!(matches!(res, Err(ApproveError::NoActualScreenshots { .. })));
     }
 
@@ -502,11 +508,13 @@ mod tests {
         img.save(auth_dir.join("login.png")).unwrap();
         img.save(settings_dir.join("profile.png")).unwrap();
 
-        let ctx = ResolvedContext::default();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
 
         // 1. Approve only auth test
-        let res_filtered =
-            approve_workspace(&ctx, temp.path(), &[PathBuf::from("auth")], None).unwrap();
+        let res_filtered = approve_workspace(&ctx, &[PathBuf::from("auth")], None).unwrap();
 
         assert_eq!(res_filtered.total_approved, 1);
         assert_eq!(
@@ -525,7 +533,7 @@ mod tests {
         std::fs::create_dir_all(&billing_dir).unwrap();
         img.save(billing_dir.join("checkout.png")).unwrap();
 
-        let res_custom = approve_workspace(&ctx, temp.path(), &[], Some(&custom_dir)).unwrap();
+        let res_custom = approve_workspace(&ctx, &[], Some(&custom_dir)).unwrap();
 
         assert_eq!(res_custom.total_approved, 1);
         assert_eq!(
@@ -550,10 +558,13 @@ mod tests {
         img.save(auth_dir.join("login.png")).unwrap();
         img.save(author_dir.join("profile.png")).unwrap();
 
-        let ctx = ResolvedContext::default();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
 
         // Filtering by "auth" should match "auth/login.png" but NOT "author/profile.png"
-        let res = approve_workspace(&ctx, temp.path(), &[PathBuf::from("auth")], None).unwrap();
+        let res = approve_workspace(&ctx, &[PathBuf::from("auth")], None).unwrap();
 
         assert_eq!(res.total_approved, 1);
         assert_eq!(res.approved_test_cases, vec!["auth/login".to_string()]);
@@ -582,8 +593,11 @@ mod tests {
         img.save(actual_dir.join("foo.png")).unwrap();
         img.save(actual_dir.join("FOO.png")).unwrap();
 
-        let ctx = ResolvedContext::default();
-        let res = approve_workspace(&ctx, temp.path(), &[], None);
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
+        let res = approve_workspace(&ctx, &[], None);
         assert!(matches!(res, Err(ApproveError::DuplicateTestName { .. })));
     }
 
@@ -597,8 +611,11 @@ mod tests {
         // Put a non-png file to verify it ignores it and still errors empty
         std::fs::write(actual_dir.join("test.txt"), "hello").unwrap();
 
-        let ctx = ResolvedContext::default();
-        let res = approve_workspace(&ctx, temp.path(), &[], None);
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
+        let res = approve_workspace(&ctx, &[], None);
         assert!(matches!(res, Err(ApproveError::NoActualScreenshots { .. })));
     }
 
@@ -618,8 +635,11 @@ mod tests {
         buf.truncate(buf.len() - 15);
         std::fs::write(actual_dir.join("test.png"), &buf).unwrap();
 
-        let ctx = ResolvedContext::default();
-        let res = approve_workspace(&ctx, temp.path(), &[], None);
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
+        let res = approve_workspace(&ctx, &[], None);
         assert!(matches!(res, Err(ApproveError::ImageDecode { .. })));
     }
 
@@ -637,8 +657,11 @@ mod tests {
 
         std::os::unix::fs::symlink(&real_png, actual_dir.join("symlink.png")).unwrap();
 
-        let ctx = ResolvedContext::default();
-        let res = approve_workspace(&ctx, temp.path(), &[], None);
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
+        let res = approve_workspace(&ctx, &[], None);
         assert!(matches!(res, Err(ApproveError::NoActualScreenshots { .. })));
     }
 
@@ -652,8 +675,11 @@ mod tests {
         let img = image::RgbaImage::new(1, 1);
         img.save(actual_dir.join("test_case.PnG")).unwrap();
 
-        let ctx = ResolvedContext::default();
-        let res = approve_workspace(&ctx, temp.path(), &[], None).unwrap();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
+        let res = approve_workspace(&ctx, &[], None).unwrap();
         assert_eq!(res.total_approved, 1);
         assert_eq!(res.approved_test_cases, vec!["test_case".to_string()]);
     }
@@ -671,8 +697,11 @@ mod tests {
         let original_perms = std::fs::metadata(&parent).unwrap().permissions();
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-        let ctx = ResolvedContext::default();
-        let res = approve_workspace(&ctx, &parent, &[], None);
+        let ctx = ResolvedContext {
+            base_dir: parent.clone(),
+            ..ResolvedContext::default()
+        };
+        let res = approve_workspace(&ctx, &[], None);
 
         let was_permission_denied = std::fs::metadata(&gleon_dir).is_err();
         let _ = std::fs::set_permissions(&parent, original_perms);
@@ -696,8 +725,11 @@ mod tests {
         let file = std::fs::File::create(&large_file).unwrap();
         file.set_len(65 * 1024 * 1024).unwrap();
 
-        let ctx = ResolvedContext::default();
-        let res = approve_workspace(&ctx, temp.path(), &[], None);
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
+        let res = approve_workspace(&ctx, &[], None);
         assert!(matches!(res, Err(ApproveError::ImageTooLarge { .. })));
     }
 
@@ -713,6 +745,7 @@ mod tests {
         let macos_key = "5:macos-7:aarch64";
 
         let ctx = ResolvedContext {
+            base_dir: base_path.to_path_buf(),
             platform: crate::platform::PlatformInfo {
                 os: "linux".to_string(),
                 arch: Some("x86_64".to_string()),
@@ -761,7 +794,7 @@ mod tests {
         assert!(linux_test_file.exists());
 
         // Run approve on linux
-        let res = approve_workspace(&ctx, base_path, &[], None).unwrap();
+        let res = approve_workspace(&ctx, &[], None).unwrap();
         assert_eq!(res.total_approved, 1);
         assert_eq!(res.approved_test_cases, vec!["test1".to_string()]);
 

@@ -12,8 +12,7 @@
 
 //! Integration tests for Phase 3.5 push and pull operations.
 
-use gleon_core::cli::{Cli, Commands};
-use gleon_core::context::ResolvedContext;
+use gleon_core::context::{ContextOptions, ResolvedContext};
 use gleon_core::manifest::{ImageHash, SingleTestManifest, WorkspaceIndex};
 use gleon_core::ops::{init_workspace, pull_blobs, push_blobs, stage_workspace};
 use gleon_core::storage::StorageConfig;
@@ -23,21 +22,16 @@ use tempfile::tempdir;
 #[tokio::test]
 async fn test_push_pull_local_flat_mode() {
     let temp = tempdir().unwrap();
-    let cli = Cli::for_test(Commands::Init);
-    let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), temp.path()).unwrap();
 
-    init_workspace(&ctx, temp.path()).unwrap();
+    init_workspace(&ctx).unwrap();
 
     // Push with no storage config -> local mode
-    let push_res = push_blobs(&ctx, temp.path(), None, false, None)
-        .await
-        .unwrap();
+    let push_res = push_blobs(&ctx, None, false, None).await.unwrap();
     assert!(push_res.local_mode);
 
     // Pull with no storage config -> local mode
-    let pull_res = pull_blobs(&ctx, temp.path(), None, false, None)
-        .await
-        .unwrap();
+    let pull_res = pull_blobs(&ctx, None, false, None).await.unwrap();
     assert!(pull_res.local_mode);
 }
 
@@ -52,10 +46,10 @@ async fn test_push_pull_file_scheme_lifecycle() {
     );
     let storage_config = StorageConfig::new(storage_url);
 
-    let cli = Cli::for_test(Commands::Init);
-    let ctx = ResolvedContext::from_cli(&cli, workspace_temp.path()).unwrap();
+    let ctx =
+        ResolvedContext::from_options(&ContextOptions::default(), workspace_temp.path()).unwrap();
 
-    init_workspace(&ctx, workspace_temp.path()).unwrap();
+    init_workspace(&ctx).unwrap();
 
     // Copy fixture screenshot to workspace
     let screenshots_dir = workspace_temp.path().join("screenshots");
@@ -64,7 +58,7 @@ async fn test_push_pull_file_scheme_lifecycle() {
     fs::write(screenshots_dir.join("login.png"), fixture_png).unwrap();
 
     // Stage the screenshot
-    let stage_res = stage_workspace(&ctx, workspace_temp.path(), None).unwrap();
+    let stage_res = stage_workspace(&ctx, None).unwrap();
     assert_eq!(stage_res.total_screenshots_staged, 1);
 
     let platform_key = ctx.platform.to_key().unwrap();
@@ -87,15 +81,9 @@ async fn test_push_pull_file_scheme_lifecycle() {
     assert!(local_blob_path.is_file());
 
     // 1. Initial Push -> Uploads 1 blob
-    let push1 = push_blobs(
-        &ctx,
-        workspace_temp.path(),
-        Some(&storage_config),
-        false,
-        None,
-    )
-    .await
-    .unwrap();
+    let push1 = push_blobs(&ctx, Some(&storage_config), false, None)
+        .await
+        .unwrap();
     assert_eq!(push1.total_manifest_blobs, 1);
     assert_eq!(push1.uploaded_blobs, 1);
     assert_eq!(push1.skipped_blobs, 0);
@@ -109,15 +97,9 @@ async fn test_push_pull_file_scheme_lifecycle() {
     assert!(remote_blob_path.is_file());
 
     // 2. Idempotent Push -> Uploads 0, skips 1
-    let push2 = push_blobs(
-        &ctx,
-        workspace_temp.path(),
-        Some(&storage_config),
-        false,
-        None,
-    )
-    .await
-    .unwrap();
+    let push2 = push_blobs(&ctx, Some(&storage_config), false, None)
+        .await
+        .unwrap();
     assert_eq!(push2.uploaded_blobs, 0);
     assert_eq!(push2.skipped_blobs, 1);
 
@@ -126,30 +108,18 @@ async fn test_push_pull_file_scheme_lifecycle() {
     assert!(!local_blob_path.is_file());
 
     // 4. Pull missing blob from remote -> Downloaded 1
-    let pull1 = pull_blobs(
-        &ctx,
-        workspace_temp.path(),
-        Some(&storage_config),
-        false,
-        None,
-    )
-    .await
-    .unwrap();
+    let pull1 = pull_blobs(&ctx, Some(&storage_config), false, None)
+        .await
+        .unwrap();
     assert_eq!(pull1.downloaded_blobs, 1);
     assert_eq!(pull1.skipped_blobs, 0);
     assert!(local_blob_path.is_file());
     assert_eq!(fs::read(&local_blob_path).unwrap(), fixture_png.to_vec());
 
     // 5. Idempotent Pull -> Downloaded 0, skips 1
-    let pull2 = pull_blobs(
-        &ctx,
-        workspace_temp.path(),
-        Some(&storage_config),
-        false,
-        None,
-    )
-    .await
-    .unwrap();
+    let pull2 = pull_blobs(&ctx, Some(&storage_config), false, None)
+        .await
+        .unwrap();
     assert_eq!(pull2.downloaded_blobs, 0);
     assert_eq!(pull2.skipped_blobs, 1);
 }
@@ -165,10 +135,10 @@ async fn test_push_missing_local_blob_fail_fast() {
     );
     let storage_config = StorageConfig::new(storage_url);
 
-    let cli = Cli::for_test(Commands::Init);
-    let ctx = ResolvedContext::from_cli(&cli, workspace_temp.path()).unwrap();
+    let ctx =
+        ResolvedContext::from_options(&ContextOptions::default(), workspace_temp.path()).unwrap();
 
-    init_workspace(&ctx, workspace_temp.path()).unwrap();
+    init_workspace(&ctx).unwrap();
 
     let platform_key = ctx.platform.to_key().unwrap();
     let manifest_dir = workspace_temp
@@ -187,14 +157,7 @@ async fn test_push_missing_local_blob_fail_fast() {
         .unwrap();
 
     // Local blob file does not exist -> Push fails fast
-    let push_res = push_blobs(
-        &ctx,
-        workspace_temp.path(),
-        Some(&storage_config),
-        false,
-        None,
-    )
-    .await;
+    let push_res = push_blobs(&ctx, Some(&storage_config), false, None).await;
     assert!(push_res.is_err());
     let err_msg = push_res.unwrap_err().to_string();
     assert!(err_msg.contains("Missing local blob"));
@@ -212,10 +175,10 @@ async fn test_pull_missing_remote_blob_fail_fast() {
     );
     let storage_config = StorageConfig::new(storage_url);
 
-    let cli = Cli::for_test(Commands::Init);
-    let ctx = ResolvedContext::from_cli(&cli, workspace_temp.path()).unwrap();
+    let ctx =
+        ResolvedContext::from_options(&ContextOptions::default(), workspace_temp.path()).unwrap();
 
-    init_workspace(&ctx, workspace_temp.path()).unwrap();
+    init_workspace(&ctx).unwrap();
 
     let platform_key = ctx.platform.to_key().unwrap();
     let manifest_dir = workspace_temp
@@ -234,14 +197,7 @@ async fn test_pull_missing_remote_blob_fail_fast() {
         .unwrap();
 
     // Local blob missing AND remote blob missing -> Pull fails fast with MissingRemoteBlob
-    let pull_res = pull_blobs(
-        &ctx,
-        workspace_temp.path(),
-        Some(&storage_config),
-        false,
-        None,
-    )
-    .await;
+    let pull_res = pull_blobs(&ctx, Some(&storage_config), false, None).await;
     assert!(pull_res.is_err());
     let err_msg = pull_res.unwrap_err().to_string();
     assert!(err_msg.contains("Missing remote blob"));
@@ -259,10 +215,10 @@ async fn test_push_pull_all_platforms_option() {
     );
     let storage_config = StorageConfig::new(storage_url);
 
-    let cli = Cli::for_test(Commands::Init);
-    let ctx = ResolvedContext::from_cli(&cli, workspace_temp.path()).unwrap();
+    let ctx =
+        ResolvedContext::from_options(&ContextOptions::default(), workspace_temp.path()).unwrap();
 
-    init_workspace(&ctx, workspace_temp.path()).unwrap();
+    init_workspace(&ctx).unwrap();
 
     let manifests_root = workspace_temp.path().join(".gleon").join("manifests");
     let blobs_dir = workspace_temp
@@ -293,15 +249,9 @@ async fn test_push_pull_all_platforms_option() {
     fs::write(blobs_dir.join("2".repeat(64)), b"blob2").unwrap();
 
     // Push with all_platforms = true
-    let push_all = push_blobs(
-        &ctx,
-        workspace_temp.path(),
-        Some(&storage_config),
-        true,
-        None,
-    )
-    .await
-    .unwrap();
+    let push_all = push_blobs(&ctx, Some(&storage_config), true, None)
+        .await
+        .unwrap();
     assert_eq!(push_all.total_manifest_blobs, 2);
     assert_eq!(push_all.uploaded_blobs, 2);
 
@@ -310,15 +260,9 @@ async fn test_push_pull_all_platforms_option() {
     fs::remove_file(blobs_dir.join("2".repeat(64))).unwrap();
 
     // Pull with all_platforms = true
-    let pull_all = pull_blobs(
-        &ctx,
-        workspace_temp.path(),
-        Some(&storage_config),
-        true,
-        None,
-    )
-    .await
-    .unwrap();
+    let pull_all = pull_blobs(&ctx, Some(&storage_config), true, None)
+        .await
+        .unwrap();
     assert_eq!(pull_all.total_manifest_blobs, 2);
     assert_eq!(pull_all.downloaded_blobs, 2);
     assert!(blobs_dir.join("1".repeat(64)).is_file());

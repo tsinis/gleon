@@ -10,8 +10,7 @@
     missing_docs
 )]
 
-use gleon_core::cli::{Cli, Commands};
-use gleon_core::context::ResolvedContext;
+use gleon_core::context::{ContextOptions, ResolvedContext};
 use gleon_core::ops::{StatusError, check_status, init_workspace, stage_workspace};
 use std::fs;
 use std::path::Path;
@@ -21,23 +20,8 @@ fn test_status_uninitialized_fails() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli = Cli {
-        branch: Some("main".to_string()),
-        os: None,
-        arch: None,
-        renderer: None,
-        labels: vec![],
-        platform: None,
-        verbose: false,
-        quiet: false,
-        config: None,
-        strict: false,
-        target_branch: "main".to_string(),
-        command: Commands::Status { json: false },
-    };
-
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
-    let result = check_status(&ctx, base_path);
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    let result = check_status(&ctx);
 
     assert!(result.is_err());
     assert!(matches!(result.unwrap_err(), StatusError::NotInitialized));
@@ -49,10 +33,9 @@ fn test_status_fresh_workspace_reports_added_with_real_fixture() {
     let base_path = temp_dir.path();
 
     // 1. Initialize workspace
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     // 2. Copy real fixture file to base_path/billing/form.png
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -75,23 +58,8 @@ screenshots:
     fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli {
-        branch: Some("main".to_string()),
-        os: None,
-        arch: None,
-        renderer: None,
-        labels: vec![],
-        platform: None,
-        verbose: false,
-        quiet: false,
-        config: None,
-        strict: false,
-        target_branch: "main".to_string(),
-        command: Commands::Status { json: false },
-    };
-
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
-    let report = check_status(&ctx, base_path).expect("check_status should succeed");
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    let report = check_status(&ctx).expect("check_status should succeed");
 
     assert!(!report.is_clean());
     assert_eq!(report.added.len(), 1);
@@ -108,20 +76,17 @@ fn test_status_from_nested_subdirectory() {
     let temp_dir = tempfile::tempdir().unwrap();
     let root_dir = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, root_dir).unwrap();
-    init_workspace(&ctx_init, root_dir).expect("init_workspace should succeed");
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), root_dir).unwrap();
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     let nested_dir = root_dir.join("src").join("billing");
     fs::create_dir_all(&nested_dir).unwrap();
 
-    let cli = Cli::for_test(Commands::Status { json: false });
     // Resolving from nested_dir discovers gleon.yaml in root_dir and sets ctx.base_dir = root_dir
-    let ctx = ResolvedContext::from_cli(&cli, &nested_dir).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), &nested_dir).unwrap();
     assert_eq!(ctx.base_dir, root_dir);
 
-    let report = check_status(&ctx, &ctx.base_dir)
-        .expect("check_status should succeed when using ctx.base_dir");
+    let report = check_status(&ctx).expect("check_status should succeed when using ctx.base_dir");
     assert!(report.is_clean());
 }
 
@@ -130,9 +95,8 @@ fn test_status_with_mask_rules_is_clean_after_staging() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -159,14 +123,13 @@ screenshots:
     fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli::for_test(Commands::Status { json: false });
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     // Stage screenshot
-    stage_workspace(&ctx, base_path, None).expect("stage_workspace should succeed");
+    stage_workspace(&ctx, None).expect("stage_workspace should succeed");
 
     // Check status post-staging in Phase 3.3: status is clean
-    let report = check_status(&ctx, base_path).expect("check_status should succeed");
+    let report = check_status(&ctx).expect("check_status should succeed");
     assert!(report.is_clean());
 }
 
@@ -175,9 +138,8 @@ fn test_status_reports_modified() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -198,18 +160,17 @@ screenshots:
     fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli::for_test(Commands::Status { json: false });
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     // Stage the baseline
-    stage_workspace(&ctx, base_path, None).expect("stage_workspace should succeed");
+    stage_workspace(&ctx, None).expect("stage_workspace should succeed");
 
     // Modify the screenshot
     let modified_png_bytes = fs::read(fixtures_dir.join("baseline_100x100.png"))
         .expect("baseline_100x100.png fixture must exist");
     fs::write(&screenshot_file, &modified_png_bytes).unwrap();
 
-    let report = check_status(&ctx, base_path).expect("check_status should succeed");
+    let report = check_status(&ctx).expect("check_status should succeed");
 
     assert!(!report.is_clean());
     assert!(report.added.is_empty());
@@ -223,9 +184,8 @@ fn test_status_reports_deleted() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -246,16 +206,15 @@ screenshots:
     fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli::for_test(Commands::Status { json: false });
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     // Stage the baseline
-    stage_workspace(&ctx, base_path, None).expect("stage_workspace should succeed");
+    stage_workspace(&ctx, None).expect("stage_workspace should succeed");
 
     // Delete the screenshot
     fs::remove_file(&screenshot_file).unwrap();
 
-    let report = check_status(&ctx, base_path).expect("check_status should succeed");
+    let report = check_status(&ctx).expect("check_status should succeed");
 
     assert!(!report.is_clean());
     assert!(report.added.is_empty());
@@ -281,9 +240,8 @@ fn test_status_fallback_platform_integration() {
     )
     .unwrap();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
-    init_workspace(&ctx_init, base_path).unwrap();
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    init_workspace(&ctx_init).unwrap();
 
     // 2. Add real screenshot fixture
     let baseline_png_bytes = fs::read(fixtures_dir.join("200x100.png")).unwrap();
@@ -293,20 +251,20 @@ fn test_status_fallback_platform_integration() {
     fs::write(screenshot_dir.join("form.png"), &baseline_png_bytes).unwrap();
 
     // 3. Stage screenshot specifically on windows-x86_64 (fallback platform)
-    let cli_stage_windows = Cli {
+    let options_stage_windows = ContextOptions {
         os: Some("windows".to_string()),
         arch: Some("x86_64".to_string()),
-        ..Cli::for_test(Commands::Stage { paths: vec![] })
+        ..Default::default()
     };
-    let ctx_windows = ResolvedContext::from_cli(&cli_stage_windows, base_path).unwrap();
-    let stage_res = stage_workspace(&ctx_windows, base_path, None).unwrap();
+    let ctx_windows = ResolvedContext::from_options(&options_stage_windows, base_path).unwrap();
+    let stage_res = stage_workspace(&ctx_windows, None).unwrap();
     assert_eq!(stage_res.staged_test_cases.len(), 1);
 
     // 4. Run status on macos-aarch64 (current platform has NO manifests).
-    let cli_status_macos = Cli {
+    let options_status_macos = ContextOptions {
         os: Some("macos".to_string()),
         arch: Some("aarch64".to_string()),
-        ..Cli::for_test(Commands::Status { json: false })
+        ..Default::default()
     };
     struct EmptyEnv;
     impl gleon_core::env::EnvProvider for EmptyEnv {
@@ -315,15 +273,9 @@ fn test_status_fallback_platform_integration() {
         }
     }
 
-    let ctx_macos = ResolvedContext::from_cli_impl(
-        &cli_status_macos,
-        base_path,
-        &EmptyEnv,
-        &gleon_core::platform::PlatformEnv::default(),
-    )
-    .unwrap();
+    let ctx_macos = ResolvedContext::resolve(&options_status_macos, base_path, &EmptyEnv).unwrap();
 
-    let status_res = check_status(&ctx_macos, base_path).unwrap();
+    let status_res = check_status(&ctx_macos).unwrap();
     assert!(status_res.is_clean());
 }
 
@@ -332,9 +284,8 @@ fn test_status_missing_baseline_blob_returns_modified() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -360,10 +311,9 @@ screenshots:
 "#;
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli::for_test(Commands::Status { json: false });
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
-    stage_workspace(&ctx, base_path, None).unwrap();
+    stage_workspace(&ctx, None).unwrap();
 
     // Modify the screenshot on disk so it triggers mask comparison
     let diff_bytes = fs::read(fixtures_dir.join("diff_16px_corners_100x100.png")).unwrap();
@@ -378,8 +328,7 @@ screenshots:
     }
 
     // check_status should NOT fail with StatusError::Io, but return modified
-    let res =
-        check_status(&ctx, base_path).expect("check_status should succeed even if blob missing");
+    let res = check_status(&ctx).expect("check_status should succeed even if blob missing");
     assert_eq!(res.modified.len(), 1);
 }
 
@@ -388,10 +337,9 @@ fn test_status_with_corrupt_image() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
-    init_workspace(&ctx_init, base_path).unwrap();
+    init_workspace(&ctx_init).unwrap();
 
     let screenshot_dir = base_path.join("billing");
     fs::create_dir_all(&screenshot_dir).unwrap();
@@ -419,35 +367,17 @@ screenshots:
     fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli_approve = Cli {
-        branch: Some("main".to_string()),
-        os: None,
-        arch: None,
-        renderer: None,
-        labels: vec![],
-        platform: None,
-        verbose: false,
-        quiet: false,
-        config: None,
-        strict: false,
-        target_branch: "main".to_string(),
-        command: Commands::Approve {
-            from: Some(base_path.to_path_buf()),
-            paths: vec![],
-        },
-    };
-    let ctx_approve = ResolvedContext::from_cli(&cli_approve, base_path).unwrap();
-    gleon_core::ops::approve_workspace(&ctx_approve, base_path, &[], Some(base_path)).unwrap();
+    let ctx_approve = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    gleon_core::ops::approve_workspace(&ctx_approve, &[], Some(base_path)).unwrap();
 
     // 2. Corrupt the image (write text instead of PNG)
     fs::write(&screenshot_file, "this is not a valid png file").unwrap();
 
-    let cli_status = Cli::for_test(Commands::Status { json: false });
-    let ctx_status = ResolvedContext::from_cli(&cli_status, base_path).unwrap();
+    let ctx_status = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     // 3. Status should fail when trying to decode the corrupted image to apply masks
     // Wait, check_status first checks bytes, and since bytes changed, it reads the baseline to apply masks (even if no masks are defined, it loads it to do a pixel comparison in case it's visually identical).
-    let result = check_status(&ctx_status, base_path);
+    let result = check_status(&ctx_status);
     assert!(result.is_err());
 
     assert!(matches!(

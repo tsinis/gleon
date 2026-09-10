@@ -1,7 +1,6 @@
 //! Pull operation for downloading missing baseline blobs from remote storage.
 
 use futures::{StreamExt as _, TryStreamExt as _};
-use std::path::Path;
 use thiserror::Error;
 use tracing::info;
 
@@ -67,11 +66,11 @@ pub struct PullResult {
 #[allow(clippy::too_many_lines)] // TODO(C4): extract transfer_blobs/SyncResult into ops/sync.rs
 pub async fn pull_blobs(
     context: &ResolvedContext,
-    base_dir: &Path,
     storage_config: Option<&StorageConfig>,
     all_platforms: bool,
     platform_override: Option<&str>,
 ) -> Result<PullResult, PullError> {
+    let base_dir = context.base_dir.as_path();
     let paths = crate::paths::GleonPaths::new(base_dir);
     if std::fs::metadata(paths.gleon_dir()).is_err() {
         return Err(PullError::NotInitialized);
@@ -277,18 +276,21 @@ mod tests {
         let gleon_dir = temp.path().join(".gleon");
         std::fs::create_dir_all(&gleon_dir).unwrap();
 
-        let ctx = ResolvedContext::default();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
         let cfg = StorageConfig::new("memory://");
 
         // Invalid platform override segment
-        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, Some("../invalid")).await;
+        let res = pull_blobs(&ctx, Some(&cfg), false, Some("../invalid")).await;
         assert!(matches!(
             res,
             Err(PullError::Context(ContextError::Platform(_)))
         ));
 
         // Empty manifest directory for valid platform override -> 0 blobs
-        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, Some("macos-aarch64"))
+        let res = pull_blobs(&ctx, Some(&cfg), false, Some("macos-aarch64"))
             .await
             .unwrap();
         assert_eq!(res.total_manifest_blobs, 0);
@@ -312,9 +314,12 @@ mod tests {
         perms.set_mode(0o000);
         std::fs::set_permissions(&manifests_dir, perms.clone()).unwrap();
 
-        let ctx = ResolvedContext::default();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
         let cfg = StorageConfig::new("memory://");
-        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), true, None).await;
+        let res = pull_blobs(&ctx, Some(&cfg), true, None).await;
 
         perms.set_mode(0o755);
         let _ = std::fs::set_permissions(&manifests_dir, perms);
@@ -330,9 +335,10 @@ mod tests {
         std::fs::create_dir_all(&gleon_dir).unwrap();
         let mut ctx = ResolvedContext::default();
         ctx.platform.os = "invalid/os".to_string();
+        ctx.base_dir = temp.path().to_path_buf();
 
         let cfg = StorageConfig::new("memory://");
-        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
+        let res = pull_blobs(&ctx, Some(&cfg), false, None).await;
         assert!(matches!(
             res,
             Err(PullError::Context(ContextError::Platform(_)))
@@ -355,9 +361,10 @@ mod tests {
         ctx.platform.arch = Some("x86_64".to_string());
         ctx.platform.renderer = None;
         ctx.fallback_platform_key = Some(fb_key.to_string());
+        ctx.base_dir = temp.path().to_path_buf();
 
         let cfg = StorageConfig::new("memory://");
-        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
+        let res = pull_blobs(&ctx, Some(&cfg), false, None).await;
         assert!(res.is_ok());
         assert_eq!(res.unwrap().total_manifest_blobs, 0);
     }
@@ -392,6 +399,7 @@ mod tests {
         let mut ctx = ResolvedContext::default();
         ctx.platform.os = "linux".to_string();
         ctx.platform.arch = Some("x86_64".to_string());
+        ctx.base_dir = temp.path().to_path_buf();
 
         let remote_dir = temp.path().join("remote_blobs");
         std::fs::create_dir_all(&remote_dir).unwrap();
@@ -415,7 +423,7 @@ mod tests {
         perms.set_mode(0o000);
         std::fs::set_permissions(&local_blobs, perms.clone()).unwrap();
 
-        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
+        let res = pull_blobs(&ctx, Some(&cfg), false, None).await;
 
         perms.set_mode(0o755);
         let _ = std::fs::set_permissions(&local_blobs, perms);
@@ -431,6 +439,7 @@ mod tests {
         std::fs::create_dir_all(&gleon_dir).unwrap();
 
         let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
             fallback_platform_key: Some("fallback-platform".to_string()),
             ..Default::default()
         };
@@ -463,9 +472,7 @@ mod tests {
         }
         std::fs::write(&blob_path, "blob content").unwrap();
 
-        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, None)
-            .await
-            .unwrap();
+        let res = pull_blobs(&ctx, Some(&cfg), false, None).await.unwrap();
 
         assert_eq!(res.total_manifest_blobs, 1);
         assert_eq!(res.skipped_blobs, 1);
@@ -482,6 +489,7 @@ mod tests {
         let macos_key = "5:macos-7:aarch64";
 
         let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
             platform: crate::platform::PlatformInfo {
                 os: "linux".to_string(),
                 arch: Some("x86_64".to_string()),
@@ -539,9 +547,7 @@ mod tests {
             crate::manifest::SingleTestManifest::new(hash1.clone(), phash.clone(), 10, 10).unwrap();
         m_lin1.save(linux_manifests_dir.join("test1.json")).unwrap();
 
-        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, None)
-            .await
-            .unwrap();
+        let res = pull_blobs(&ctx, Some(&cfg), false, None).await.unwrap();
 
         assert_eq!(res.total_manifest_blobs, 2);
         assert_eq!(res.downloaded_blobs, 2);
@@ -558,9 +564,12 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     async fn test_pull_uninitialized_workspace_fails() {
         let temp = tempfile::tempdir().unwrap();
-        let ctx = ResolvedContext::default();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
         let cfg = StorageConfig::new("memory://");
-        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
+        let res = pull_blobs(&ctx, Some(&cfg), false, None).await;
         assert!(matches!(res, Err(PullError::NotInitialized)));
     }
 
@@ -571,17 +580,18 @@ mod tests {
         let gleon_dir = temp.path().join(".gleon");
         std::fs::create_dir_all(&gleon_dir).unwrap();
 
-        let ctx = ResolvedContext::default();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
         // 1. None storage config
-        let res_none = pull_blobs(&ctx, temp.path(), None, false, None)
-            .await
-            .unwrap();
+        let res_none = pull_blobs(&ctx, None, false, None).await.unwrap();
         assert!(res_none.local_mode);
         assert_eq!(res_none.total_manifest_blobs, 0);
 
         // 2. Empty URL storage config
         let empty_cfg = StorageConfig::new("   ");
-        let res_empty = pull_blobs(&ctx, temp.path(), Some(&empty_cfg), false, None)
+        let res_empty = pull_blobs(&ctx, Some(&empty_cfg), false, None)
             .await
             .unwrap();
         assert!(res_empty.local_mode);
@@ -613,10 +623,11 @@ mod tests {
             crate::manifest::SingleTestManifest::new(hash_a.clone(), phash, 10, 10).unwrap();
         manifest.save(plat_dir.join("test_a.json")).unwrap();
 
-        let ctx = ResolvedContext::default();
-        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), true, None)
-            .await
-            .unwrap();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
+        let res = pull_blobs(&ctx, Some(&cfg), true, None).await.unwrap();
         assert_eq!(res.total_manifest_blobs, 1);
         assert_eq!(res.downloaded_blobs, 1);
     }
@@ -646,8 +657,11 @@ mod tests {
             crate::manifest::SingleTestManifest::new(hash_b.clone(), phash, 10, 10).unwrap();
         manifest.save(plat_dir.join("test_b.json")).unwrap();
 
-        let ctx = ResolvedContext::default();
-        let res = pull_blobs(&ctx, temp.path(), Some(&cfg), false, Some("macos-aarch64"))
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
+        let res = pull_blobs(&ctx, Some(&cfg), false, Some("macos-aarch64"))
             .await
             .unwrap();
         assert_eq!(res.total_manifest_blobs, 1);

@@ -1582,7 +1582,6 @@ dependencies = [
  "bytemuck",
  "bytes",
  "chrono",
- "clap",
  "dotenvy",
  "ed25519-dalek",
  "futures",

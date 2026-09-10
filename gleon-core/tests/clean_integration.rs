@@ -10,8 +10,7 @@
     missing_docs
 )]
 
-use gleon_core::cli::{Cli, Commands};
-use gleon_core::context::ResolvedContext;
+use gleon_core::context::{ContextOptions, ResolvedContext};
 use gleon_core::ops::clean::{CleanOptions, clean_workspace};
 use std::fs;
 use tempfile::tempdir;
@@ -76,16 +75,11 @@ screenshots:
             .is_ok()
     );
 
-    let cli = Cli::for_test(Commands::Clean {
-        dry_run: false,
-        skip_gitignore: false,
-        keep_runs: false,
-    });
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     // 5. Run clean
     let opts = CleanOptions::default();
-    let res = clean_workspace(&ctx, base_path, &opts).unwrap();
+    let res = clean_workspace(&ctx, &opts).unwrap();
 
     assert_eq!(res.deleted_files.len(), 1);
     assert_eq!(res.untracked_files.len(), 1);
@@ -130,19 +124,14 @@ screenshots:
     let golden_file = goldens_dir.join("button.png");
     fs::write(&golden_file, VALID_PNG_BYTES).unwrap();
 
-    let cli = Cli::for_test(Commands::Clean {
-        dry_run: true,
-        skip_gitignore: false,
-        keep_runs: false,
-    });
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     let opts = CleanOptions {
         dry_run: true,
         skip_gitignore: false,
         keep_runs: false,
     };
-    let res = clean_workspace(&ctx, base_path, &opts).unwrap();
+    let res = clean_workspace(&ctx, &opts).unwrap();
 
     assert_eq!(res.deleted_files.len(), 1);
     assert!(golden_file.exists());
@@ -171,15 +160,10 @@ screenshots:
     let golden_file = goldens_dir.join("header.png");
     fs::write(&golden_file, VALID_PNG_BYTES).unwrap();
 
-    let cli = Cli::for_test(Commands::Clean {
-        dry_run: false,
-        skip_gitignore: false,
-        keep_runs: false,
-    });
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     let opts = CleanOptions::default();
-    let res = clean_workspace(&ctx, base_path, &opts).unwrap();
+    let res = clean_workspace(&ctx, &opts).unwrap();
 
     assert_eq!(res.deleted_files.len(), 1);
     assert!(!golden_file.exists());

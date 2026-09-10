@@ -10,8 +10,7 @@ pub fn run_approve(
     paths: &[PathBuf],
     from: Option<&PathBuf>,
 ) -> anyhow::Result<i32> {
-    let res =
-        gleon_core::ops::approve_workspace(ctx, &ctx.base_dir, paths, from.map(PathBuf::as_path))?;
+    let res = gleon_core::ops::approve_workspace(ctx, paths, from.map(PathBuf::as_path))?;
 
     if res.total_approved == 0 {
         info!("No screenshots approved.");

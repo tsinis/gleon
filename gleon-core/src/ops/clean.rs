@@ -9,7 +9,7 @@ use crate::context::{ContextError, ResolvedContext};
 use crate::git::{GitError, GitResolver};
 use crate::scanner::{FileScanner, ScannerError};
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Error types that can occur during the clean operation.
 #[derive(Debug, thiserror::Error)]
@@ -79,9 +79,9 @@ pub struct CleanResult {
 #[allow(clippy::too_many_lines)] // TODO(C3): extract shared helpers into ops/common.rs
 pub fn clean_workspace(
     context: &ResolvedContext,
-    base_path: &Path,
     options: &CleanOptions,
 ) -> Result<CleanResult, CleanError> {
+    let base_path = context.base_dir.as_path();
     let mut result = CleanResult::default();
 
     let config = context.config.clone().unwrap_or_default();
@@ -276,7 +276,6 @@ pub fn clean_workspace(
 )]
 mod tests {
     use super::*;
-    use crate::cli::{Cli, Commands};
     use tempfile::tempdir;
 
     #[test]
@@ -305,12 +304,9 @@ screenshots:
         let golden_file = golden_dir.join("login.png");
         std::fs::write(&golden_file, b"sample png").unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: false,
-            keep_runs: false,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         // 2. Test dry-run
         let dry_opts = CleanOptions {
@@ -318,7 +314,7 @@ screenshots:
             skip_gitignore: false,
             keep_runs: false,
         };
-        let dry_res = clean_workspace(&ctx, base_path, &dry_opts).unwrap();
+        let dry_res = clean_workspace(&ctx, &dry_opts).unwrap();
         assert_eq!(dry_res.deleted_files.len(), 1);
         assert_eq!(
             dry_res.deleted_files[0],
@@ -328,7 +324,7 @@ screenshots:
 
         // 3. Test actual execution
         let exec_opts = CleanOptions::default();
-        let exec_res = clean_workspace(&ctx, base_path, &exec_opts).unwrap();
+        let exec_res = clean_workspace(&ctx, &exec_opts).unwrap();
         assert_eq!(exec_res.deleted_files.len(), 1);
         assert!(!golden_file.exists()); // File removed
         assert!(!golden_dir.exists()); // Empty parent dir pruned
@@ -364,19 +360,16 @@ screenshots:
         let golden_file = golden_dir.join("app.png");
         std::fs::write(&golden_file, b"sample png").unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: true,
-            keep_runs: true,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         let opts = CleanOptions {
             dry_run: false,
             skip_gitignore: true,
             keep_runs: true,
         };
-        let res = clean_workspace(&ctx, base_path, &opts).unwrap();
+        let res = clean_workspace(&ctx, &opts).unwrap();
         assert_eq!(res.deleted_files.len(), 1);
         assert!(!golden_file.exists());
         assert!(runs_dir.exists()); // runs preserved
@@ -408,15 +401,12 @@ screenshots:
         let golden_file = golden_dir.join("app.png");
         std::fs::write(&golden_file, b"sample png").unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: false,
-            keep_runs: false,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         let opts = CleanOptions::default();
-        let res = clean_workspace(&ctx, base_path, &opts).unwrap();
+        let res = clean_workspace(&ctx, &opts).unwrap();
         assert_eq!(res.deleted_files.len(), 1);
 
         let gitignore = std::fs::read_to_string(base_path.join(".gitignore")).unwrap();
@@ -448,15 +438,12 @@ screenshots:
         let golden_file = golden_dir.join("app.png");
         std::fs::write(&golden_file, b"sample png").unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: false,
-            keep_runs: false,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         let opts = CleanOptions::default();
-        let err = clean_workspace(&ctx, base_path, &opts).unwrap_err();
+        let err = clean_workspace(&ctx, &opts).unwrap_err();
         assert!(matches!(err, CleanError::Io(_)));
     }
 
@@ -520,15 +507,12 @@ screenshots:
         let root_png = base_path.join("root.png");
         std::fs::write(&root_png, b"png").unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: false,
-            keep_runs: false,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         let opts = CleanOptions::default();
-        let res = clean_workspace(&ctx, base_path, &opts).unwrap();
+        let res = clean_workspace(&ctx, &opts).unwrap();
         assert_eq!(res.deleted_files.len(), 1);
 
         let gitignore = std::fs::read_to_string(base_path.join(".gitignore")).unwrap();
@@ -569,15 +553,12 @@ screenshots:
         read_only.set_mode(0o555);
         std::fs::set_permissions(&locked_dir, read_only).unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: false,
-            keep_runs: false,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         let opts = CleanOptions::default();
-        let res = clean_workspace(&ctx, base_path, &opts);
+        let res = clean_workspace(&ctx, &opts);
 
         // Restore permissions before assertions
         std::fs::set_permissions(&locked_dir, orig_perms).unwrap();
@@ -613,19 +594,16 @@ screenshots:
         let other_file = nested_dir.join("keep.txt");
         std::fs::write(&other_file, b"keep me").unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: false,
-            keep_runs: true,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         let opts = CleanOptions {
             dry_run: false,
             skip_gitignore: false,
             keep_runs: true,
         };
-        let res = clean_workspace(&ctx, base_path, &opts).unwrap();
+        let res = clean_workspace(&ctx, &opts).unwrap();
         assert_eq!(res.deleted_files.len(), 1);
         assert!(!screenshot.exists());
         assert!(other_file.exists());
@@ -669,15 +647,12 @@ screenshots:
             return;
         }
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: false,
-            keep_runs: false,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         let opts = CleanOptions::default();
-        let res = clean_workspace(&ctx, base_path, &opts);
+        let res = clean_workspace(&ctx, &opts);
 
         // Restore permissions before assertions
         std::fs::set_permissions(&runs_dir, orig_perms).unwrap();
@@ -722,15 +697,12 @@ screenshots:
             return;
         }
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: false,
-            keep_runs: false,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         let opts = CleanOptions::default();
-        let res = clean_workspace(&ctx, base_path, &opts);
+        let res = clean_workspace(&ctx, &opts);
 
         // Restore permissions before assertions
         std::fs::set_permissions(&diffs_dir, orig_perms).unwrap();
@@ -788,19 +760,16 @@ screenshots:
             return;
         }
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: true,
-            keep_runs: true,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         let opts = CleanOptions {
             dry_run: false,
             skip_gitignore: true,
             keep_runs: true,
         };
-        let res = clean_workspace(&ctx, base_path, &opts);
+        let res = clean_workspace(&ctx, &opts);
 
         // Restore permissions before assertions
         std::fs::set_permissions(&git_dir, orig_perms).unwrap();

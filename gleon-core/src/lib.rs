@@ -1,6 +1,5 @@
 //! Core library for the gleon visual regression testing CLI.
 
-pub mod cli;
 pub mod config;
 /// Resolves the effective run context (platform, branch, renderer) from CLI flags, config, and environment.
 pub mod context;
@@ -22,6 +21,8 @@ pub mod paths;
 pub mod platform;
 /// Rendering of run results into HTML, `JUnit` XML, markdown, and PR comment formats.
 pub mod report;
+/// Results of comparing a captured screenshot against its staged baseline.
+pub mod results;
 pub mod scanner;
 pub mod storage;
 pub mod ui;

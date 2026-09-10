@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use gleon_core::io::load_json;
 use gleon_core::report::{MarkdownReportOptions, ReportGenerator};
-use gleon_core::scanner::TestCaseResult;
+use gleon_core::results::TestCaseResult;
 
 #[allow(clippy::too_many_lines)] // TODO(C6): move pre-signing pipeline into gleon-core
 pub async fn run_report(
@@ -52,7 +52,7 @@ pub async fn run_report(
             let mut unique_paths = std::collections::HashSet::new();
             for tc in to_sign {
                 let paths: Vec<&std::path::Path> = match &tc.result {
-                    gleon_core::scanner::TestImageResult::Mismatch {
+                    gleon_core::results::TestImageResult::Mismatch {
                         baseline_path,
                         actual_path,
                         diff_path,
@@ -64,21 +64,21 @@ pub async fn run_report(
                             diff_path.as_path(),
                         ]
                     }
-                    gleon_core::scanner::TestImageResult::DimensionMismatch {
+                    gleon_core::results::TestImageResult::DimensionMismatch {
                         baseline_path,
                         actual_path,
                         ..
                     } => {
                         vec![baseline_path.as_path(), actual_path.as_path()]
                     }
-                    gleon_core::scanner::TestImageResult::EncodeError { actual_path, .. } => {
+                    gleon_core::results::TestImageResult::EncodeError { actual_path, .. } => {
                         vec![actual_path.as_path()]
                     }
-                    gleon_core::scanner::TestImageResult::MissingBaseline {
+                    gleon_core::results::TestImageResult::MissingBaseline {
                         relative_path, ..
                     }
-                    | gleon_core::scanner::TestImageResult::DecodeError { relative_path, .. }
-                    | gleon_core::scanner::TestImageResult::IoError { relative_path, .. } => {
+                    | gleon_core::results::TestImageResult::DecodeError { relative_path, .. }
+                    | gleon_core::results::TestImageResult::IoError { relative_path, .. } => {
                         vec![relative_path.as_path()]
                     }
                     _ => vec![],
@@ -129,9 +129,9 @@ pub async fn run_report(
 
     let is_ci = env.get_var("GITHUB_ACTIONS").is_some() || pr_number.is_some();
     let context = if is_ci {
-        gleon_core::report::ExecutionContext::GitHubActions
+        gleon_core::report::RenderTarget::GitHubActions
     } else {
-        gleon_core::report::ExecutionContext::LocalTerminal
+        gleon_core::report::RenderTarget::LocalTerminal
     };
 
     let has_signed_urls = !signed_urls.is_empty();
@@ -238,7 +238,7 @@ mod tests {
         let report_json_path = temp.path().join("report.json");
         let tc = TestCaseResult {
             name: "test_enc".to_string(),
-            result: gleon_core::scanner::TestImageResult::EncodeError {
+            result: gleon_core::results::TestImageResult::EncodeError {
                 relative_path: std::path::PathBuf::from("enc.png"),
                 actual_path: std::path::PathBuf::from("actual_enc.png"),
                 error: "Encode failure".to_string(),
@@ -278,7 +278,7 @@ mod tests {
         let report_json_path = temp.path().join("report.json");
         let tc = TestCaseResult {
             name: "test_fmt".to_string(),
-            result: gleon_core::scanner::TestImageResult::EncodeError {
+            result: gleon_core::results::TestImageResult::EncodeError {
                 relative_path: std::path::PathBuf::from("enc.png"),
                 actual_path: std::path::PathBuf::from("actual_enc.png"),
                 error: "Encode failure".to_string(),
@@ -365,7 +365,7 @@ mod tests {
         let valid_report = temp.path().join("valid.json");
         let tc = TestCaseResult {
             name: "test_html_dir".to_string(),
-            result: gleon_core::scanner::TestImageResult::MissingBaseline {
+            result: gleon_core::results::TestImageResult::MissingBaseline {
                 relative_path: std::path::PathBuf::from("sub/missing.png"),
                 reason: "no baseline".to_string(),
             },

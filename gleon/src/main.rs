@@ -1,8 +1,10 @@
 //! gleon CLI wrapper binary.
 
 use clap::Parser;
-use gleon_core::cli::{Cli, Commands};
+use cli::{Cli, Commands};
 use tracing::info;
+
+mod cli;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -40,9 +42,14 @@ async fn main() -> anyhow::Result<()> {
 
     // Run License/Compliance Check
     let license_status = gleon_core::license::LicenseGate::verify(&env);
-    if gleon_core::license::enforce_policy(license_status, cli.strict, &env)
-        == gleon_core::license::EnforcementAction::Block
-    {
+    let decision = gleon_core::license::enforce_policy(license_status, cli.strict, &env);
+    for line in &decision.message {
+        eprintln!("{line}");
+    }
+    if let Some(annotation) = &decision.gha_annotation {
+        eprintln!("{annotation}");
+    }
+    if decision.action == gleon_core::license::EnforcementAction::Block {
         std::process::exit(42);
     }
 
@@ -83,11 +90,13 @@ async fn run(
 ) -> anyhow::Result<i32> {
     match &cli.command {
         Commands::Init => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
-            let res = gleon_core::ops::init_workspace(&ctx, &ctx.base_dir)
-                .map_err(|e| anyhow::anyhow!(e))?;
+            let ctx = gleon_core::context::ResolvedContext::resolve(
+                &gleon_core::context::ContextOptions::from(cli),
+                current_dir,
+                env,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
+            let res = gleon_core::ops::init_workspace(&ctx).map_err(|e| anyhow::anyhow!(e))?;
             info!("Initialized gleon workspace at {}", res.gleon_dir.display());
             if let Some(ref config_path) = res.config_created {
                 info!(
@@ -97,11 +106,13 @@ async fn run(
             }
         }
         Commands::Status { json } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
-            let report = gleon_core::ops::check_status(&ctx, &ctx.base_dir)
-                .map_err(|e| anyhow::anyhow!(e))?;
+            let ctx = gleon_core::context::ResolvedContext::resolve(
+                &gleon_core::context::ContextOptions::from(cli),
+                current_dir,
+                env,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
+            let report = gleon_core::ops::check_status(&ctx).map_err(|e| anyhow::anyhow!(e))?;
             if *json {
                 println!("{}", report.format_json().map_err(|e| anyhow::anyhow!(e))?);
             } else {
@@ -109,16 +120,19 @@ async fn run(
             }
         }
         Commands::Stage { paths } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
+            let ctx = gleon_core::context::ResolvedContext::resolve(
+                &gleon_core::context::ContextOptions::from(cli),
+                current_dir,
+                env,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
             let filter = if paths.is_empty() {
                 None
             } else {
                 Some(paths.as_slice())
             };
-            let res = gleon_core::ops::stage_workspace(&ctx, &ctx.base_dir, filter)
-                .map_err(|e| anyhow::anyhow!(e))?;
+            let res =
+                gleon_core::ops::stage_workspace(&ctx, filter).map_err(|e| anyhow::anyhow!(e))?;
             if res.total_screenshots_staged == 0 {
                 info!("Already up to date.");
             } else {
@@ -133,17 +147,19 @@ async fn run(
             auto_pull: _,
             resolve,
         } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
+            let ctx = gleon_core::context::ResolvedContext::resolve(
+                &gleon_core::context::ContextOptions::from(cli),
+                current_dir,
+                env,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
 
             if *resolve {
                 let storage_cfg = get_storage_config(env);
                 return commands::resolve::run_resolve(&ctx, None, false, storage_cfg).await;
             }
 
-            let report =
-                gleon_core::ops::run_diff(&ctx, &ctx.base_dir).map_err(|e| anyhow::anyhow!(e))?;
+            let report = gleon_core::ops::run_diff(&ctx).map_err(|e| anyhow::anyhow!(e))?;
             info!(
                 "Ran {} test(s). Passed: {}, Failed: {}.",
                 report.total_tests,
@@ -156,15 +172,21 @@ async fn run(
             }
         }
         Commands::LintManifests { platform } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
+            let ctx = gleon_core::context::ResolvedContext::resolve(
+                &gleon_core::context::ContextOptions::from(cli),
+                current_dir,
+                env,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
             return commands::lint::run_lint(&ctx, platform.as_deref());
         }
         Commands::Resolve { test_path, fetch } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
+            let ctx = gleon_core::context::ResolvedContext::resolve(
+                &gleon_core::context::ContextOptions::from(cli),
+                current_dir,
+                env,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
             let storage_cfg = get_storage_config(env);
             return commands::resolve::run_resolve(&ctx, test_path.as_deref(), *fetch, storage_cfg)
                 .await;
@@ -176,9 +198,12 @@ async fn run(
             all_platforms,
             platform,
         } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
+            let ctx = gleon_core::context::ResolvedContext::resolve(
+                &gleon_core::context::ContextOptions::from(cli),
+                current_dir,
+                env,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
             let storage_cfg = get_storage_config(env);
             return commands::pull::run_pull(
                 &ctx,
@@ -192,9 +217,12 @@ async fn run(
             all_platforms,
             platform,
         } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
+            let ctx = gleon_core::context::ResolvedContext::resolve(
+                &gleon_core::context::ContextOptions::from(cli),
+                current_dir,
+                env,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
             let storage_cfg = get_storage_config(env);
             return commands::push::run_push(
                 &ctx,
@@ -225,9 +253,12 @@ async fn run(
             .await;
         }
         Commands::Approve { paths, from } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
+            let ctx = gleon_core::context::ResolvedContext::resolve(
+                &gleon_core::context::ContextOptions::from(cli),
+                current_dir,
+                env,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
             return commands::approve::run_approve(&ctx, paths, from.as_ref());
         }
         Commands::Clean {
@@ -235,9 +266,12 @@ async fn run(
             skip_gitignore,
             keep_runs,
         } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
+            let ctx = gleon_core::context::ResolvedContext::resolve(
+                &gleon_core::context::ContextOptions::from(cli),
+                current_dir,
+                env,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
             return commands::clean::run_clean(&ctx, *dry_run, *skip_gitignore, *keep_runs);
         }
     }

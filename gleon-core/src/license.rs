@@ -336,60 +336,83 @@ pub enum EnforcementAction {
     Block,
 }
 
-/// Applies enforcement rules for a given [`LicenseStatus`], printing compliance notices to
-/// stderr (and GitHub Actions annotations, when running in Actions) as a side effect.
+/// Structured outcome of evaluating license enforcement policy.
 ///
-/// Note: this function currently performs its own output side effects (`eprintln!`) rather
-/// than returning them as structured data; that will change in a later refactor.
+/// Carries what the caller should *do* (`action`) separately from what it should *print*
+/// (`message`, `gha_annotation`), so the library itself performs no I/O side effects — the
+/// binary decides how and where to display them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyDecision {
+    /// Whether the caller should allow, warn, or block execution.
+    pub action: EnforcementAction,
+    /// Human-readable compliance notice lines to print to stderr, if any.
+    pub message: Vec<String>,
+    /// A GitHub Actions workflow command annotation (`::error ...`/`::warning ...`), if
+    /// running in GitHub Actions and a notice applies.
+    pub gha_annotation: Option<String>,
+}
+
+/// Applies enforcement rules for a given [`LicenseStatus`], returning a structured decision
+/// describing what action to take and what (if anything) to display — printing is left to
+/// the caller.
+#[must_use]
 pub fn enforce_policy(
     status: LicenseStatus,
     strict_mode: bool,
     env_provider: &dyn crate::env::EnvProvider,
-) -> EnforcementAction {
+) -> PolicyDecision {
     match status {
-        LicenseStatus::Valid | LicenseStatus::PublicOrGrantedUse => EnforcementAction::Allow,
+        LicenseStatus::Valid | LicenseStatus::PublicOrGrantedUse => PolicyDecision {
+            action: EnforcementAction::Allow,
+            message: Vec::new(),
+            gha_annotation: None,
+        },
         LicenseStatus::UnlicensedSoft { reason } => {
-            eprintln!("====================================================");
-            eprintln!("[GLEON COMPLIANCE NOTICE] Unlicensed production use detected.");
-            eprintln!("Reason: {reason}");
-            eprintln!("This may fall outside the BSL Additional Use Grant.");
-            eprintln!("Get a commercial license at https://gleon.rs");
-            eprintln!("====================================================");
-
-            if env_provider.get_var("GITHUB_ACTIONS").is_some() {
+            let message = vec![
+                "====================================================".to_string(),
+                "[GLEON COMPLIANCE NOTICE] Unlicensed production use detected.".to_string(),
+                format!("Reason: {reason}"),
+                "This may fall outside the BSL Additional Use Grant.".to_string(),
+                "Get a commercial license at https://gleon.rs".to_string(),
+                "====================================================".to_string(),
+            ];
+            let gha_annotation = env_provider.has_var("GITHUB_ACTIONS").then(|| {
                 if strict_mode {
-                    eprintln!(
-                        "::error title=Gleon Compliance::Unlicensed usage detected ({reason})."
-                    );
+                    format!("::error title=Gleon Compliance::Unlicensed usage detected ({reason}).")
                 } else {
-                    eprintln!(
+                    format!(
                         "::warning title=Gleon Compliance::Unlicensed usage detected ({reason})."
-                    );
+                    )
                 }
-            }
-
-            if strict_mode {
-                EnforcementAction::Block
-            } else {
-                EnforcementAction::Warn
+            });
+            PolicyDecision {
+                action: if strict_mode {
+                    EnforcementAction::Block
+                } else {
+                    EnforcementAction::Warn
+                },
+                message,
+                gha_annotation,
             }
         }
         LicenseStatus::UnofficialBuildInPrivateCI | LicenseStatus::ExpiredUnlicensedBinary => {
-            eprintln!("====================================================");
-            eprintln!("[GLEON COMPLIANCE ERROR] Execution blocked.");
-            eprintln!(
+            let message = vec![
+                "====================================================".to_string(),
+                "[GLEON COMPLIANCE ERROR] Execution blocked.".to_string(),
                 "Self-compiled or expired official binaries (>3 months) cannot run in unlicensed private CI."
-            );
-            eprintln!("Get a valid commercial license at https://gleon.rs");
-            eprintln!("====================================================");
-
-            if env_provider.get_var("GITHUB_ACTIONS").is_some() {
-                eprintln!(
-                    "::error title=Gleon Compliance::Execution blocked. Self-compiled or expired official binaries cannot run in unlicensed private CI."
-                );
+                    .to_string(),
+                "Get a valid commercial license at https://gleon.rs".to_string(),
+                "====================================================".to_string(),
+            ];
+            let gha_annotation = env_provider.has_var("GITHUB_ACTIONS").then(|| {
+                "::error title=Gleon Compliance::Execution blocked. Self-compiled or expired official binaries cannot run in unlicensed private CI."
+                    .to_string()
+            });
+            PolicyDecision {
+                action: EnforcementAction::Block,
+                message,
+                gha_annotation,
             }
-
-            EnforcementAction::Block
         }
     }
 }
@@ -845,64 +868,72 @@ mod tests {
         let env = MockEnv { vars };
 
         assert_eq!(
-            enforce_policy(LicenseStatus::Valid, false, &env),
+            enforce_policy(LicenseStatus::Valid, false, &env).action,
             EnforcementAction::Allow
         );
         assert_eq!(
-            enforce_policy(LicenseStatus::PublicOrGrantedUse, false, &env),
+            enforce_policy(LicenseStatus::PublicOrGrantedUse, false, &env).action,
             EnforcementAction::Allow
         );
-        assert_eq!(
-            enforce_policy(
-                LicenseStatus::UnlicensedSoft {
-                    reason: "soft test".to_string()
-                },
-                false,
-                &env
-            ),
-            EnforcementAction::Warn
+
+        let soft_warn = enforce_policy(
+            LicenseStatus::UnlicensedSoft {
+                reason: "soft test".to_string(),
+            },
+            false,
+            &env,
         );
+        assert_eq!(soft_warn.action, EnforcementAction::Warn);
+        assert!(soft_warn.message.iter().any(|l| l.contains("soft test")));
         assert_eq!(
-            enforce_policy(
-                LicenseStatus::UnlicensedSoft {
-                    reason: "strict test".to_string()
-                },
-                true,
-                &env
-            ),
-            EnforcementAction::Block
+            soft_warn.gha_annotation.as_deref(),
+            Some("::warning title=Gleon Compliance::Unlicensed usage detected (soft test).")
         );
-        assert_eq!(
-            enforce_policy(LicenseStatus::UnofficialBuildInPrivateCI, false, &env),
-            EnforcementAction::Block
+
+        let soft_block = enforce_policy(
+            LicenseStatus::UnlicensedSoft {
+                reason: "strict test".to_string(),
+            },
+            true,
+            &env,
         );
+        assert_eq!(soft_block.action, EnforcementAction::Block);
         assert_eq!(
-            enforce_policy(LicenseStatus::ExpiredUnlicensedBinary, false, &env),
+            soft_block.gha_annotation.as_deref(),
+            Some("::error title=Gleon Compliance::Unlicensed usage detected (strict test).")
+        );
+
+        let unofficial = enforce_policy(LicenseStatus::UnofficialBuildInPrivateCI, false, &env);
+        assert_eq!(unofficial.action, EnforcementAction::Block);
+        assert!(unofficial.gha_annotation.is_some());
+
+        assert_eq!(
+            enforce_policy(LicenseStatus::ExpiredUnlicensedBinary, false, &env).action,
             EnforcementAction::Block
         );
 
-        // Non-GitHub environment printing checks
+        // Non-GitHub environment: no annotation, but still a printable message.
         let env_non_gh = MockEnv {
             vars: std::collections::HashMap::new(),
         };
-        assert_eq!(
-            enforce_policy(
-                LicenseStatus::UnlicensedSoft {
-                    reason: "soft test non gh".to_string()
-                },
-                false,
-                &env_non_gh
-            ),
-            EnforcementAction::Warn
+        let soft_non_gh = enforce_policy(
+            LicenseStatus::UnlicensedSoft {
+                reason: "soft test non gh".to_string(),
+            },
+            false,
+            &env_non_gh,
         );
-        assert_eq!(
-            enforce_policy(
-                LicenseStatus::UnofficialBuildInPrivateCI,
-                false,
-                &env_non_gh
-            ),
-            EnforcementAction::Block
+        assert_eq!(soft_non_gh.action, EnforcementAction::Warn);
+        assert!(!soft_non_gh.message.is_empty());
+        assert!(soft_non_gh.gha_annotation.is_none());
+
+        let unofficial_non_gh = enforce_policy(
+            LicenseStatus::UnofficialBuildInPrivateCI,
+            false,
+            &env_non_gh,
         );
+        assert_eq!(unofficial_non_gh.action, EnforcementAction::Block);
+        assert!(unofficial_non_gh.gha_annotation.is_none());
     }
 
     #[test]

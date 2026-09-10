@@ -19,9 +19,9 @@ fn test_cli_report_supports_all_formats() {
     let temp = tempdir().unwrap();
     let report_path = temp.path().join("report.json");
 
-    let test_results = vec![gleon_core::scanner::TestCaseResult {
+    let test_results = vec![gleon_core::results::TestCaseResult {
         name: "auth/login".to_string(),
-        result: gleon_core::scanner::TestImageResult::MissingBaseline {
+        result: gleon_core::results::TestImageResult::MissingBaseline {
             relative_path: std::path::PathBuf::from("auth/login.png"),
             reason: "No baseline found".to_string(),
         },

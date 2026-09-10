@@ -7,7 +7,7 @@ use crate::scanner::{FileScanner, ScannerError};
 use serde::Serialize;
 use sha2::Digest;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use thiserror::Error;
 
 /// Errors that can occur during status evaluation.
@@ -119,12 +119,10 @@ impl StatusReport {
 /// resolved, if manifests or workspace configuration fail to load, if screenshots cannot be
 /// scanned, or if reading/decoding actual or baseline images fails.
 #[allow(clippy::too_many_lines)] // TODO(C3): extract shared helpers into ops/common.rs
-pub fn check_status(
-    context: &ResolvedContext,
-    base_dir: &Path,
-) -> Result<StatusReport, StatusError> {
+pub fn check_status(context: &ResolvedContext) -> Result<StatusReport, StatusError> {
     use rayon::prelude::*;
 
+    let base_dir = context.base_dir.as_path();
     let paths = crate::paths::GleonPaths::new(base_dir);
     if std::fs::metadata(paths.gleon_dir()).is_err() {
         return Err(StatusError::NotInitialized);
@@ -384,7 +382,10 @@ mod tests {
     fn test_status_detects_deleted_dotted_test_case() {
         let temp = tempfile::tempdir().unwrap();
         let gleon_dir = temp.path().join(".gleon");
-        let ctx = ResolvedContext::default();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
         let plat_key = ctx.platform.to_key().unwrap();
         let manifests_dir = gleon_dir.join("manifests").join(&plat_key);
         std::fs::create_dir_all(&manifests_dir).unwrap();
@@ -400,7 +401,7 @@ mod tests {
             .save(manifests_dir.join("auth").join("user.v2.json"))
             .unwrap();
 
-        let report = check_status(&ctx, temp.path()).unwrap();
+        let report = check_status(&ctx).unwrap();
         assert_eq!(report.deleted, vec![PathBuf::from("auth/user.v2.png")]);
     }
 
@@ -435,7 +436,7 @@ mod tests {
             .save(manifests_dir.join("screenshots").join("login.json"))
             .unwrap();
 
-        let report = check_status(&ctx, temp.path()).unwrap();
+        let report = check_status(&ctx).unwrap();
         assert_eq!(
             report.modified,
             vec![PathBuf::from("screenshots/login.png")]
@@ -457,7 +458,7 @@ mod tests {
             ..Default::default()
         };
 
-        let report = check_status(&ctx, temp.path()).unwrap();
+        let report = check_status(&ctx).unwrap();
         assert!(report.is_clean());
     }
 
@@ -492,6 +493,7 @@ mod tests {
 
         // Define a mask so status.rs attempts to read the baseline blob
         let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
             config: Some(crate::config::GleonConfig {
                 screenshots: vec![crate::config::ScreenshotRule {
                     include: vec![crate::config::GlobPattern::new("**/*.png").unwrap()],
@@ -513,7 +515,7 @@ mod tests {
         };
 
         // Blob doesn't exist, so we expect Modified (NotFound branch lines 175-178)
-        let res = check_status(&ctx, temp.path());
+        let res = check_status(&ctx);
         let res_unwrapped = res.unwrap();
         assert_eq!(res_unwrapped.modified.len(), 1);
 
@@ -522,7 +524,7 @@ mod tests {
         std::fs::create_dir_all(&blob_dir).unwrap();
         std::fs::write(blob_dir.join(hash_val), "fake png data").unwrap();
 
-        let res2 = check_status(&ctx, temp.path());
+        let res2 = check_status(&ctx);
         assert!(matches!(res2, Err(StatusError::Io(_))));
     }
 
@@ -533,6 +535,7 @@ mod tests {
 
         // Construct an invalid platform info that fails to_key() (e.g. empty os and version)
         let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
             platform: crate::platform::PlatformInfo {
                 os: String::new(),
                 arch: None,
@@ -541,7 +544,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let res = check_status(&ctx, temp.path());
+        let res = check_status(&ctx);
         assert!(matches!(
             res,
             Err(StatusError::Context(ContextError::Platform(_)))
@@ -552,7 +555,10 @@ mod tests {
     fn test_status_non_sha256_manifest() {
         let temp = tempfile::tempdir().unwrap();
         let gleon_dir = temp.path().join(".gleon");
-        let ctx = ResolvedContext::default();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
 
         let platform_key = ctx.platform.to_key().unwrap();
         let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
@@ -588,7 +594,7 @@ mod tests {
         std::fs::create_dir_all(&blob_dir).unwrap();
         std::fs::write(blob_dir.join(&hash_val), &img_bytes).unwrap();
 
-        let res = check_status(&ctx, temp.path()).unwrap();
+        let res = check_status(&ctx).unwrap();
         assert!(res.is_clean());
     }
 
@@ -596,7 +602,10 @@ mod tests {
     fn test_status_sha256_missing_blob() {
         let temp = tempfile::tempdir().unwrap();
         let gleon_dir = temp.path().join(".gleon");
-        let ctx = ResolvedContext::default();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
 
         let platform_key = ctx.platform.to_key().unwrap();
         let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
@@ -631,7 +640,7 @@ mod tests {
         // Deliberately do NOT create the blob file.
         // Even though the actual image matches the sha256 in the manifest,
         // status should return modified because the baseline blob is unusable.
-        let res = check_status(&ctx, temp.path()).unwrap();
+        let res = check_status(&ctx).unwrap();
         assert!(!res.is_clean());
         assert_eq!(res.modified.len(), 1);
         assert_eq!(res.modified[0].to_string_lossy(), "test.png");
@@ -648,6 +657,7 @@ mod tests {
         let macos_key = "5:macos-7:aarch64";
 
         let mut ctx = ResolvedContext {
+            base_dir: base_path.to_path_buf(),
             platform: crate::platform::PlatformInfo {
                 os: "linux".to_string(),
                 arch: Some("x86_64".to_string()),
@@ -733,7 +743,7 @@ screenshots:
         .unwrap();
         l_t1.save(linux_manifests.join("t1.json")).unwrap();
 
-        let status = check_status(&ctx, base_path).unwrap();
+        let status = check_status(&ctx).unwrap();
         assert_eq!(status.added, vec![PathBuf::from("t3.png")]);
         assert!(status.modified.is_empty());
         assert_eq!(status.deleted, vec![PathBuf::from("t4.png")]);

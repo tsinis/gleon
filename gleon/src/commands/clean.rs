@@ -17,7 +17,7 @@ pub fn run_clean(
         keep_runs,
     };
 
-    let res = match clean_workspace(ctx, &ctx.base_dir, &options) {
+    let res = match clean_workspace(ctx, &options) {
         Ok(r) => r,
         Err(e) => return Err(anyhow::Error::from(e)),
     };
@@ -71,7 +71,7 @@ pub fn run_clean(
 )]
 mod tests {
     use super::*;
-    use gleon_core::cli::{Cli, Commands};
+    use gleon_core::context::ContextOptions;
     use tempfile::tempdir;
 
     #[test]
@@ -96,12 +96,7 @@ screenshots:
         std::fs::create_dir_all(&test_dir).unwrap();
         std::fs::write(test_dir.join("login.png"), b"image").unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: true,
-            skip_gitignore: false,
-            keep_runs: false,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
         // 1. Dry run
         let exit_code = run_clean(&ctx, true, false, false).unwrap();
@@ -140,12 +135,7 @@ screenshots:
         let runs_dir = gleon_dir.join("runs");
         std::fs::create_dir_all(&runs_dir).unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: true,
-            keep_runs: true,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
         // 1. Dry run with keep_runs=true and skip_gitignore=true
         let exit_code = run_clean(&ctx, true, true, true).unwrap();
@@ -180,12 +170,7 @@ screenshots:
         // Create .gitignore as directory to force CleanError::Io
         std::fs::create_dir_all(base_path.join(".gitignore")).unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: false,
-            keep_runs: false,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
         let err = run_clean(&ctx, false, false, false).unwrap_err();
         assert!(err.to_string().contains("IO error"));

@@ -45,10 +45,10 @@ pub struct LintReport {
 /// # Errors
 /// Returns [`LintError`] if reading directory fails or if the target directory is missing.
 pub fn lint_workspace_manifests(
-    _ctx: &ResolvedContext,
-    base_dir: &Path,
+    ctx: &ResolvedContext,
     platform_filter: Option<&str>,
 ) -> Result<LintReport, LintError> {
+    let base_dir = ctx.base_dir.as_path();
     let manifests_root = GleonPaths::new(base_dir).manifests_root();
 
     let search_dir = match platform_filter {
@@ -154,7 +154,6 @@ pub fn lint_workspace_manifests(
 )]
 mod tests {
     use super::*;
-    use crate::cli::{Cli, Commands};
     use tempfile::tempdir;
 
     #[test]
@@ -170,9 +169,10 @@ mod tests {
         let manifest_content = include_str!("../../tests/fixtures/valid_manifest.json");
         std::fs::write(manifests_dir.join("login.json"), manifest_content).unwrap();
 
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
-        let report = lint_workspace_manifests(&ctx, temp.path(), None).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), temp.path())
+                .unwrap();
+        let report = lint_workspace_manifests(&ctx, None).unwrap();
 
         assert_eq!(report.total_files, 1);
         assert_eq!(report.valid_files, 1);
@@ -197,9 +197,10 @@ mod tests {
         let corrupted = include_str!("../../tests/fixtures/corrupt_manifest.json");
         std::fs::write(manifests_dir.join("corrupt.json"), corrupted).unwrap();
 
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
-        let report = lint_workspace_manifests(&ctx, temp.path(), None).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), temp.path())
+                .unwrap();
+        let report = lint_workspace_manifests(&ctx, None).unwrap();
 
         assert_eq!(report.total_files, 2);
         assert_eq!(report.valid_files, 0);
@@ -211,40 +212,41 @@ mod tests {
     #[test]
     fn test_lint_platform_filter_validation_and_missing_dir() {
         let temp = tempdir().unwrap();
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), temp.path())
+                .unwrap();
 
         // 1. Missing directory
-        let err = lint_workspace_manifests(&ctx, temp.path(), None);
+        let err = lint_workspace_manifests(&ctx, None);
         assert!(matches!(err, Err(LintError::ManifestDirNotFound(_))));
 
         // 2. Traversal platform filter
-        let err_traversal = lint_workspace_manifests(&ctx, temp.path(), Some("../../etc"));
+        let err_traversal = lint_workspace_manifests(&ctx, Some("../../etc"));
         assert!(matches!(
             err_traversal,
             Err(LintError::InvalidPlatformFilter(_))
         ));
 
         // 3. Absolute path filter
-        let err_abs = lint_workspace_manifests(&ctx, temp.path(), Some("/tmp"));
+        let err_abs = lint_workspace_manifests(&ctx, Some("/tmp"));
         assert!(matches!(err_abs, Err(LintError::InvalidPlatformFilter(_))));
 
         // 4. Multi-segment platform filter
-        let err_multi = lint_workspace_manifests(&ctx, temp.path(), Some("linux/x86_64"));
+        let err_multi = lint_workspace_manifests(&ctx, Some("linux/x86_64"));
         assert!(matches!(
             err_multi,
             Err(LintError::InvalidPlatformFilter(_))
         ));
 
         // 5. Invalid characters in normal platform filter
-        let err_invalid_chars = lint_workspace_manifests(&ctx, temp.path(), Some("LINUX"));
+        let err_invalid_chars = lint_workspace_manifests(&ctx, Some("LINUX"));
         assert!(matches!(
             err_invalid_chars,
             Err(LintError::InvalidPlatformFilter(_))
         ));
 
         // 6. Valid platform filter on missing directory
-        let err_valid = lint_workspace_manifests(&ctx, temp.path(), Some("linux-x86_64"));
+        let err_valid = lint_workspace_manifests(&ctx, Some("linux-x86_64"));
         assert!(matches!(err_valid, Err(LintError::ManifestDirNotFound(_))));
     }
 
@@ -253,8 +255,9 @@ mod tests {
     fn test_lint_unreadable_file_and_directory() {
         use std::os::unix::fs::PermissionsExt;
         let temp = tempdir().unwrap();
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), temp.path())
+                .unwrap();
         let manifests_dir = temp.path().join(".gleon").join("manifests");
         std::fs::create_dir_all(&manifests_dir).unwrap();
 
@@ -268,7 +271,7 @@ mod tests {
         std::fs::set_permissions(&unreadable_file, perms).unwrap();
 
         let can_read = std::fs::File::open(&unreadable_file).is_ok();
-        let report = lint_workspace_manifests(&ctx, temp.path(), None).unwrap();
+        let report = lint_workspace_manifests(&ctx, None).unwrap();
 
         // Restore permissions to allow cleanup before assertions
         let mut perms = std::fs::metadata(&unreadable_file).unwrap().permissions();
@@ -287,8 +290,9 @@ mod tests {
     fn test_lint_unreadable_directory() {
         use std::os::unix::fs::PermissionsExt;
         let temp = tempdir().unwrap();
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), temp.path())
+                .unwrap();
         let manifests_dir = temp.path().join(".gleon").join("manifests");
         std::fs::create_dir_all(&manifests_dir).unwrap();
 
@@ -303,7 +307,7 @@ mod tests {
         std::fs::set_permissions(&sub_dir, perms).unwrap();
 
         let can_read_dir = std::fs::read_dir(&sub_dir).is_ok();
-        let res = lint_workspace_manifests(&ctx, temp.path(), None);
+        let res = lint_workspace_manifests(&ctx, None);
 
         // Restore permissions to allow cleanup before assertions
         let mut perms = std::fs::metadata(&sub_dir).unwrap().permissions();
@@ -332,9 +336,10 @@ mod tests {
         let bad_schema = "{\"schema_version\":1,\"hash\":\"invalid:123\",\"phash\":\"dhash:0000000000000000\",\"width\":10,\"height\":10}";
         std::fs::write(manifests_dir.join("schema.json"), bad_schema).unwrap();
 
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
-        let report = lint_workspace_manifests(&ctx, temp.path(), None).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), temp.path())
+                .unwrap();
+        let report = lint_workspace_manifests(&ctx, None).unwrap();
 
         assert_eq!(report.total_files, 2);
         assert_eq!(report.valid_files, 0);

@@ -1,5 +1,5 @@
 use crate::engine::MismatchDetail;
-use crate::scanner::{TestCaseResult, TestImageResult};
+use crate::results::{TestCaseResult, TestImageResult};
 use minijinja::{Environment, context};
 use serde::{
     Serialize, Serializer,
@@ -152,7 +152,7 @@ pub type ImageUrlResolver<'a> = dyn Fn(&std::path::Path) -> Option<String> + Syn
 /// Where the PR comment is being rendered, used to pick an appropriate footer.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ExecutionContext {
+pub enum RenderTarget {
     /// Rendered for a local terminal invocation (e.g. `gleon diff`).
     #[default]
     LocalTerminal,
@@ -171,7 +171,7 @@ pub struct MarkdownReportOptions<'a> {
     /// Optional per-path resolver for signed/absolute image URLs, tried before `base_image_url`.
     pub image_url_resolver: Option<&'a ImageUrlResolver<'a>>,
     /// Where the comment is being rendered, selecting the footer text.
-    pub context: ExecutionContext,
+    pub context: RenderTarget,
 }
 
 /// Generates HTML, `JUnit` XML, and Markdown reports from test results.
@@ -1213,10 +1213,10 @@ impl ReportGenerator {
         }
 
         match options.context {
-            ExecutionContext::GitHubActions => {
+            RenderTarget::GitHubActions => {
                 out.push_str(Self::FOOTER_GITHUB_ACTIONS);
             }
-            ExecutionContext::LocalTerminal => {
+            RenderTarget::LocalTerminal => {
                 out.push_str(Self::FOOTER_LOCAL_TERMINAL);
             }
         }
@@ -1370,7 +1370,7 @@ mod tests {
             },
         };
         let options = MarkdownReportOptions {
-            context: ExecutionContext::default(),
+            context: RenderTarget::default(),
             base_image_url: Some("https://storage.cdn.com/run-1"),
             html_artifact_url: Some("https://github.com/org/repo/actions/runs/1/artifacts/2"),
             image_url_resolver: None,
@@ -1397,7 +1397,7 @@ mod tests {
             });
         }
         let options = MarkdownReportOptions {
-            context: ExecutionContext::default(),
+            context: RenderTarget::default(),
             base_image_url: None,
             html_artifact_url: Some("https://artifact.url/report.html"),
             image_url_resolver: None,
@@ -1436,7 +1436,7 @@ mod tests {
             },
         ];
         let options = MarkdownReportOptions {
-            context: ExecutionContext::default(),
+            context: RenderTarget::default(),
             base_image_url: Some("http://test.com"),
             html_artifact_url: None,
             image_url_resolver: None,
@@ -1484,7 +1484,7 @@ mod tests {
             },
         ];
         let options = MarkdownReportOptions {
-            context: ExecutionContext::default(),
+            context: RenderTarget::default(),
             base_image_url: None,
             html_artifact_url: None,
             image_url_resolver: None,
@@ -1517,7 +1517,7 @@ mod tests {
     fn test_render_pr_comment_pass_path() {
         let test_cases = vec![];
         let options = MarkdownReportOptions {
-            context: ExecutionContext::default(),
+            context: RenderTarget::default(),
             base_image_url: None,
             html_artifact_url: None,
             image_url_resolver: None,
@@ -1542,7 +1542,7 @@ mod tests {
             });
         }
         let options = MarkdownReportOptions {
-            context: ExecutionContext::default(),
+            context: RenderTarget::default(),
             base_image_url: Some("http://example.com"),
             html_artifact_url: None,
             image_url_resolver: None,
@@ -1565,7 +1565,7 @@ mod tests {
             },
         };
         let options = MarkdownReportOptions {
-            context: ExecutionContext::default(),
+            context: RenderTarget::default(),
             base_image_url: None,
             html_artifact_url: None,
             image_url_resolver: None,
@@ -1596,7 +1596,7 @@ mod tests {
             }
         };
         let options = MarkdownReportOptions {
-            context: ExecutionContext::default(),
+            context: RenderTarget::default(),
             base_image_url: None,
             html_artifact_url: None,
             image_url_resolver: Some(&resolver),
@@ -1766,7 +1766,7 @@ mod tests {
         }
 
         let opts = MarkdownReportOptions {
-            context: ExecutionContext::default(),
+            context: RenderTarget::default(),
             base_image_url: Some("https://storage.url"),
             html_artifact_url: Some("https://artifact.url"),
             image_url_resolver: None,
@@ -1920,14 +1920,14 @@ mod tests {
         let tests = vec![tc];
 
         let opts_gh = MarkdownReportOptions {
-            context: ExecutionContext::GitHubActions,
+            context: RenderTarget::GitHubActions,
             ..Default::default()
         };
         let md_gh = ReportGenerator::render_pr_comment(&tests, &opts_gh);
         assert!(md_gh.contains(ReportGenerator::FOOTER_GITHUB_ACTIONS));
 
         let opts_local = MarkdownReportOptions {
-            context: ExecutionContext::LocalTerminal,
+            context: RenderTarget::LocalTerminal,
             ..Default::default()
         };
         let md_local = ReportGenerator::render_pr_comment(&tests, &opts_local);

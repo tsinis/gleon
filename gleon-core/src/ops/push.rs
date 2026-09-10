@@ -105,11 +105,11 @@ pub(crate) fn list_platform_dirs(
 #[allow(clippy::too_many_lines)] // TODO(C4): extract transfer_blobs/SyncResult into ops/sync.rs
 pub async fn push_blobs(
     context: &ResolvedContext,
-    base_dir: &Path,
     storage_config: Option<&StorageConfig>,
     all_platforms: bool,
     platform_override: Option<&str>,
 ) -> Result<PushResult, PushError> {
+    let base_dir = context.base_dir.as_path();
     let paths = crate::paths::GleonPaths::new(base_dir);
     match std::fs::metadata(paths.gleon_dir()) {
         Ok(_) => {}
@@ -321,18 +321,21 @@ mod tests {
         let gleon_dir = temp.path().join(".gleon");
         std::fs::create_dir_all(&gleon_dir).unwrap();
 
-        let ctx = ResolvedContext::default();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
         let cfg = StorageConfig::new("memory://");
 
         // Invalid platform override segment
-        let err = push_blobs(&ctx, temp.path(), Some(&cfg), false, Some("../invalid")).await;
+        let err = push_blobs(&ctx, Some(&cfg), false, Some("../invalid")).await;
         assert!(matches!(
             err,
             Err(PushError::Context(ContextError::Platform(_)))
         ));
 
         // Empty manifest directory for valid platform override -> 0 blobs
-        let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, Some("macos-aarch64"))
+        let res = push_blobs(&ctx, Some(&cfg), false, Some("macos-aarch64"))
             .await
             .unwrap();
         assert_eq!(res.total_manifest_blobs, 0);
@@ -374,9 +377,12 @@ mod tests {
 
         let can_read = std::fs::read_dir(&manifests).is_ok();
 
-        let ctx = ResolvedContext::default();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
         let cfg = StorageConfig::new("memory://");
-        let res = push_blobs(&ctx, temp.path(), Some(&cfg), true, None).await;
+        let res = push_blobs(&ctx, Some(&cfg), true, None).await;
 
         perms.set_mode(0o755);
         std::fs::set_permissions(&manifests, perms).unwrap();
@@ -392,11 +398,12 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut ctx = ResolvedContext::default();
         ctx.platform.os = "invalid/os".to_string(); // Will fail to_key()
+        ctx.base_dir = temp.path().to_path_buf();
 
         std::fs::create_dir_all(temp.path().join(".gleon").join("manifests")).unwrap();
 
         let cfg = StorageConfig::new("memory://");
-        let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
+        let res = push_blobs(&ctx, Some(&cfg), false, None).await;
         assert!(matches!(
             res,
             Err(PushError::Context(ContextError::Platform(_)))
@@ -410,6 +417,7 @@ mod tests {
 
         let mut ctx = ResolvedContext::default();
         ctx.platform.os = "linux".to_string();
+        ctx.base_dir = temp.path().to_path_buf();
         let key = ctx.platform.to_key().unwrap();
 
         let plat_dir = temp.path().join(".gleon").join("manifests").join(&key);
@@ -417,7 +425,7 @@ mod tests {
         std::fs::write(plat_dir.join("bad.json"), "not json").unwrap();
 
         let cfg = StorageConfig::new("memory://");
-        let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
+        let res = push_blobs(&ctx, Some(&cfg), false, None).await;
         assert!(matches!(res, Err(PushError::Manifest(_))));
     }
 
@@ -428,6 +436,7 @@ mod tests {
 
         let mut ctx = ResolvedContext::default();
         ctx.platform.os = "linux".to_string();
+        ctx.base_dir = temp.path().to_path_buf();
         let key = ctx.platform.to_key().unwrap();
 
         let plat_dir = temp.path().join(".gleon").join("manifests").join(&key);
@@ -450,9 +459,7 @@ mod tests {
         std::fs::write(blobs_root.join("sha256").join(hash), b"data").unwrap();
 
         let cfg = StorageConfig::new("memory://");
-        let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, None)
-            .await
-            .unwrap();
+        let res = push_blobs(&ctx, Some(&cfg), false, None).await.unwrap();
 
         assert_eq!(res.total_manifest_blobs, 1);
         assert_eq!(res.uploaded_blobs, 1);
@@ -467,6 +474,7 @@ mod tests {
 
         let mut ctx = ResolvedContext::default();
         ctx.platform.os = "linux".to_string();
+        ctx.base_dir = temp.path().to_path_buf();
         let key = ctx.platform.to_key().unwrap();
 
         let plat_dir = temp.path().join(".gleon").join("manifests").join(&key);
@@ -489,7 +497,7 @@ mod tests {
         std::os::unix::fs::symlink(&target_file, blobs_root.join("sha256").join(hash)).unwrap();
 
         let cfg = StorageConfig::new("memory://");
-        let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
+        let res = push_blobs(&ctx, Some(&cfg), false, None).await;
         assert!(matches!(res, Err(PushError::MissingLocalBlob { .. })));
     }
 
@@ -502,6 +510,7 @@ mod tests {
 
         let mut ctx = ResolvedContext::default();
         ctx.platform.os = "linux".to_string();
+        ctx.base_dir = temp.path().to_path_buf();
         let key = ctx.platform.to_key().unwrap();
 
         let manifests_dir = temp.path().join(".gleon").join("manifests");
@@ -513,7 +522,7 @@ mod tests {
         std::fs::set_permissions(&manifests_dir, std::fs::Permissions::from_mode(0o000)).unwrap();
 
         let cfg = StorageConfig::new("memory://");
-        let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
+        let res = push_blobs(&ctx, Some(&cfg), false, None).await;
 
         let was_permission_denied = std::fs::metadata(&plat_dir).is_err();
         let _ = std::fs::set_permissions(&manifests_dir, original_perms);
@@ -535,6 +544,7 @@ mod tests {
 
         let mut ctx = ResolvedContext::default();
         ctx.platform.os = "linux".to_string();
+        ctx.base_dir = temp.path().to_path_buf();
         let key = ctx.platform.to_key().unwrap();
 
         let plat_dir = temp.path().join(".gleon").join("manifests").join(&key);
@@ -562,9 +572,7 @@ mod tests {
         adapter.upload_blob(&image_hash, &tmp_file).await.unwrap();
 
         // Local blob directory does NOT have the blob
-        let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, None)
-            .await
-            .unwrap();
+        let res = push_blobs(&ctx, Some(&cfg), false, None).await.unwrap();
 
         assert_eq!(res.total_manifest_blobs, 1);
         assert_eq!(res.uploaded_blobs, 0);
@@ -578,6 +586,7 @@ mod tests {
 
         let mut ctx = ResolvedContext::default();
         ctx.platform.os = "linux".to_string();
+        ctx.base_dir = temp.path().to_path_buf();
         let key = ctx.platform.to_key().unwrap();
 
         let plat_dir = temp.path().join(".gleon").join("manifests").join(&key);
@@ -595,7 +604,7 @@ mod tests {
         manifest.save(plat_dir.join("test_missing.json")).unwrap();
 
         let cfg = StorageConfig::new("memory://");
-        let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, None).await;
+        let res = push_blobs(&ctx, Some(&cfg), false, None).await;
 
         assert!(matches!(res, Err(PushError::MissingLocalBlob { .. })));
     }
@@ -609,6 +618,7 @@ mod tests {
 
         let mut ctx = ResolvedContext::default();
         ctx.platform.os = "linux".to_string();
+        ctx.base_dir = temp.path().to_path_buf();
         let key = ctx.platform.to_key().unwrap();
 
         let plat_dir = temp.path().join(".gleon").join("manifests").join(&key);
@@ -659,9 +669,7 @@ mod tests {
             .await
             .unwrap();
 
-        let res = push_blobs(&ctx, temp.path(), Some(&cfg), false, None)
-            .await
-            .unwrap();
+        let res = push_blobs(&ctx, Some(&cfg), false, None).await.unwrap();
 
         assert_eq!(res.total_manifest_blobs, 2);
         assert_eq!(res.uploaded_blobs, 1);

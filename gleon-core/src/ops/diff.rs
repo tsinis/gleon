@@ -6,7 +6,8 @@ use crate::engine::{ComparisonResult, compare_images};
 use crate::manifest::{ManifestError, WorkspaceIndex};
 use crate::masking::apply_masks;
 use crate::report::{ReportError, ReportGenerator};
-use crate::scanner::{FileScanner, ScannerError, TestCaseResult, TestImageResult};
+use crate::results::{TestCaseResult, TestImageResult};
+use crate::scanner::{FileScanner, ScannerError};
 use sha2::Digest;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -265,12 +266,10 @@ pub(crate) fn process_diff_case(
 /// Returns an error if the workspace is not initialized, if the platform key cannot be
 /// resolved, if manifests fail to load, if the previous run's cache cannot be cleared or
 /// recreated, if screenshots cannot be scanned, or if generating the HTML/JUnit reports fails.
-pub fn run_diff(
-    context: &ResolvedContext,
-    base_dir: &Path,
-) -> Result<DiffReportResult, DiffOpError> {
+pub fn run_diff(context: &ResolvedContext) -> Result<DiffReportResult, DiffOpError> {
     use rayon::prelude::*;
 
+    let base_dir = context.base_dir.as_path();
     let paths = crate::paths::GleonPaths::new(base_dir);
     if std::fs::metadata(paths.gleon_dir()).is_err() {
         return Err(DiffOpError::NotInitialized);
@@ -408,10 +407,13 @@ mod tests {
         let gleon_dir = temp.path().join(".gleon");
         std::fs::create_dir_all(&gleon_dir).unwrap();
 
-        let mut ctx = ResolvedContext::default();
+        let mut ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
         ctx.platform.os = "../invalid".to_string(); // Invalid segment
 
-        let err = run_diff(&ctx, temp.path()).unwrap_err();
+        let err = run_diff(&ctx).unwrap_err();
         assert!(matches!(
             err,
             DiffOpError::Context(ContextError::Platform(_))
@@ -424,7 +426,10 @@ mod tests {
         let gleon_dir = temp.path().join(".gleon");
         std::fs::create_dir_all(&gleon_dir).unwrap();
 
-        let ctx = ResolvedContext::default();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
         let plat_key = ctx.platform.to_key().unwrap();
 
         // 1. Corrupt manifest file in manifests_dir
@@ -432,7 +437,7 @@ mod tests {
         std::fs::create_dir_all(&manifests_dir).unwrap();
         std::fs::write(manifests_dir.join("test.json"), "invalid json").unwrap();
 
-        let res = run_diff(&ctx, temp.path());
+        let res = run_diff(&ctx);
         assert!(matches!(res, Err(DiffOpError::Manifest(_))));
 
         // Clean up corrupt manifest
@@ -443,7 +448,7 @@ mod tests {
         std::fs::create_dir_all(&bad_dir).unwrap();
         std::fs::write(bad_dir.join("test.png"), "fake png").unwrap();
 
-        let res2 = run_diff(&ctx, temp.path());
+        let res2 = run_diff(&ctx);
         assert!(matches!(res2, Err(DiffOpError::Scanner(_))));
     }
 
@@ -453,7 +458,10 @@ mod tests {
         let gleon_dir = temp.path().join(".gleon");
         std::fs::create_dir_all(&gleon_dir).unwrap();
 
-        let ctx = ResolvedContext::default();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
         let plat_key = ctx.platform.to_key().unwrap();
 
         // Create a valid manifest entry
@@ -479,7 +487,7 @@ mod tests {
             .join("1111111111111111111111111111111111111111111111111111111111111111");
         std::fs::create_dir_all(&blob_dir).unwrap();
 
-        let res = run_diff(&ctx, temp.path()).unwrap();
+        let res = run_diff(&ctx).unwrap();
         assert_eq!(res.failed_tests, 1);
         assert!(!res.passed);
     }
@@ -492,7 +500,10 @@ mod tests {
         let gleon_dir = temp.path().join(".gleon");
         std::fs::create_dir_all(&gleon_dir).unwrap();
 
-        let ctx = ResolvedContext::default();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
         let plat_key = ctx.platform.to_key().unwrap();
         let manifests_dir = gleon_dir.join("manifests").join(&plat_key);
         std::fs::create_dir_all(&manifests_dir).unwrap();
@@ -514,7 +525,7 @@ mod tests {
         perms.set_mode(0o000);
         std::fs::set_permissions(&screenshot, perms.clone()).unwrap();
 
-        let res = run_diff(&ctx, temp.path());
+        let res = run_diff(&ctx);
 
         // Restore permissions before assertions
         perms.set_mode(0o644);
@@ -533,7 +544,10 @@ mod tests {
         let gleon_dir = temp.path().join(".gleon");
         std::fs::create_dir_all(&gleon_dir).unwrap();
 
-        let mut ctx = ResolvedContext::default();
+        let mut ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
         ctx.platform.os = "linux".to_string();
         let key = ctx.platform.to_key().unwrap();
 
@@ -578,7 +592,7 @@ mod tests {
         std::fs::set_permissions(&actual_dir, perms.clone()).unwrap();
         std::fs::set_permissions(&diffs_dir, perms.clone()).unwrap();
 
-        let result = run_diff(&ctx, temp.path());
+        let result = run_diff(&ctx);
         assert!(result.is_err());
 
         // Restore permissions so tempdir can be cleaned up
@@ -594,13 +608,14 @@ mod tests {
         std::fs::create_dir_all(&gleon_dir).unwrap();
 
         let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
             fallback_platform_key: Some("some-fallback-key".to_string()),
             ..Default::default()
         };
 
         // No manifests created for primary or fallback platform, so fb_index will be empty.
         // run_diff should run and return no test results because scanner finds nothing (no screenshots created).
-        let res = run_diff(&ctx, temp.path()).unwrap();
+        let res = run_diff(&ctx).unwrap();
         assert_eq!(res.total_tests, 0);
     }
 
@@ -729,6 +744,7 @@ mod tests {
         let macos_key = "5:macos-7:aarch64";
 
         let mut ctx = ResolvedContext {
+            base_dir: base_path.to_path_buf(),
             platform: crate::platform::PlatformInfo {
                 os: "linux".to_string(),
                 arch: Some("x86_64".to_string()),
@@ -803,7 +819,7 @@ screenshots:
         linux_m1.save(linux_manifests.join("test1.json")).unwrap();
 
         // Run diff on linux
-        let diff_result = run_diff(&ctx, base_path).unwrap();
+        let diff_result = run_diff(&ctx).unwrap();
         assert_eq!(diff_result.total_tests, 2);
         assert_eq!(diff_result.failed_tests, 0);
         assert!(diff_result.passed);

@@ -13,7 +13,7 @@
 use gleon_core::config::{DiffConfig, Mode};
 use gleon_core::engine::{ComparisonResult, MismatchDetail, compare_images};
 use gleon_core::report::ReportGenerator;
-use gleon_core::scanner::{TestCaseResult, TestImageResult};
+use gleon_core::results::{TestCaseResult, TestImageResult};
 use std::fs;
 use std::path::{Path, PathBuf};
 

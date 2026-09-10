@@ -12,7 +12,7 @@ use tracing::{error, info};
 pub fn run_lint(ctx: &ResolvedContext, platform_filter: Option<&str>) -> anyhow::Result<i32> {
     info!("Running manifest linting...");
 
-    let report = match lint_workspace_manifests(ctx, &ctx.base_dir, platform_filter) {
+    let report = match lint_workspace_manifests(ctx, platform_filter) {
         Ok(rep) => rep,
         Err(e) => {
             error!("Error during manifest linting: {e}");
@@ -68,14 +68,13 @@ pub fn run_lint(ctx: &ResolvedContext, platform_filter: Option<&str>) -> anyhow:
 )]
 mod tests {
     use super::*;
-    use gleon_core::cli::{Cli, Commands};
+    use gleon_core::context::ContextOptions;
     use tempfile::tempdir;
 
     #[test]
     fn test_run_lint_branches() {
         let temp = tempdir().unwrap();
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), temp.path()).unwrap();
 
         // 1. Missing directory -> Err -> Ok(1)
         assert_eq!(run_lint(&ctx, None).unwrap(), 1);

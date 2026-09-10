@@ -194,14 +194,13 @@ where
 )]
 mod tests {
     use super::*;
-    use gleon_core::cli::{Cli, Commands};
+    use gleon_core::context::ContextOptions;
     use tempfile::tempdir;
 
     #[tokio::test]
     async fn test_run_resolve_missing_manifest_dir() {
         let temp = tempdir().unwrap();
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), temp.path()).unwrap();
 
         // Missing manifest directory causes scan_conflicts to fail -> return Ok(1)
         let res = run_resolve_with_tty(&ctx, None, false, None, false)
@@ -224,8 +223,7 @@ mod tests {
         let conflicted = include_str!("../../../gleon-core/tests/fixtures/conflict_2way.json");
         std::fs::write(manifests_dir.join("login.json"), conflicted).unwrap();
 
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, base_dir).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_dir).unwrap();
 
         // 1. Filter out all test paths
         let res_filtered =
@@ -301,8 +299,7 @@ mod tests {
         let login_path = manifests_dir.join("login.json");
         std::fs::write(&login_path, conflicted).unwrap();
 
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, base_dir).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_dir).unwrap();
 
         let conflicts = scan_conflicts(base_dir, None).unwrap();
         assert_eq!(conflicts.len(), 1);
@@ -355,8 +352,7 @@ mod tests {
         let login_path = manifests_dir.join("login.json");
         std::fs::write(&login_path, conflicted).unwrap();
 
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, base_dir).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_dir).unwrap();
 
         let conflicts = scan_conflicts(base_dir, None).unwrap();
         let config = StorageConfig::new("memory://");
@@ -403,8 +399,7 @@ mod tests {
         let login_path = manifests_dir.join("login.json");
         std::fs::write(&login_path, conflicted).unwrap();
 
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, base_dir).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_dir).unwrap();
 
         let conflicts = scan_conflicts(base_dir, None).unwrap();
         let mut invalid_conflicts = conflicts;

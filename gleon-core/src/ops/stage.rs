@@ -7,7 +7,7 @@ use crate::manifest::{ImageHash, ManifestError, SingleTestManifest, WorkspaceInd
 use crate::paths::GleonPaths;
 use crate::scanner::{FileScanner, ScannerError};
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use thiserror::Error;
 
 /// Errors that can occur during staging.
@@ -117,7 +117,6 @@ pub(crate) fn filter_test_cases(
 #[allow(clippy::too_many_lines)] // TODO(C3): extract shared helpers into ops/common.rs
 pub fn stage_workspace(
     context: &ResolvedContext,
-    base_dir: &Path,
     filter_paths: Option<&[PathBuf]>,
 ) -> Result<StageResult, StageError> {
     use rayon::prelude::*;
@@ -130,6 +129,7 @@ pub fn stage_workspace(
         height: u32,
     }
 
+    let base_dir = context.base_dir.as_path();
     let paths = GleonPaths::new(base_dir);
     if std::fs::metadata(paths.gleon_dir()).is_err() {
         return Err(StageError::NotInitialized);

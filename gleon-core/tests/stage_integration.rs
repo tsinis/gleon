@@ -10,8 +10,7 @@
     missing_docs
 )]
 
-use gleon_core::cli::{Cli, Commands};
-use gleon_core::context::ResolvedContext;
+use gleon_core::context::{ContextOptions, ResolvedContext};
 use gleon_core::ops::{StageError, check_status, init_workspace, stage_workspace};
 use sha2::Digest;
 use std::fs;
@@ -22,23 +21,14 @@ fn test_stage_uninitialized_fails() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli = Cli {
+    let options = ContextOptions {
         branch: Some("main".to_string()),
-        os: None,
-        arch: None,
-        renderer: None,
-        labels: vec![],
-        platform: None,
-        verbose: false,
-        quiet: false,
-        config: None,
-        strict: false,
         target_branch: "main".to_string(),
-        command: Commands::Stage { paths: vec![] },
+        ..Default::default()
     };
 
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
-    let result = stage_workspace(&ctx, base_path, None);
+    let ctx = ResolvedContext::from_options(&options, base_path).unwrap();
+    let result = stage_workspace(&ctx, None);
 
     assert!(result.is_err());
     assert!(matches!(result.unwrap_err(), StageError::NotInitialized));
@@ -49,11 +39,10 @@ fn test_stage_real_fixture_updates_index_and_makes_workspace_clean() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     // 1. Init workspace
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     // 2. Copy real PNG fixture
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -75,29 +64,20 @@ screenshots:
     fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli {
+    let options = ContextOptions {
         branch: Some("main".to_string()),
-        os: None,
-        arch: None,
-        renderer: None,
-        labels: vec![],
-        platform: None,
-        verbose: false,
-        quiet: false,
-        config: None,
-        strict: false,
         target_branch: "main".to_string(),
-        command: Commands::Stage { paths: vec![] },
+        ..Default::default()
     };
 
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&options, base_path).unwrap();
 
     // 3. Before staging: status reports 1 Added
-    let status_before = check_status(&ctx, base_path).unwrap();
+    let status_before = check_status(&ctx).unwrap();
     assert_eq!(status_before.added.len(), 1);
 
     // 4. Stage workspace
-    let stage_res = stage_workspace(&ctx, base_path, None).expect("stage_workspace should succeed");
+    let stage_res = stage_workspace(&ctx, None).expect("stage_workspace should succeed");
     assert_eq!(stage_res.staged_test_cases.len(), 1);
     assert_eq!(stage_res.total_screenshots_staged, 1);
 
@@ -122,7 +102,7 @@ screenshots:
     );
 
     // 7. After staging: status is clean
-    let status_after = check_status(&ctx, base_path).unwrap();
+    let status_after = check_status(&ctx).unwrap();
     assert!(status_after.is_clean());
 }
 
@@ -133,9 +113,8 @@ fn test_stage_partial_path_filter_preserves_existing_entries() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -156,11 +135,10 @@ screenshots:
     fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli::for_test(Commands::Stage { paths: vec![] });
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     // 1. Initial stage: stages form1.png and form2.png
-    stage_workspace(&ctx, base_path, None).expect("initial stage should succeed");
+    stage_workspace(&ctx, None).expect("initial stage should succeed");
 
     // 2. Modify form1.png so that restaging it counts as modified
     let fixtures_dir_100 = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -172,8 +150,7 @@ screenshots:
 
     // 3. Filtered stage: stage ONLY form1.png
     let filter = vec![PathBuf::from("billing/form1.png")];
-    let stage_res =
-        stage_workspace(&ctx, base_path, Some(&filter)).expect("filtered stage should succeed");
+    let stage_res = stage_workspace(&ctx, Some(&filter)).expect("filtered stage should succeed");
     assert_eq!(
         stage_res.total_screenshots_staged, 1,
         "Filtered stage should only process matching screenshot paths"
@@ -194,9 +171,8 @@ fn test_stage_idempotent_unchanged_screenshots() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -216,15 +192,14 @@ screenshots:
     fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli::for_test(Commands::Stage { paths: vec![] });
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     // First stage: 1 screenshot staged
-    let stage1 = stage_workspace(&ctx, base_path, None).unwrap();
+    let stage1 = stage_workspace(&ctx, None).unwrap();
     assert_eq!(stage1.total_screenshots_staged, 1);
 
     // Second stage on unchanged file: 0 screenshots staged
-    let stage2 = stage_workspace(&ctx, base_path, None).unwrap();
+    let stage2 = stage_workspace(&ctx, None).unwrap();
     assert_eq!(stage2.total_screenshots_staged, 0);
 }
 
@@ -233,9 +208,8 @@ fn test_stage_orphan_manifest_cleanup() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -256,11 +230,10 @@ screenshots:
     fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli::for_test(Commands::Stage { paths: vec![] });
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     // Initial stage: form1 and form2
-    stage_workspace(&ctx, base_path, None).expect("initial stage should succeed");
+    stage_workspace(&ctx, None).expect("initial stage should succeed");
 
     let platform_key = ctx.platform.to_key().unwrap();
     let manifest2 = base_path
@@ -274,7 +247,7 @@ screenshots:
     fs::remove_file(screenshot_dir.join("form2.png")).unwrap();
 
     // Restage full workspace: form2.json should be removed as an orphan manifest
-    stage_workspace(&ctx, base_path, None).expect("second stage should succeed");
+    stage_workspace(&ctx, None).expect("second stage should succeed");
     assert!(
         !manifest2.exists(),
         "Orphan manifest form2.json should be deleted"
@@ -286,9 +259,8 @@ fn test_stage_absolute_path_filter() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -310,12 +282,11 @@ screenshots:
     fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli::for_test(Commands::Stage { paths: vec![] });
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     // Stage using absolute path filter for form1.png
     let filter = vec![form1_abs];
-    let stage_res = stage_workspace(&ctx, base_path, Some(&filter)).unwrap();
+    let stage_res = stage_workspace(&ctx, Some(&filter)).unwrap();
     assert_eq!(stage_res.total_screenshots_staged, 1);
     assert_eq!(stage_res.staged_test_cases, vec!["billing/form1"]);
 }
@@ -325,9 +296,8 @@ fn test_stage_corrupt_screenshot_returns_error() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     let screenshot_dir = base_path.join("billing");
     fs::create_dir_all(&screenshot_dir).unwrap();
@@ -341,10 +311,9 @@ screenshots:
     fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli::for_test(Commands::Stage { paths: vec![] });
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
-    let result = stage_workspace(&ctx, base_path, None);
+    let result = stage_workspace(&ctx, None);
     assert!(result.is_err());
     assert!(matches!(result, Err(StageError::ImageDecode { .. })));
 }

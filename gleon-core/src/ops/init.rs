@@ -2,7 +2,7 @@
 
 use crate::config::GleonConfig;
 use crate::paths::GleonPaths;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use thiserror::Error;
 
 /// Errors that can occur during workspace initialization.
@@ -47,13 +47,10 @@ pub struct InitResult {
 /// `gleon.yaml` configuration fails to serialize, or if writing the `.gitignore`,
 /// `.env.template`, or `gleon.yaml` scaffold files fails.
 #[allow(clippy::too_many_lines)] // TODO(C3): extract shared helpers into ops/common.rs
-pub fn init_workspace(
-    context: &crate::context::ResolvedContext,
-    base_dir: &Path,
-) -> Result<InitResult, InitError> {
+pub fn init_workspace(context: &crate::context::ResolvedContext) -> Result<InitResult, InitError> {
     use std::io::Write;
 
-    let paths = GleonPaths::new(base_dir);
+    let paths = GleonPaths::new(&context.base_dir);
     let gleon_dir = paths.gleon_dir();
     let blobs_dir = paths.blob_scheme_dir("sha256");
     let runs_dir = paths.runs_latest();
@@ -199,10 +196,12 @@ mod tests {
     #[test]
     fn test_init_workspace_creates_structure_and_config() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let base_dir = temp_dir.path();
-        let ctx = ResolvedContext::default();
+        let ctx = ResolvedContext {
+            base_dir: temp_dir.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
 
-        let res = init_workspace(&ctx, base_dir).unwrap();
+        let res = init_workspace(&ctx).unwrap();
         assert!(res.gleon_dir.exists());
         assert!(res.gleon_dir.join(".gitignore").exists());
         let expected_config = res.gleon_dir.join("gleon.yaml");
@@ -224,10 +223,13 @@ mod tests {
     #[test]
     fn test_init_platform_key_error() {
         let temp = tempfile::tempdir().unwrap();
-        let mut ctx = ResolvedContext::default();
+        let mut ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
         ctx.platform.os = "invalid/os".to_string();
 
-        let res = init_workspace(&ctx, temp.path());
+        let res = init_workspace(&ctx);
         assert!(res.is_ok());
 
         // manifests should be created without a platform sub-directory
@@ -244,8 +246,11 @@ mod tests {
         // Write .gitignore without trailing newline
         std::fs::write(gleon_dir.join(".gitignore"), "some_ignored_file").unwrap();
 
-        let ctx = ResolvedContext::default();
-        let res = init_workspace(&ctx, temp.path());
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
+        let res = init_workspace(&ctx);
         assert!(res.is_ok());
 
         let content = std::fs::read_to_string(gleon_dir.join(".gitignore")).unwrap();
@@ -267,8 +272,11 @@ mod tests {
         std::fs::set_permissions(&gleon_dir, perms.clone()).unwrap();
 
         let can_write = std::fs::write(gleon_dir.join("test.txt"), "data").is_ok();
-        let ctx = ResolvedContext::default();
-        let res = init_workspace(&ctx, temp.path());
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
+        let res = init_workspace(&ctx);
 
         // Restore permissions before assertions
         perms.set_mode(0o755);

@@ -16,15 +16,7 @@ pub async fn run_pull(
 ) -> anyhow::Result<i32> {
     info!("Running blob pull...");
 
-    match pull_blobs(
-        ctx,
-        &ctx.base_dir,
-        storage_cfg,
-        all_platforms,
-        platform_override,
-    )
-    .await
-    {
+    match pull_blobs(ctx, storage_cfg, all_platforms, platform_override).await {
         Ok(res) => {
             if res.local_mode {
                 info!("Operating in local mode. Cloud sync disabled. Please configure storage.");
@@ -62,21 +54,20 @@ pub async fn run_pull(
 )]
 mod tests {
     use super::*;
-    use gleon_core::cli::{Cli, Commands};
+    use gleon_core::context::ContextOptions;
     use tempfile::tempdir;
 
     #[tokio::test]
     async fn test_run_pull_uninitialized_and_local_mode() {
         let temp = tempdir().unwrap();
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), temp.path()).unwrap();
 
         // 1. Uninitialized -> exit code 1
         let exit_code_uninit = run_pull(&ctx, None, false, None).await.unwrap();
         assert_eq!(exit_code_uninit, 1);
 
         // 2. Initialized + Local Mode -> exit code 0
-        gleon_core::ops::init_workspace(&ctx, temp.path()).unwrap();
+        gleon_core::ops::init_workspace(&ctx).unwrap();
         let exit_code_local = run_pull(&ctx, None, false, None).await.unwrap();
         assert_eq!(exit_code_local, 0);
 
