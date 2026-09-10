@@ -4,12 +4,18 @@ use std::collections::BTreeMap;
 /// Errors that can occur during platform resolution.
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum PlatformError {
+    /// A structured override (OS/arch/renderer/labels) was supplied alongside an
+    /// opaque platform string, which cannot be merged with it.
     #[error("Cannot apply structured overrides ({0}) to an opaque platform configuration")]
     OpaqueConflict(String),
+    /// A platform segment (OS, arch, renderer, or label key/value) contained
+    /// disallowed characters or was empty.
     #[error("Invalid character or pattern in platform segment: {0}")]
     InvalidSegment(String),
+    /// A `GLEON_PLATFORM`-style key-value string could not be parsed.
     #[error("Failed to parse platform string: {0}")]
     ParseError(String),
+    /// A label key collided with a reserved key (e.g. `os`, `arch`).
     #[error("Label key '{0}' is reserved — use --{1} flag instead")]
     ReservedLabelKey(String, String),
 }
@@ -19,12 +25,12 @@ pub enum PlatformError {
 pub struct PlatformInfo {
     /// Operating system (e.g. "macos", "linux", "windows").
     pub os: String,
-    /// CPU architecture (e.g. "aarch64", "x86_64").
+    /// CPU architecture (e.g. "aarch64", "`x86_64`").
     pub arch: Option<String>,
     /// Optional renderer identifier (e.g. "flutter-3.22", "chrome-126").
     pub renderer: Option<String>,
     /// Arbitrary key-value labels for additional isolation axes.
-    /// Sorted alphabetically by key (BTreeMap guarantees this).
+    /// Sorted alphabetically by key (`BTreeMap` guarantees this).
     pub labels: BTreeMap<String, String>,
 }
 
@@ -32,16 +38,22 @@ pub struct PlatformInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PlatformFields {
+    /// Operating system override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os: Option<String>,
+    /// CPU architecture override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arch: Option<String>,
+    /// Renderer identifier override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub renderer: Option<String>,
+    /// Arbitrary key-value label overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<BTreeMap<String, String>>,
 }
 
+/// User- or config-supplied platform configuration, either an opaque string or
+/// structured fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlatformConfig {
     /// Opaque string — validated and normalized (lowercased) for the storage key.
@@ -57,8 +69,8 @@ impl PlatformConfig {
     /// Returns [`PlatformError`] if invalid characters are present in fields.
     pub fn to_key(&self) -> Result<String, PlatformError> {
         match self {
-            PlatformConfig::Opaque(s) => validate_segment(s).map(|c| c.into_owned()),
-            PlatformConfig::Structured(fields) => {
+            Self::Opaque(s) => validate_segment(s).map(std::borrow::Cow::into_owned),
+            Self::Structured(fields) => {
                 let info = PlatformInfo {
                     os: fields.os.clone().unwrap_or_else(|| "unknown".to_string()),
                     arch: fields.arch.clone(),
@@ -77,8 +89,8 @@ impl Serialize for PlatformConfig {
         S: Serializer,
     {
         match self {
-            PlatformConfig::Opaque(s) => serializer.serialize_str(s),
-            PlatformConfig::Structured(fields) => fields.serialize(serializer),
+            Self::Opaque(s) => serializer.serialize_str(s),
+            Self::Structured(fields) => fields.serialize(serializer),
         }
     }
 }
@@ -101,7 +113,7 @@ impl<'de> Deserialize<'de> for PlatformConfig {
             where
                 E: serde::de::Error,
             {
-                crate::platform::validate_segment(v)
+                validate_segment(v)
                     .map(|c| PlatformConfig::Opaque(c.into_owned()))
                     .map_err(E::custom)
             }
@@ -110,7 +122,7 @@ impl<'de> Deserialize<'de> for PlatformConfig {
             where
                 E: serde::de::Error,
             {
-                crate::platform::validate_segment(&v)
+                validate_segment(&v)
                     .map(|c| PlatformConfig::Opaque(c.into_owned()))
                     .map_err(E::custom)
             }
@@ -131,6 +143,11 @@ impl<'de> Deserialize<'de> for PlatformConfig {
 
 impl PlatformFields {
     /// Parses a key-value comma-separated string or fallback simple string.
+    ///
+    /// # Errors
+    /// Returns a descriptive `String` error if a `key=value` segment is malformed
+    /// (missing `=`, empty value), or if a hyphen-separated `os-arch` string is
+    /// ambiguous (contains more than one hyphen).
     pub fn parse_key_value(s: &str) -> Result<Self, String> {
         let s = s.trim();
         if s.is_empty() {
@@ -142,12 +159,12 @@ impl PlatformFields {
             for part in s.split(',') {
                 let (key, val) = part
                     .split_once('=')
-                    .ok_or_else(|| format!("invalid format: no '=' found in '{}'", part))?;
+                    .ok_or_else(|| format!("invalid format: no '=' found in '{part}'"))?;
                 let key = key.trim();
                 let val = val.trim();
 
                 if val.is_empty() {
-                    return Err(format!("Empty value for key '{}'", key));
+                    return Err(format!("Empty value for key '{key}'"));
                 }
 
                 match key {
@@ -163,8 +180,7 @@ impl PlatformFields {
         } else if let Some((os, arch)) = s.split_once('-') {
             if arch.contains('-') {
                 return Err(format!(
-                    "invalid format: ambiguous platform string '{}'. Use 'key=value' comma-separated format for complex platforms",
-                    s
+                    "invalid format: ambiguous platform string '{s}'. Use 'key=value' comma-separated format for complex platforms"
                 ));
             }
             fields.os = Some(os.to_string());
@@ -179,6 +195,10 @@ impl PlatformFields {
 
 /// Validates that a user-provided segment contains only allowed characters.
 /// Returns Ok(lowercased) or descriptive error.
+///
+/// # Errors
+/// Returns `PlatformError::InvalidSegment` if the trimmed segment is empty, is
+/// exactly `.` or `..`, or contains characters outside `[a-z0-9_.-]`.
 pub fn validate_segment(s: &str) -> Result<std::borrow::Cow<'_, str>, PlatformError> {
     let trimmed = s.trim();
     if trimmed.is_empty() {
@@ -187,7 +207,7 @@ pub fn validate_segment(s: &str) -> Result<std::borrow::Cow<'_, str>, PlatformEr
         ));
     }
 
-    let lowered = if trimmed.chars().any(|c| c.is_uppercase()) {
+    let lowered = if trimmed.chars().any(char::is_uppercase) {
         std::borrow::Cow::Owned(trimmed.to_lowercase())
     } else {
         std::borrow::Cow::Borrowed(trimmed)
@@ -209,20 +229,28 @@ pub fn validate_segment(s: &str) -> Result<std::borrow::Cow<'_, str>, PlatformEr
             .filter(|c| !c.is_ascii_alphanumeric() && *c != '-' && *c != '_' && *c != '.')
             .collect();
         Err(PlatformError::InvalidSegment(format!(
-            "'{}' contains invalid characters: '{}'. Use [a-z0-9_.-] only",
-            s, bad_chars
+            "'{s}' contains invalid characters: '{bad_chars}'. Use [a-z0-9_.-] only"
         )))
     }
 }
 
 impl PlatformInfo {
-    /// Generates a deterministic flat key from PlatformInfo fields.
+    /// Generates a deterministic flat key from `PlatformInfo` fields.
+    ///
+    /// # Errors
+    /// Returns `PlatformError::InvalidSegment` if the OS, architecture, renderer,
+    /// or any label key/value fails segment validation (see [`validate_segment`]).
     pub fn to_key(&self) -> Result<String, PlatformError> {
         use std::fmt::Write;
         let mut key_out = String::new();
 
         match validate_segment(&self.os) {
-            Ok(os) => write!(&mut key_out, "{}:{}", os.len(), os).unwrap(),
+            Ok(os) => {
+                // Writing to a `String` via `fmt::Write` never fails.
+                #[allow(clippy::expect_used)]
+                write!(&mut key_out, "{}:{}", os.len(), os)
+                    .expect("write! to a String cannot fail");
+            }
             Err(e) => {
                 return Err(PlatformError::InvalidSegment(format!(
                     "OS '{}' is empty or invalid: {}",
@@ -234,12 +262,14 @@ impl PlatformInfo {
         if let Some(ref arch) = self.arch {
             match validate_segment(arch) {
                 Ok(clean_arch) => {
-                    write!(&mut key_out, "-{}:{}", clean_arch.len(), clean_arch).unwrap()
+                    // Writing to a `String` via `fmt::Write` never fails.
+                    #[allow(clippy::expect_used)]
+                    write!(&mut key_out, "-{}:{}", clean_arch.len(), clean_arch)
+                        .expect("write! to a String cannot fail");
                 }
                 Err(e) => {
                     return Err(PlatformError::InvalidSegment(format!(
-                        "Architecture '{}' is invalid: {}",
-                        arch, e
+                        "Architecture '{arch}' is invalid: {e}"
                     )));
                 }
             }
@@ -248,12 +278,14 @@ impl PlatformInfo {
         if let Some(ref renderer) = self.renderer {
             match validate_segment(renderer) {
                 Ok(clean_renderer) => {
-                    write!(&mut key_out, "-{}:{}", clean_renderer.len(), clean_renderer).unwrap()
+                    // Writing to a `String` via `fmt::Write` never fails.
+                    #[allow(clippy::expect_used)]
+                    write!(&mut key_out, "-{}:{}", clean_renderer.len(), clean_renderer)
+                        .expect("write! to a String cannot fail");
                 }
                 Err(e) => {
                     return Err(PlatformError::InvalidSegment(format!(
-                        "Renderer '{}' is invalid: {}",
-                        renderer, e
+                        "Renderer '{renderer}' is invalid: {e}"
                     )));
                 }
             }
@@ -264,8 +296,7 @@ impl PlatformInfo {
                 Ok(key) => key,
                 Err(e) => {
                     return Err(PlatformError::InvalidSegment(format!(
-                        "Label key '{}' is invalid: {}",
-                        k, e
+                        "Label key '{k}' is invalid: {e}"
                     )));
                 }
             };
@@ -273,34 +304,43 @@ impl PlatformInfo {
                 Ok(val) => val,
                 Err(e) => {
                     return Err(PlatformError::InvalidSegment(format!(
-                        "Label value '{}' is invalid for key '{}': {}",
-                        v, k, e
+                        "Label value '{v}' is invalid for key '{k}': {e}"
                     )));
                 }
             };
-            write!(&mut key_out, "-{}:{}={}:{}", key.len(), key, val.len(), val).unwrap();
+            // Writing to a `String` via `fmt::Write` never fails.
+            #[allow(clippy::expect_used)]
+            write!(&mut key_out, "-{}:{}={}:{}", key.len(), key, val.len(), val)
+                .expect("write! to a String cannot fail");
         }
 
         Ok(key_out)
     }
 }
 
+/// Platform-related values read from environment variables (`GLEON_*`).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PlatformEnv {
+    /// Raw `GLEON_PLATFORM` value (opaque string or key-value pairs).
     pub platform: Option<String>,
+    /// Raw `GLEON_FALLBACK_PLATFORM` value.
     pub fallback_platform: Option<String>,
+    /// `GLEON_OS` override.
     pub os: Option<String>,
+    /// `GLEON_ARCH` override.
     pub arch: Option<String>,
+    /// `GLEON_RENDERER` override.
     pub renderer: Option<String>,
 }
 
 impl PlatformEnv {
     /// Production constructor — reads from the OS process environment.
+    #[must_use]
     pub fn from_env() -> Self {
         Self::from_provider(&crate::git::OsEnv)
     }
 
-    /// Injectable constructor — reads from any EnvProvider.
+    /// Injectable constructor — reads from any `EnvProvider`.
     pub fn from_provider(env: &dyn crate::git::EnvProvider) -> Self {
         Self {
             platform: env.get_var("GLEON_PLATFORM"),
@@ -312,6 +352,8 @@ impl PlatformEnv {
     }
 }
 
+/// Resolves the final platform identity by merging CLI, environment,
+/// configuration, and auto-detected sources.
 pub struct PlatformResolver;
 
 impl PlatformResolver {
@@ -349,6 +391,14 @@ impl PlatformResolver {
 
     /// Resolves the final platform identity by merging all sources.
     /// Priority per field: env > CLI > config > auto-detect (os/arch only).
+    ///
+    /// # Errors
+    /// Returns `PlatformError::ParseError` if `env.platform` fails to parse,
+    /// `PlatformError::OpaqueConflict` if structured overrides are combined with an
+    /// opaque platform, `PlatformError::InvalidSegment` if any resolved segment fails
+    /// validation, or `PlatformError::ReservedLabelKey` if a label key collides with
+    /// a reserved key.
+    #[allow(clippy::too_many_lines)] // TODO(C2): restructure into PlatformOverrides/PlatformEnv option-structs
     pub fn resolve(
         cli_os: Option<&str>,
         cli_arch: Option<&str>,
@@ -358,6 +408,8 @@ impl PlatformResolver {
         env: &PlatformEnv,
         config: Option<&PlatformConfig>,
     ) -> Result<PlatformInfo, PlatformError> {
+        const RESERVED_KEYS: &[&str] = &["os", "platform", "arch", "architecture", "renderer"];
+
         // Parse GLEON_PLATFORM if set
         let env_fields = match env
             .platform
@@ -461,12 +513,11 @@ impl PlatformResolver {
                     None
                 }
             })
-            .map(|r| validate_segment(&r).map(|c| c.into_owned()))
+            .map(|r| validate_segment(&r).map(std::borrow::Cow::into_owned))
             .transpose()?;
 
         // Merge labels
         let mut resolved_labels = BTreeMap::new();
-        const RESERVED_KEYS: &[&str] = &["os", "platform", "arch", "architecture", "renderer"];
 
         let mut insert_label = |k: &str, v: &str| -> Result<(), PlatformError> {
             let valid_key = validate_segment(k)?;
@@ -523,6 +574,15 @@ impl PlatformResolver {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
 
@@ -568,7 +628,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .get("theme")
-                .map(|s| s.as_str()),
+                .map(String::as_str),
             Some("dark")
         );
 
@@ -698,7 +758,7 @@ labels:
         assert_eq!(res.os, "env-plat-os");
         assert_eq!(res.arch.as_deref(), Some("cli-arch")); // CLI arch is used since env-platform didn't define arch
         assert_eq!(res.renderer.as_deref(), Some("env-plat-renderer"));
-        assert_eq!(res.labels.get("theme").map(|s| s.as_str()), Some("dark"));
+        assert_eq!(res.labels.get("theme").map(String::as_str), Some("dark"));
 
         // 4. Specific env variables override GLEON_PLATFORM
         let specific_env = PlatformEnv {
@@ -1017,7 +1077,7 @@ labels:
     #[test]
     fn test_resolve_cli_platform_success_with_empty_env_platform() {
         let env = PlatformEnv {
-            platform: Some("".to_string()),
+            platform: Some(String::new()),
             ..Default::default()
         };
         let res =

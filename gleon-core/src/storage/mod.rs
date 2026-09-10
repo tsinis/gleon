@@ -66,8 +66,5 @@ pub fn local_blob_path(
 /// Returns `true` only if `path` is an existing regular file and not a symlink.
 #[must_use]
 pub fn is_usable_blob(path: &std::path::Path) -> bool {
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) => !meta.is_symlink() && meta.is_file(),
-        Err(_) => false,
-    }
+    std::fs::symlink_metadata(path).is_ok_and(|meta| !meta.is_symlink() && meta.is_file())
 }

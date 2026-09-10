@@ -1,4 +1,14 @@
 #![cfg(not(miri))]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    missing_docs
+)]
 
 //! Integration tests for Phase 3.5 push and pull operations.
 

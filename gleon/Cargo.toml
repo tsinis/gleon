@@ -6,6 +6,9 @@ authors.workspace = true
 license.workspace = true
 publish = false
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "gleon"
 path = "src/main.rs"

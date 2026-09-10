@@ -18,7 +18,7 @@ pub struct Cli {
     #[arg(long = "os", global = true)]
     pub os: Option<String>,
 
-    /// Override the CPU architecture component of the platform context (e.g. aarch64, x86_64)
+    /// Override the CPU architecture component of the platform context (e.g. aarch64, `x86_64`)
     #[arg(long = "arch", global = true)]
     pub arch: Option<String>,
 
@@ -71,6 +71,7 @@ pub struct Cli {
 
 impl Cli {
     /// Constructs a `Cli` instance populated with default test values for the given command.
+    #[must_use]
     pub fn for_test(command: Commands) -> Self {
         Self {
             branch: Some("main".to_string()),
@@ -91,7 +92,7 @@ impl Cli {
 
 pub(crate) fn parse_label(s: &str) -> Result<(String, String), String> {
     s.split_once('=')
-        .ok_or_else(|| format!("invalid label: no '=' found in '{}'", s))
+        .ok_or_else(|| format!("invalid label: no '=' found in '{s}'"))
         .and_then(|(key, val)| {
             let key = key.trim().to_string();
             let val = val.trim().to_string();
@@ -211,6 +212,15 @@ pub enum Commands {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
 

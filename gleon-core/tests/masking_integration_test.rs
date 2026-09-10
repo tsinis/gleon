@@ -1,4 +1,14 @@
 #![cfg(not(miri))]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    missing_docs
+)]
 
 use gleon_core::config::{Dimension, Zone};
 use gleon_core::masking;

@@ -1,4 +1,14 @@
 #![cfg(not(miri))]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    missing_docs
+)]
 
 use gleon_core::cli::{Cli, Commands};
 use gleon_core::context::ResolvedContext;
@@ -62,7 +72,7 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli {
@@ -96,8 +106,7 @@ screenshots:
     let expected_blob_path = base_path.join(".gleon/blobs/sha256").join(&sha256_hex);
     assert!(
         expected_blob_path.is_file(),
-        "Expected blob file {:?} does not exist",
-        expected_blob_path
+        "Expected blob file {expected_blob_path:?} does not exist"
     );
 
     // 6. Verify per-test manifest JSON file was written
@@ -109,8 +118,7 @@ screenshots:
         .join("form.json");
     assert!(
         expected_manifest_file.is_file(),
-        "Expected per-test manifest {:?} does not exist",
-        expected_manifest_file
+        "Expected per-test manifest {expected_manifest_file:?} does not exist"
     );
 
     // 7. After staging: status is clean
@@ -145,7 +153,7 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Stage { paths: vec![] });
@@ -205,7 +213,7 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Stage { paths: vec![] });
@@ -245,7 +253,7 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Stage { paths: vec![] });
@@ -299,7 +307,7 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Stage { paths: vec![] });
@@ -330,7 +338,7 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Stage { paths: vec![] });
@@ -338,8 +346,5 @@ screenshots:
 
     let result = stage_workspace(&ctx, base_path, None);
     assert!(result.is_err());
-    assert!(matches!(
-        result,
-        Err(gleon_core::ops::StageError::ImageDecode { .. })
-    ));
+    assert!(matches!(result, Err(StageError::ImageDecode { .. })));
 }

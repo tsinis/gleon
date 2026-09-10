@@ -39,7 +39,7 @@ pub fn load_dotenv(base_dir: &Path) -> HashMap<String, String> {
                         map.insert(k, v);
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to parse line in {}: {}", env_shared.display(), e)
+                        tracing::warn!("Failed to parse line in {}: {}", env_shared.display(), e);
                     }
                 }
             }
@@ -59,7 +59,7 @@ pub fn load_dotenv(base_dir: &Path) -> HashMap<String, String> {
                         map.insert(k, v);
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to parse line in {}: {}", env_local.display(), e)
+                        tracing::warn!("Failed to parse line in {}: {}", env_local.display(), e);
                     }
                 }
             }
@@ -73,6 +73,15 @@ pub fn load_dotenv(base_dir: &Path) -> HashMap<String, String> {
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use tempfile::tempdir;

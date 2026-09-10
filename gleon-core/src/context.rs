@@ -2,19 +2,25 @@ use crate::cli::Cli;
 use crate::config::{ConfigError, GleonConfig};
 use crate::platform::{PlatformEnv, PlatformError, PlatformInfo, PlatformResolver};
 
+/// Errors that can occur while resolving a `ResolvedContext` from CLI arguments.
 #[derive(Debug, thiserror::Error)]
 pub enum ContextError {
+    /// Loading or parsing the `gleon.yaml` configuration file failed.
     #[error("Configuration error: {0}")]
     Config(#[from] ConfigError),
+    /// Resolving the platform identity failed.
     #[error("Platform error: {0}")]
     Platform(#[from] PlatformError),
+    /// Resolving the current Git branch failed with a non-recoverable error.
     #[error("Git error: {0}")]
     Git(#[from] crate::git::GitError),
 }
 
 /// Traverses parent directories starting from `start_dir` to find `gleon.yaml`.
+///
 /// Mutates the path in-place using `pop()` to avoid heap allocations.
 /// Returns `Some((config_path, root_dir))` if found, or `None` if not found.
+#[must_use]
 pub fn find_config_and_root(
     start_dir: &std::path::Path,
 ) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
@@ -31,14 +37,22 @@ pub fn find_config_and_root(
     None
 }
 
+/// Fully resolved runtime context for a `gleon` command invocation,
+/// combining CLI arguments, discovered configuration, platform identity, and Git state.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct ResolvedContext {
+    /// The loaded `gleon.yaml` configuration, or `None` if none was found.
     pub config: Option<GleonConfig>,
+    /// The resolved platform identity used for baseline isolation.
     pub platform: PlatformInfo,
+    /// The resolved fallback platform key, if a fallback platform was configured.
     pub fallback_platform_key: Option<String>,
+    /// The resolved current branch name.
     pub branch: String,
+    /// The resolved target branch name to compare against.
     pub target_branch: String,
+    /// The resolved repository/configuration root directory.
     pub base_dir: std::path::PathBuf,
 }
 
@@ -61,11 +75,25 @@ impl Default for ResolvedContext {
 }
 
 impl ResolvedContext {
+    /// Builds a `ResolvedContext` from CLI arguments, reading configuration from
+    /// disk and platform/environment variables from the real OS process environment.
+    ///
+    /// # Errors
+    /// Returns `ContextError::Config` if the `gleon.yaml` configuration fails to load
+    /// or parse, `ContextError::Platform` if the platform identity cannot be resolved,
+    /// or `ContextError::Git` if the current branch name is invalid.
     pub fn from_cli(cli: &Cli, base_dir: &std::path::Path) -> Result<Self, ContextError> {
         let env = PlatformEnv::from_env();
         Self::from_cli_impl(cli, base_dir, &crate::git::OsEnv, &env)
     }
 
+    /// Builds a `ResolvedContext` from CLI arguments using an injectable
+    /// `EnvProvider`, allowing environment variables to be mocked in tests.
+    ///
+    /// # Errors
+    /// Returns `ContextError::Config` if the `gleon.yaml` configuration fails to load
+    /// or parse, `ContextError::Platform` if the platform identity cannot be resolved,
+    /// or `ContextError::Git` if the current branch name is invalid.
     pub fn from_cli_with_env(
         cli: &Cli,
         base_dir: &std::path::Path,
@@ -75,6 +103,13 @@ impl ResolvedContext {
         Self::from_cli_impl(cli, base_dir, env, &platform_env)
     }
 
+    /// Internal implementation of context resolution allowing dependency injection
+    /// of both the environment provider and the resolved `PlatformEnv`.
+    ///
+    /// # Errors
+    /// Returns `ContextError::Config` if the `gleon.yaml` configuration fails to load
+    /// or parse, `ContextError::Platform` if the platform identity or fallback platform
+    /// cannot be resolved, or `ContextError::Git` if the current branch name is invalid.
     pub fn from_cli_impl(
         cli: &Cli,
         base_dir: &std::path::Path,
@@ -87,9 +122,8 @@ impl ResolvedContext {
                 path
             );
             let cfg = GleonConfig::load_from_file(path)?;
-            let root = find_config_and_root(base_dir)
-                .map(|(_, r)| r)
-                .unwrap_or_else(|| base_dir.to_path_buf());
+            let root =
+                find_config_and_root(base_dir).map_or_else(|| base_dir.to_path_buf(), |(_, r)| r);
             (Some(cfg), root)
         } else if let Some((config_path, root_dir)) = find_config_and_root(base_dir) {
             tracing::debug!(
@@ -114,12 +148,10 @@ impl ResolvedContext {
         )?;
 
         let fallback_platform_key = if let Some(ref fb_env) = platform_env.fallback_platform {
-            let plat_cfg =
-                if let Ok(fields) = crate::platform::PlatformFields::parse_key_value(fb_env) {
-                    crate::platform::PlatformConfig::Structured(fields)
-                } else {
-                    crate::platform::PlatformConfig::Opaque(fb_env.clone())
-                };
+            let plat_cfg = crate::platform::PlatformFields::parse_key_value(fb_env).map_or_else(
+                |_| crate::platform::PlatformConfig::Opaque(fb_env.clone()),
+                crate::platform::PlatformConfig::Structured,
+            );
             Some(plat_cfg.to_key().map_err(ContextError::Platform)?)
         } else if let Some(ref cfg) = config {
             cfg.fallback_platform
@@ -166,6 +198,15 @@ impl ResolvedContext {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use crate::cli::Commands;

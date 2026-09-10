@@ -23,8 +23,8 @@ pub enum InitError {
 impl From<crate::io::IoError> for InitError {
     fn from(err: crate::io::IoError) -> Self {
         match err {
-            crate::io::IoError::Io(e) => InitError::Io(e),
-            crate::io::IoError::JsonParse(e) => InitError::Io(std::io::Error::other(e)),
+            crate::io::IoError::Io(e) => Self::Io(e),
+            crate::io::IoError::JsonParse(e) => Self::Io(std::io::Error::other(e)),
         }
     }
 }
@@ -39,10 +39,19 @@ pub struct InitResult {
 }
 
 /// Initializes the `.gleon` directory structure and default `gleon.yaml` if missing.
+///
+/// # Errors
+///
+/// Returns an error if the `.gleon` directory tree cannot be created, if the default
+/// `gleon.yaml` configuration fails to serialize, or if writing the `.gitignore`,
+/// `.env.template`, or `gleon.yaml` scaffold files fails.
+#[allow(clippy::too_many_lines)] // TODO(C3): extract shared helpers into ops/common.rs
 pub fn init_workspace(
     context: &crate::context::ResolvedContext,
     base_dir: &Path,
 ) -> Result<InitResult, InitError> {
+    use std::io::Write;
+
     let gleon_dir = base_dir.join(".gleon");
     let blobs_dir = gleon_dir.join("blobs").join("sha256");
     let runs_dir = gleon_dir.join("runs").join("latest");
@@ -85,7 +94,6 @@ pub fn init_workspace(
         } else {
             ""
         };
-        use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -111,10 +119,9 @@ pub fn init_workspace(
         .open(&env_template_path);
     match env_create_res {
         Ok(mut f) => {
-            use std::io::Write;
             if let Err(e) = f
                 .write_all(template_content.as_bytes())
-                .and_then(|_| f.sync_all())
+                .and_then(|()| f.sync_all())
             {
                 let _ = std::fs::remove_file(&env_template_path);
                 return Err(InitError::Io(e));
@@ -140,10 +147,9 @@ pub fn init_workspace(
         .open(&internal_config);
     match config_create_res {
         Ok(mut f) => {
-            use std::io::Write;
             if let Err(e) = f
                 .write_all(yaml_content.as_bytes())
-                .and_then(|_| f.sync_all())
+                .and_then(|()| f.sync_all())
             {
                 let _ = std::fs::remove_file(&internal_config);
                 return Err(InitError::Io(e));
@@ -165,6 +171,15 @@ pub fn init_workspace(
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use crate::context::ResolvedContext;

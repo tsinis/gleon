@@ -14,6 +14,11 @@ pub enum IoError {
     JsonParse(#[from] serde_json::Error),
 }
 
+/// Loads and deserializes JSON content from the file at `path`.
+///
+/// # Errors
+/// Returns [`IoError::Io`] if the file cannot be opened, or [`IoError::JsonParse`] if its
+/// content is not valid JSON matching `T`.
 pub fn load_json<T: serde::de::DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<T, IoError> {
     let path = path.as_ref();
     std::fs::File::open(path)
@@ -31,6 +36,10 @@ pub fn load_json<T: serde::de::DeserializeOwned, P: AsRef<Path>>(path: P) -> Res
 }
 
 /// Loads the JSON (or uses Default if missing), applies the closure, and saves it atomically.
+///
+/// # Errors
+/// Returns `E` if loading fails for a reason other than the file being missing, if the
+/// closure `f` returns an error, or if the atomic save fails.
 pub fn update_json_atomically<T, P, F, D, E>(path: P, default_fn: D, f: F) -> Result<(), E>
 where
     T: serde::Serialize + serde::de::DeserializeOwned,
@@ -52,6 +61,13 @@ where
     }
 }
 
+/// Writes to a temporary file created next to `path` via the closure `f`, then atomically
+/// persists it to `path` (fsyncing the file, and on non-Windows platforms, its directory).
+///
+/// # Errors
+/// Returns `E` if the parent directory cannot be resolved or created, the temporary file
+/// cannot be created or written, the closure `f` returns an error, or the final
+/// persist/fsync step fails.
 pub fn write_file_atomically<P, F, E>(path: P, f: F) -> Result<(), E>
 where
     P: AsRef<Path>,
@@ -85,9 +101,9 @@ where
         .map_err(|e| E::from(IoError::Io(e)))?;
 
     {
+        use std::io::Write;
         let mut writer = std::io::BufWriter::new(temp_file.as_file());
         f(&mut writer)?;
-        use std::io::Write;
         writer.flush().map_err(|e| E::from(IoError::Io(e)))?;
     }
 
@@ -114,13 +130,13 @@ where
     let perms_result: Result<(), E> = Ok(());
 
     perms_result
-        .and_then(|_| {
+        .and_then(|()| {
             temp_file
                 .as_file()
                 .sync_all()
                 .map_err(|e| E::from(IoError::Io(e)))
         })
-        .and_then(|_| {
+        .and_then(|()| {
             temp_file.persist(path).map_err(|e| {
                 tracing::error!("Failed to save file atomically to {:?}: {}", path, e);
                 E::from(IoError::Io(e.error))
@@ -142,6 +158,10 @@ where
         })
 }
 
+/// Atomically writes raw bytes to `path`.
+///
+/// # Errors
+/// Returns [`IoError`] if the write or the atomic persist step fails.
 pub fn save_file_atomically<P: AsRef<Path>>(path: P, content: &[u8]) -> Result<(), IoError> {
     write_file_atomically(path, |writer| {
         use std::io::Write;
@@ -149,6 +169,11 @@ pub fn save_file_atomically<P: AsRef<Path>>(path: P, content: &[u8]) -> Result<(
     })
 }
 
+/// Serializes `value` to pretty-printed JSON and atomically writes it to `path`.
+///
+/// # Errors
+/// Returns [`IoError::JsonParse`] if serialization fails, or [`IoError::Io`] if the atomic
+/// write fails.
 pub fn save_json_atomically<T: serde::Serialize + ?Sized, P: AsRef<Path>>(
     path: P,
     value: &T,
@@ -159,6 +184,15 @@ pub fn save_json_atomically<T: serde::Serialize + ?Sized, P: AsRef<Path>>(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use serde::Serialize;

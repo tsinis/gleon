@@ -73,11 +73,11 @@ enum ConflictState {
     After,
 }
 
-/// Parses a per-test JSON string containing Git conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`).
-///
-/// # Errors
-/// Returns [`ConflictParseError`] if markers are missing, out of order, or if JSON segments cannot be deserialized.
-pub fn parse_conflict_manifest(content: &str) -> Result<ConflictManifest, ConflictParseError> {
+/// Scans `content` line by line for Git conflict markers (`<<<<<<<`, `|||||||`, `=======`,
+/// `>>>>>>>`) and splits it into the raw `ours`/`theirs`/`ancestor` JSON segments.
+fn split_conflict_sections(
+    content: &str,
+) -> Result<(String, String, Option<String>), ConflictParseError> {
     let mut ours_raw = String::new();
     let mut theirs_raw = String::new();
     let mut ancestor_raw = String::new();
@@ -156,39 +156,33 @@ pub fn parse_conflict_manifest(content: &str) -> Result<ConflictManifest, Confli
         return Err(ConflictParseError::MissingEndMarker);
     }
 
-    let ancestor_opt = if has_ancestor {
-        Some(ancestor_raw)
-    } else {
-        None
-    };
+    let ancestor_opt = has_ancestor.then_some(ancestor_raw);
 
-    let ours: SingleTestManifest = match serde_json::from_str(&ours_raw) {
-        Ok(m) => m,
-        Err(e) => return Err(ConflictParseError::InvalidOursJson(e)),
-    };
+    Ok((ours_raw, theirs_raw, ancestor_opt))
+}
 
-    let theirs: SingleTestManifest = match serde_json::from_str(&theirs_raw) {
-        Ok(m) => m,
-        Err(e) => return Err(ConflictParseError::InvalidTheirsJson(e)),
-    };
+/// Parses a per-test JSON string containing Git conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`).
+///
+/// # Errors
+/// Returns [`ConflictParseError`] if markers are missing, out of order, or if JSON segments cannot be deserialized.
+pub fn parse_conflict_manifest(content: &str) -> Result<ConflictManifest, ConflictParseError> {
+    let (ours_raw, theirs_raw, ancestor_opt) = split_conflict_sections(content)?;
 
-    let ancestor = if let Some(ref raw) = ancestor_opt {
-        match serde_json::from_str::<SingleTestManifest>(raw) {
-            Ok(m) => Some(m),
-            Err(e) => return Err(ConflictParseError::InvalidAncestorJson(e)),
-        }
-    } else {
-        None
-    };
+    let ours: SingleTestManifest =
+        serde_json::from_str(&ours_raw).map_err(ConflictParseError::InvalidOursJson)?;
+    let theirs: SingleTestManifest =
+        serde_json::from_str(&theirs_raw).map_err(ConflictParseError::InvalidTheirsJson)?;
+    let ancestor = ancestor_opt
+        .as_deref()
+        .map(serde_json::from_str::<SingleTestManifest>)
+        .transpose()
+        .map_err(ConflictParseError::InvalidAncestorJson)?;
 
-    if let Err(e) = ours.validate() {
-        return Err(ConflictParseError::InvalidOursManifest(e));
-    }
-
-    if let Err(e) = theirs.validate() {
-        return Err(ConflictParseError::InvalidTheirsManifest(e));
-    }
-
+    ours.validate()
+        .map_err(ConflictParseError::InvalidOursManifest)?;
+    theirs
+        .validate()
+        .map_err(ConflictParseError::InvalidTheirsManifest)?;
     if let Some(ref anc) = ancestor {
         anc.validate()
             .map_err(ConflictParseError::InvalidAncestorManifest)?;
@@ -205,6 +199,15 @@ pub fn parse_conflict_manifest(content: &str) -> Result<ConflictManifest, Confli
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
 

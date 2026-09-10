@@ -55,18 +55,19 @@ pub async fn run_resolve_with_tty(
     info!("Found {} conflicted manifest file(s).", conflicts.len());
 
     let adapter = if fetch {
-        if let Some(cfg) = storage_config {
-            match ObjectStoreAdapter::from_config(&cfg) {
+        storage_config.map_or_else(
+            || {
+                info!("Local mode active (no cloud storage configured). Skipping blob fetch.");
+                None
+            },
+            |cfg| match ObjectStoreAdapter::from_config(&cfg) {
                 Ok(a) => Some(a),
                 Err(e) => {
                     warn!("Storage configured but failed to initialize adapter: {e}");
                     None
                 }
-            }
-        } else {
-            info!("Local mode active (no cloud storage configured). Skipping blob fetch.");
-            None
-        }
+            },
+        )
     } else {
         None
     };
@@ -182,6 +183,15 @@ where
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use gleon_core::cli::{Cli, Commands};

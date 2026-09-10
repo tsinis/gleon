@@ -50,12 +50,17 @@ pub enum DiffOpError {
 /// Result summary of executing `gleon diff`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffReportResult {
+    /// Total number of test cases evaluated.
     pub total_tests: usize,
+    /// Number of test cases that failed comparison.
     pub failed_tests: usize,
+    /// Whether every test case passed.
     pub passed: bool,
+    /// Directory containing this run's output (`report.json`, diffs, etc.).
     pub runs_dir: PathBuf,
 }
 
+#[allow(clippy::too_many_lines)] // TODO(C3): extract shared helpers into ops/common.rs
 pub(crate) fn process_diff_case(
     case: &crate::scanner::TestCase,
     workspace_index: &WorkspaceIndex,
@@ -69,7 +74,7 @@ pub(crate) fn process_diff_case(
         Err(e) => {
             return TestImageResult::IoError {
                 relative_path: case.image.relative_path.clone(),
-                error: format!("Failed to read actual screenshot file: {}", e),
+                error: format!("Failed to read actual screenshot file: {e}"),
             };
         }
     };
@@ -94,7 +99,7 @@ pub(crate) fn process_diff_case(
             {
                 return TestImageResult::DecodeError {
                     relative_path: case.image.relative_path.clone(),
-                    error: format!("Invalid actual image dimensions/format: {}", e),
+                    error: format!("Invalid actual image dimensions/format: {e}"),
                 };
             }
             return TestImageResult::Success {
@@ -109,24 +114,21 @@ pub(crate) fn process_diff_case(
     if let Err(e) = std::fs::create_dir_all(parent) {
         return TestImageResult::IoError {
             relative_path: case.image.relative_path.clone(),
-            error: format!("Failed to create directory for actual screenshot: {}", e),
+            error: format!("Failed to create directory for actual screenshot: {e}"),
         };
     }
     if let Err(e) = crate::io::save_file_atomically(&actual_dest_path, &actual_bytes) {
         return TestImageResult::IoError {
             relative_path: case.image.relative_path.clone(),
-            error: format!("Failed to save actual screenshot: {}", e),
+            error: format!("Failed to save actual screenshot: {e}"),
         };
     }
 
-    let baseline_entry = match single_manifest_opt {
-        Some(entry) => entry,
-        None => {
-            return TestImageResult::MissingBaseline {
-                relative_path: case.image.relative_path.clone(),
-                reason: format!("No staged baseline manifest for test '{}'", test_name),
-            };
-        }
+    let Some(baseline_entry) = single_manifest_opt else {
+        return TestImageResult::MissingBaseline {
+            relative_path: case.image.relative_path.clone(),
+            reason: format!("No staged baseline manifest for test '{test_name}'"),
+        };
     };
 
     let baseline_blob_path =
@@ -143,7 +145,7 @@ pub(crate) fn process_diff_case(
         Err(e) => {
             return TestImageResult::IoError {
                 relative_path: case.image.relative_path.clone(),
-                error: format!("Failed to read baseline blob file: {}", e),
+                error: format!("Failed to read baseline blob file: {e}"),
             };
         }
     };
@@ -151,7 +153,7 @@ pub(crate) fn process_diff_case(
     if let Err(e) = crate::manifest::SingleTestManifest::validate_image_bytes(&baseline_bytes) {
         return TestImageResult::DecodeError {
             relative_path: case.image.relative_path.clone(),
-            error: format!("Invalid baseline dimensions/format: {}", e),
+            error: format!("Invalid baseline dimensions/format: {e}"),
         };
     }
 
@@ -160,7 +162,7 @@ pub(crate) fn process_diff_case(
         Err(e) => {
             return TestImageResult::DecodeError {
                 relative_path: case.image.relative_path.clone(),
-                error: format!("Failed to decode baseline blob: {}", e),
+                error: format!("Failed to decode baseline blob: {e}"),
             };
         }
     };
@@ -169,7 +171,7 @@ pub(crate) fn process_diff_case(
     if let Err(e) = crate::manifest::SingleTestManifest::validate_image_bytes(&actual_bytes) {
         return TestImageResult::DecodeError {
             relative_path: case.image.relative_path.clone(),
-            error: format!("Invalid actual image dimensions/format: {}", e),
+            error: format!("Invalid actual image dimensions/format: {e}"),
         };
     }
 
@@ -178,7 +180,7 @@ pub(crate) fn process_diff_case(
         Err(e) => {
             return TestImageResult::DecodeError {
                 relative_path: case.image.relative_path.clone(),
-                error: format!("Failed to decode actual screenshot: {}", e),
+                error: format!("Failed to decode actual screenshot: {e}"),
             };
         }
     };
@@ -223,7 +225,7 @@ pub(crate) fn process_diff_case(
             if let Err(e) = std::fs::create_dir_all(&case_diff_dir) {
                 return TestImageResult::IoError {
                     relative_path: case.image.relative_path.clone(),
-                    error: format!("Failed to create directory for diff: {}", e),
+                    error: format!("Failed to create directory for diff: {e}"),
                 };
             }
             let mut diff_file_name = std::ffi::OsString::from("diff_");
@@ -235,14 +237,14 @@ pub(crate) fn process_diff_case(
                 return TestImageResult::EncodeError {
                     relative_path: case.image.relative_path.clone(),
                     actual_path: actual_dest_path,
-                    error: format!("Failed to encode diff visualization: {}", e),
+                    error: format!("Failed to encode diff visualization: {e}"),
                 };
             }
             let encoded = cursor.into_inner();
             if let Err(e) = crate::io::save_file_atomically(&diff_file_path, &encoded) {
                 return TestImageResult::IoError {
                     relative_path: case.image.relative_path.clone(),
-                    error: format!("Failed to save diff visualization: {}", e),
+                    error: format!("Failed to save diff visualization: {e}"),
                 };
             }
 
@@ -258,10 +260,18 @@ pub(crate) fn process_diff_case(
 }
 
 /// Executes diff comparison for the workspace at `base_dir`.
+///
+/// # Errors
+///
+/// Returns an error if the workspace is not initialized, if the platform key cannot be
+/// resolved, if manifests fail to load, if the previous run's cache cannot be cleared or
+/// recreated, if screenshots cannot be scanned, or if generating the HTML/JUnit reports fails.
 pub fn run_diff(
     context: &ResolvedContext,
     base_dir: &Path,
 ) -> Result<DiffReportResult, DiffOpError> {
+    use rayon::prelude::*;
+
     let gleon_dir = base_dir.join(".gleon");
     if std::fs::metadata(&gleon_dir).is_err() {
         return Err(DiffOpError::NotInitialized);
@@ -297,7 +307,7 @@ pub fn run_diff(
 
     let runs_dir = gleon_dir.join("runs").join("latest");
     match std::fs::remove_dir_all(&runs_dir) {
-        Ok(_) => {}
+        Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(DiffOpError::Io(e)),
     }
@@ -306,7 +316,7 @@ pub fn run_diff(
     std::fs::create_dir_all(&diffs_dir).map_err(DiffOpError::Io)?;
     std::fs::create_dir_all(&actual_dir).map_err(DiffOpError::Io)?;
 
-    let config = context.config.as_ref().cloned().unwrap_or_default();
+    let config = context.config.clone().unwrap_or_default();
     let test_cases = match FileScanner::scan_workspace(&config, base_dir) {
         Ok(tc) => tc,
         Err(e) => return Err(DiffOpError::Scanner(e)),
@@ -314,7 +324,6 @@ pub fn run_diff(
 
     let progress_bar = crate::ui::create_progress_bar(test_cases.len() as u64);
 
-    use rayon::prelude::*;
     let case_results: Vec<TestCaseResult> = test_cases
         .into_par_iter()
         .map(|case| {
@@ -350,6 +359,15 @@ pub fn run_diff(
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
 
@@ -586,6 +604,7 @@ mod tests {
     fn test_process_diff_case_io_errors() {
         use std::os::unix::fs::PermissionsExt;
         // SAFETY: `libc::geteuid()` is a side-effect-free POSIX syscall query that returns the process EUID.
+        #[allow(unsafe_code)]
         if unsafe { libc::geteuid() } == 0 {
             return;
         }
@@ -618,9 +637,9 @@ mod tests {
         };
 
         // 1. Missing actual image
-        let res1 = super::process_diff_case(
+        let res1 = process_diff_case(
             &case,
-            &crate::manifest::WorkspaceIndex::new(),
+            &WorkspaceIndex::new(),
             &actual_dir,
             &diffs_dir,
             &gleon_dir,
@@ -629,7 +648,7 @@ mod tests {
 
         // 2. Decode error on actual image (requires baseline to bypass MissingBaseline)
         std::fs::write(&case.image.absolute_path, "fake png").unwrap();
-        let mut index = crate::manifest::WorkspaceIndex::new();
+        let mut index = WorkspaceIndex::new();
         let hash_val = "1111111111111111111111111111111111111111111111111111111111111111";
         index.insert(
             "test".to_string(),
@@ -644,7 +663,7 @@ mod tests {
         let blob_dir = gleon_dir.join("blobs").join("sha256");
         std::fs::create_dir_all(&blob_dir).unwrap();
         std::fs::write(blob_dir.join(hash_val), "fake png").unwrap();
-        let res2 = super::process_diff_case(&case, &index, &actual_dir, &diffs_dir, &gleon_dir);
+        let res2 = process_diff_case(&case, &index, &actual_dir, &diffs_dir, &gleon_dir);
         assert!(matches!(res2, TestImageResult::DecodeError { .. }));
 
         // Create valid image
@@ -659,7 +678,7 @@ mod tests {
         let case2 = crate::scanner::TestCase {
             name: "test".to_string(),
             image: crate::scanner::TestImage {
-                absolute_path: case.image.absolute_path.clone(),
+                absolute_path: case.image.absolute_path,
                 relative_path: PathBuf::from("subdir/test.png"), // Requires create_dir_all
             },
             rule: std::sync::Arc::new(crate::config::ScreenshotRule {
@@ -673,9 +692,9 @@ mod tests {
                 masks: vec![],
             }),
         };
-        let res3 = super::process_diff_case(
+        let res3 = process_diff_case(
             &case2,
-            &crate::manifest::WorkspaceIndex::new(),
+            &WorkspaceIndex::new(),
             &actual_dir,
             &diffs_dir,
             &gleon_dir,

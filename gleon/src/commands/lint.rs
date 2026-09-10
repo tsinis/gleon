@@ -8,6 +8,7 @@ use tracing::{error, info};
 ///
 /// Returns exit code `0` if all manifests are valid and unconflicted,
 /// or `1` if any file contains conflict markers or schema corruption.
+#[allow(clippy::unnecessary_wraps)] // TODO(C6): unify exit-code handling via a shared ExitCode enum
 pub fn run_lint(ctx: &ResolvedContext, platform_filter: Option<&str>) -> anyhow::Result<i32> {
     info!("Running manifest linting...");
 
@@ -42,13 +43,13 @@ pub fn run_lint(ctx: &ResolvedContext, platform_filter: Option<&str>) -> anyhow:
         info!("All manifest files passed linting.");
         Ok(0)
     } else {
-        if !report.conflicted_files.is_empty() {
+        if report.conflicted_files.is_empty() {
             error!(
-                "Lint check failed due to Git conflicts! Run 'gleon resolve' to resolve conflicts."
+                "Lint check failed due to schema/JSON errors! Please repair reported manifest files."
             );
         } else {
             error!(
-                "Lint check failed due to schema/JSON errors! Please repair reported manifest files."
+                "Lint check failed due to Git conflicts! Run 'gleon resolve' to resolve conflicts."
             );
         }
         Ok(1)
@@ -56,6 +57,15 @@ pub fn run_lint(ctx: &ResolvedContext, platform_filter: Option<&str>) -> anyhow:
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use gleon_core::cli::{Cli, Commands};

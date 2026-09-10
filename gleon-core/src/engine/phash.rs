@@ -37,13 +37,18 @@ pub fn compute_phash(img: &RgbaImage) -> String {
     });
     let hash = hasher.hash_image(img);
     let hex_val = hex::encode(hash.as_bytes());
-    format!("dhash:{}", hex_val)
+    format!("dhash:{hex_val}")
 }
 
 /// Computes the Hamming distance between two phash strings.
 /// The phash strings must be in the format `scheme:hex_value`.
 ///
 /// Returns an error if the format is invalid, hex decoding fails, or lengths mismatch.
+///
+/// # Errors
+/// Returns [`PhashError::InvalidFormat`] if either input isn't in `scheme:hex` form,
+/// [`PhashError::SchemeMismatch`] if the two schemes differ, [`PhashError::InvalidHex`] if
+/// hex decoding fails, or [`PhashError::LengthMismatch`] if the decoded byte lengths differ.
 pub fn calculate_hamming_distance(phash1: &str, phash2: &str) -> Result<u32, PhashError> {
     let (scheme1, val1) = phash1
         .split_once(':')
@@ -76,6 +81,15 @@ pub fn calculate_hamming_distance(phash1: &str, phash2: &str) -> Result<u32, Pha
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use image::{ImageBuffer, Rgba};

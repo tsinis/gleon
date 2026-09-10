@@ -26,7 +26,7 @@ pub enum ConfigError {
     #[error("Failed to parse JSON manifest: {0}")]
     JsonParse(#[from] serde_json::Error),
 
-    /// gleon CLI version does not satisfy the required_version.
+    /// gleon CLI version does not satisfy the `required_version`.
     #[error("Incompatible version. Required: {0}, Current: {1}")]
     IncompatibleVersion(String, String),
 
@@ -75,26 +75,31 @@ impl<'de> Deserialize<'de> for Dimension {
         }
 
         RawDimension::deserialize(deserializer).and_then(|raw| match raw {
-            RawDimension::Integer(px) => Ok(Dimension::Pixels(px)),
+            RawDimension::Integer(px) => Ok(Self::Pixels(px)),
             RawDimension::Str(s) => {
                 let trimmed = s.trim();
-                if let Some(pct) = trimmed.strip_suffix('%') {
-                    pct.trim()
-                        .parse::<f64>()
-                        .map_err(D::Error::custom)
-                        .and_then(|val| {
-                            if (0.0..=100.0).contains(&val) {
-                                Ok(Dimension::Percent(val))
-                            } else {
-                                Err(D::Error::custom("percentage must be between 0.0 and 100.0"))
-                            }
-                        })
-                } else {
-                    trimmed
-                        .parse::<u32>()
-                        .map(Dimension::Pixels)
-                        .map_err(D::Error::custom)
-                }
+                trimmed.strip_suffix('%').map_or_else(
+                    || {
+                        trimmed
+                            .parse::<u32>()
+                            .map(Dimension::Pixels)
+                            .map_err(D::Error::custom)
+                    },
+                    |pct| {
+                        pct.trim()
+                            .parse::<f64>()
+                            .map_err(D::Error::custom)
+                            .and_then(|val| {
+                                if (0.0..=100.0).contains(&val) {
+                                    Ok(Self::Percent(val))
+                                } else {
+                                    Err(D::Error::custom(
+                                        "percentage must be between 0.0 and 100.0",
+                                    ))
+                                }
+                            })
+                    },
+                )
             }
         })
     }
@@ -106,8 +111,8 @@ impl Serialize for Dimension {
         S: Serializer,
     {
         match self {
-            Dimension::Pixels(px) => serializer.serialize_u32(*px),
-            Dimension::Percent(pct) => serializer.collect_str(&format_args!("{}%", pct)),
+            Self::Pixels(px) => serializer.serialize_u32(*px),
+            Self::Percent(pct) => serializer.collect_str(&format_args!("{pct}%")),
         }
     }
 }
@@ -121,6 +126,9 @@ pub struct GlobPattern {
 
 impl GlobPattern {
     /// Create a new `GlobPattern` from a raw string.
+    ///
+    /// # Errors
+    /// Returns an error if `raw` is not a syntactically valid glob pattern.
     pub fn new(raw: &str) -> Result<Self, globset::Error> {
         let glob = globset::GlobBuilder::new(raw)
             .literal_separator(true)
@@ -131,17 +139,19 @@ impl GlobPattern {
     }
 
     /// Get the raw string representation.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         self.glob.glob()
     }
 
     /// Access the compiled `globset::Glob`.
-    pub fn as_glob(&self) -> &globset::Glob {
+    #[must_use]
+    pub const fn as_glob(&self) -> &globset::Glob {
         &self.glob
     }
 
     /// Check if the path matches this pattern.
-    pub fn is_match<P: AsRef<std::path::Path>>(&self, path: P) -> bool {
+    pub fn is_match<P: AsRef<Path>>(&self, path: P) -> bool {
         self.matcher.is_match(path)
     }
 }
@@ -159,7 +169,7 @@ impl<'de> Deserialize<'de> for GlobPattern {
         D: Deserializer<'de>,
     {
         let s = std::borrow::Cow::<'de, str>::deserialize(deserializer)?;
-        GlobPattern::new(&s).map_err(serde::de::Error::custom)
+        Self::new(&s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -195,6 +205,10 @@ pub struct GleonConfig {
 pub mod item_or_vec {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+    /// Serializes a single-element `Vec<T>` as a bare item, or a multi-element `Vec<T>` as a list.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying `serializer` fails to serialize the item(s).
     pub fn serialize<T, S>(vec: &Vec<T>, serializer: S) -> Result<S::Ok, S::Error>
     where
         T: Serialize,
@@ -207,6 +221,10 @@ pub mod item_or_vec {
         }
     }
 
+    /// Deserializes either a single item or a list of items into a `Vec<T>`.
+    ///
+    /// # Errors
+    /// Returns an error if the input is neither a single `T` nor a list of `T`.
     pub fn deserialize<'de, T, D>(deserializer: D) -> Result<Vec<T>, D::Error>
     where
         T: Deserialize<'de>,
@@ -246,7 +264,8 @@ pub struct ScreenshotRule {
 
 impl ScreenshotRule {
     /// Returns all mask zones that match the given relative file path.
-    pub fn matched_mask_zones(&self, relative_path: &std::path::Path) -> Vec<Zone> {
+    #[must_use]
+    pub fn matched_mask_zones(&self, relative_path: &Path) -> Vec<Zone> {
         if self.masks.is_empty() {
             return Vec::new();
         }
@@ -325,19 +344,19 @@ pub struct Zone {
     pub height: Dimension,
 }
 
-fn default_mode() -> Mode {
+const fn default_mode() -> Mode {
     Mode::Pixel
 }
 
-fn default_threshold() -> f64 {
+const fn default_threshold() -> f64 {
     0.1
 }
 
-fn default_anti_alias() -> bool {
+const fn default_anti_alias() -> bool {
     true
 }
 
-fn default_min_similarity() -> f64 {
+const fn default_min_similarity() -> f64 {
     0.95
 }
 
@@ -346,6 +365,12 @@ impl GleonConfig {
     ///
     /// Performs post-deserialization validation to catch semantically invalid
     /// configurations that serde alone cannot enforce (e.g. empty screenshot rules).
+    ///
+    /// # Errors
+    /// Returns [`ConfigError::NotFound`] if `path` does not exist, [`ConfigError::Io`] for
+    /// other I/O failures, [`ConfigError::YamlParse`] if the file is not valid YAML matching
+    /// the schema, or [`ConfigError::Validation`] if the parsed configuration is semantically
+    /// invalid.
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         tracing::debug!("Loading configuration from {:?}", path);
@@ -359,12 +384,16 @@ impl GleonConfig {
             Err(error) => return Err(ConfigError::Io(error)),
         };
         let reader = std::io::BufReader::new(file);
-        let config: GleonConfig = serde_yaml::from_reader(reader)?;
+        let config: Self = serde_yaml::from_reader(reader)?;
         config.validate()?;
         Ok(config)
     }
 
-    /// Verifies if the current CLI version satisfies the configuration's required_version.
+    /// Verifies if the current CLI version satisfies the configuration's `required_version`.
+    ///
+    /// # Errors
+    /// Returns [`ConfigError::InvalidVersionFormat`] if `current_version` is not a valid semver
+    /// string, or [`ConfigError::IncompatibleVersion`] if it does not satisfy `required_version`.
     pub fn verify_version(&self, current_version: &str) -> Result<(), ConfigError> {
         let current = semver::Version::parse(current_version)
             .map_err(|_| ConfigError::InvalidVersionFormat(current_version.to_string()))?;
@@ -434,6 +463,7 @@ const DEFAULT_VERSION_REQ: &str = ">=0.1.0";
 use std::sync::LazyLock;
 
 static DEFAULT_VERSION: LazyLock<semver::VersionReq> = LazyLock::new(|| {
+    #[allow(clippy::expect_used)]
     semver::VersionReq::parse(DEFAULT_VERSION_REQ)
         .expect("DEFAULT_VERSION_REQ must be a valid semver requirement")
 });
@@ -470,6 +500,16 @@ impl Default for GleonConfig {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::float_cmp,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use semver::VersionReq;
@@ -622,7 +662,7 @@ screenshots:
 
     #[test]
     fn test_default_version_req_is_valid() {
-        assert!(semver::VersionReq::parse(DEFAULT_VERSION_REQ).is_ok());
+        assert!(VersionReq::parse(DEFAULT_VERSION_REQ).is_ok());
     }
 
     #[test]

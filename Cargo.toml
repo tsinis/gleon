@@ -61,6 +61,9 @@ unused_qualifications = "warn"
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
+# Transitive dependency version skew is outside our control (upstream crates
+# pin different minor versions of the same dependency); tracked by `cargo deny`.
+multiple_crate_versions = "allow"
 expect_used = "deny"
 nursery = { level = "deny", priority = -1 }
 panic = "deny"

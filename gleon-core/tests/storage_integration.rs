@@ -1,4 +1,14 @@
-//! Integration test for ObjectStoreAdapter using file:// backend with local disk & tempdir.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    missing_docs
+)]
+//! Integration test for `ObjectStoreAdapter` using file:// backend with local disk & tempdir.
 
 #![cfg(not(miri))]
 

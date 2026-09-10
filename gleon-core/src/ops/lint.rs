@@ -124,19 +124,19 @@ pub fn lint_workspace_manifests(
                                 Err(e) => {
                                     corrupted_files.push((
                                         rel_path,
-                                        format!("Manifest schema validation failed: {}", e),
+                                        format!("Manifest schema validation failed: {e}"),
                                     ));
                                 }
                             },
                             Err(e) => {
                                 corrupted_files
-                                    .push((rel_path, format!("Invalid JSON syntax: {}", e)));
+                                    .push((rel_path, format!("Invalid JSON syntax: {e}")));
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    corrupted_files.push((rel_path, format!("Failed to read file: {}", e)));
+                    corrupted_files.push((rel_path, format!("Failed to read file: {e}")));
                 }
             }
         }
@@ -154,6 +154,15 @@ pub fn lint_workspace_manifests(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use crate::cli::{Cli, Commands};

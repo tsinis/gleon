@@ -45,23 +45,33 @@ pub enum StatusError {
 /// Grouped result of evaluating status across the workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct StatusReport {
+    /// Screenshots present on disk but not yet tracked in the manifest.
     pub added: Vec<PathBuf>,
+    /// Tracked screenshots whose content differs from the manifest.
     pub modified: Vec<PathBuf>,
+    /// Manifest entries whose screenshot is missing on disk.
     pub deleted: Vec<PathBuf>,
 }
 
 impl StatusReport {
     /// Returns true if there are no added, modified, or deleted screenshots.
-    pub fn is_clean(&self) -> bool {
+    #[must_use]
+    pub const fn is_clean(&self) -> bool {
         self.added.is_empty() && self.modified.is_empty() && self.deleted.is_empty()
     }
 
     /// Formats the report as pretty-printed JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the report fails to serialize to JSON (not expected in practice,
+    /// since all fields are simple serializable types).
     pub fn format_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
 
     /// Formats the report as human-readable text.
+    #[must_use]
     pub fn format_text(&self) -> String {
         use std::fmt::Write;
         let mut out = String::new();
@@ -102,10 +112,19 @@ impl StatusReport {
 }
 
 /// Evaluates status for the workspace at `base_dir`.
+///
+/// # Errors
+///
+/// Returns an error if the workspace is not initialized, if the platform key cannot be
+/// resolved, if manifests or workspace configuration fail to load, if screenshots cannot be
+/// scanned, or if reading/decoding actual or baseline images fails.
+#[allow(clippy::too_many_lines)] // TODO(C3): extract shared helpers into ops/common.rs
 pub fn check_status(
     context: &ResolvedContext,
     base_dir: &Path,
 ) -> Result<StatusReport, StatusError> {
+    use rayon::prelude::*;
+
     let gleon_dir = base_dir.join(".gleon");
     if std::fs::metadata(&gleon_dir).is_err() {
         return Err(StatusError::NotInitialized);
@@ -137,12 +156,10 @@ pub fn check_status(
         }
     }
 
-    let config = context.config.as_ref().cloned().unwrap_or_default();
+    let config = context.config.clone().unwrap_or_default();
 
     // Scan workspace screenshots
     let test_cases = FileScanner::scan_workspace(&config, base_dir)?;
-
-    use rayon::prelude::*;
 
     let (mut added, mut modified) = test_cases
         .par_iter()
@@ -156,29 +173,26 @@ pub fn check_status(
                     None => Ok((Some(img.relative_path.clone()), None)),
                     Some(manifest) => {
                         let raw_bytes = std::fs::read(&img.absolute_path)?;
-                        let is_unchanged = match manifest.hash.scheme() {
-                            "sha256" => {
-                                let actual_sha256 = hex::encode(sha2::Sha256::digest(&raw_bytes));
-                                if actual_sha256 == manifest.hash.value() {
-                                    let baseline_blob_path = crate::storage::local_blob_path(
-                                        &gleon_dir.join("blobs"),
-                                        &manifest.hash,
-                                    );
-                                    crate::storage::is_usable_blob(&baseline_blob_path)
-                                } else {
-                                    false
-                                }
-                            }
-                            _ => {
+                        let is_unchanged = if manifest.hash.scheme() == "sha256" {
+                            let actual_sha256 = hex::encode(sha2::Sha256::digest(&raw_bytes));
+                            if actual_sha256 == manifest.hash.value() {
                                 let baseline_blob_path = crate::storage::local_blob_path(
                                     &gleon_dir.join("blobs"),
                                     &manifest.hash,
                                 );
-                                match std::fs::read(&baseline_blob_path) {
-                                    Ok(b_bytes) => raw_bytes == b_bytes,
-                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-                                    Err(e) => return Err(StatusError::Io(e)),
-                                }
+                                crate::storage::is_usable_blob(&baseline_blob_path)
+                            } else {
+                                false
+                            }
+                        } else {
+                            let baseline_blob_path = crate::storage::local_blob_path(
+                                &gleon_dir.join("blobs"),
+                                &manifest.hash,
+                            );
+                            match std::fs::read(&baseline_blob_path) {
+                                Ok(b_bytes) => raw_bytes == b_bytes,
+                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                                Err(e) => return Err(StatusError::Io(e)),
                             }
                         };
                         if is_unchanged {
@@ -208,7 +222,7 @@ pub fn check_status(
                                 {
                                     return Err(StatusError::Io(std::io::Error::new(
                                         std::io::ErrorKind::InvalidData,
-                                        format!("Invalid baseline dimensions/format: {}", e),
+                                        format!("Invalid baseline dimensions/format: {e}"),
                                     )));
                                 }
                                 let b_img = image::load_from_memory(&b_bytes)?;
@@ -220,7 +234,7 @@ pub fn check_status(
                                 {
                                     return Err(StatusError::Io(std::io::Error::new(
                                         std::io::ErrorKind::InvalidData,
-                                        format!("Invalid actual image dimensions/format: {}", e),
+                                        format!("Invalid actual image dimensions/format: {e}"),
                                     )));
                                 }
                                 let a_img = image::load_from_memory(&raw_bytes)?;
@@ -291,6 +305,15 @@ pub fn check_status(
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
 
@@ -549,7 +572,6 @@ mod tests {
         .unwrap();
         std::fs::write(temp.path().join("test.png"), &img_bytes).unwrap();
 
-        use sha2::Digest;
         let hash_val = hex::encode(sha2::Sha512::digest(&img_bytes));
 
         let mut index = WorkspaceIndex::new();
@@ -594,7 +616,6 @@ mod tests {
         .unwrap();
         std::fs::write(temp.path().join("test.png"), &img_bytes).unwrap();
 
-        use sha2::Digest;
         let hash_val = hex::encode(sha2::Sha256::digest(&img_bytes));
 
         let mut index = WorkspaceIndex::new();

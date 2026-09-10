@@ -14,6 +14,8 @@ const PUBLIC_KEY_BYTES: &[u8; 32] = &[
 
 #[cfg(test)]
 std::thread_local! {
+    /// Test-only mutable override of the embedded Ed25519 public key, used so the test suite
+    /// can sign license tokens with a key it controls.
     pub static PUBLIC_KEY_BYTES: std::cell::RefCell<[u8; 32]> = const {
         std::cell::RefCell::new([
             198, 122, 238, 222, 114, 183, 214, 45, 12, 191, 109, 14, 127, 240, 71, 98, 250, 48, 199, 168,
@@ -23,7 +25,7 @@ std::thread_local! {
 }
 
 #[cfg(not(test))]
-fn get_public_key_bytes() -> [u8; 32] {
+const fn get_public_key_bytes() -> [u8; 32] {
     *PUBLIC_KEY_BYTES
 }
 
@@ -32,11 +34,16 @@ fn get_public_key_bytes() -> [u8; 32] {
     PUBLIC_KEY_BYTES.with(|b| *b.borrow())
 }
 
+/// The signed payload embedded in a license key, containing ownership and validity details.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct LicensePayload {
+    /// The name or organization the license was issued to.
     pub owner: String,
+    /// Glob pattern matching the repositories this license is valid for.
     pub repo_pattern: String,
+    /// Unix timestamp (seconds) after which the license is no longer valid without grace period.
     pub expires_at: u64,
+    /// Unique identifier for this license, used for tracking/revocation.
     pub license_id: String,
 }
 
@@ -46,19 +53,42 @@ enum LicenseValidity {
     GracePeriod { reason: String },
 }
 
+/// Outcome of license/compliance verification for the current execution context.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LicenseStatus {
+    /// A valid license was verified for this environment.
     Valid,
+    /// The environment is a public repository or otherwise granted use, not requiring a
+    /// commercial license.
     PublicOrGrantedUse,
-    UnlicensedSoft { reason: String },
+    /// Unlicensed use was detected but is only soft-enforced (e.g. grace period, or
+    /// non-strict mode).
+    UnlicensedSoft {
+        /// Human-readable explanation of why the license was rejected or is in grace period.
+        reason: String,
+    },
+    /// A self-compiled (non-official) binary is running in a private CI without a valid license.
     UnofficialBuildInPrivateCI,
+    /// An official binary older than the enforcement window is running unlicensed in private CI.
     ExpiredUnlicensedBinary,
 }
 
+/// Identifies the environment gleon is currently executing in, for license enforcement purposes.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ExecutionContext {
-    GitHubActions { repo: String, is_private: bool },
-    GenericCI { repo: String },
+    /// Running inside GitHub Actions.
+    GitHubActions {
+        /// The `owner/repo` slug.
+        repo: String,
+        /// Whether the repository is private.
+        is_private: bool,
+    },
+    /// Running inside a recognized non-GitHub CI provider.
+    GenericCI {
+        /// The best-effort detected repository identifier, or empty if unknown.
+        repo: String,
+    },
+    /// Running outside of any recognized CI environment (local development).
     LocalDev,
 }
 
@@ -72,6 +102,11 @@ struct GithubRepository {
     private: bool,
 }
 
+/// Determines whether the current GitHub Actions repository is private by reading the event
+/// payload referenced by the `GITHUB_EVENT_PATH` environment variable.
+///
+/// Fails closed: if the payload is missing, unreadable, unparsable, or lacks repository
+/// information, this returns `true` (private).
 pub fn parse_github_event_payload_is_private(env_provider: &dyn crate::git::EnvProvider) -> bool {
     let Some(path) = env_provider.get_var("GITHUB_EVENT_PATH") else {
         return true;
@@ -85,8 +120,7 @@ pub fn parse_github_event_payload_is_private(env_provider: &dyn crate::git::EnvP
         })
         .ok()
         .and_then(|payload| payload.repository)
-        .map(|repo| repo.private)
-        .unwrap_or(true) // Fail closed: if event payload exists but fails to parse, treat as private
+        .is_none_or(|repo| repo.private) // Fail closed: if event payload exists but fails to parse, treat as private
 }
 
 fn get_trimmed_var(env_provider: &dyn crate::git::EnvProvider, key: &str) -> Option<String> {
@@ -96,6 +130,8 @@ fn get_trimmed_var(env_provider: &dyn crate::git::EnvProvider, key: &str) -> Opt
         .filter(|s| !s.is_empty())
 }
 
+/// Identifies the current execution context (GitHub Actions, another CI provider, or local
+/// development) by inspecting well-known environment variables.
 pub fn identify_context(env_provider: &dyn crate::git::EnvProvider) -> ExecutionContext {
     // 1. GitHub Actions
     if get_trimmed_var(env_provider, "GITHUB_ACTIONS").as_deref() == Some("true")
@@ -112,7 +148,7 @@ pub fn identify_context(env_provider: &dyn crate::git::EnvProvider) -> Execution
         .or_else(|| {
             let user = get_trimmed_var(env_provider, "CIRCLE_PROJECT_USERNAME")?;
             let repo = get_trimmed_var(env_provider, "CIRCLE_PROJECT_REPONAME")?;
-            Some(format!("{}/{}", user, repo))
+            Some(format!("{user}/{repo}"))
         });
 
     let override_repo = get_trimmed_var(env_provider, "GLEON_PROJECT_PATH");
@@ -139,9 +175,11 @@ pub fn identify_context(env_provider: &dyn crate::git::EnvProvider) -> Execution
     ExecutionContext::LocalDev
 }
 
+/// Entry point for license verification.
 pub struct LicenseGate;
 
 impl LicenseGate {
+    /// Verifies the license/compliance status for the current process environment.
     pub fn verify(env_provider: &dyn crate::git::EnvProvider) -> LicenseStatus {
         let is_official = option_env!("GLEON_OFFICIAL_SECRET").is_some();
         let build_timestamp_str = option_env!("GLEON_BUILD_TIMESTAMP").unwrap_or("0");
@@ -163,7 +201,7 @@ impl LicenseGate {
             .as_secs();
 
         // If local dev, we always pass silently.
-        if let ExecutionContext::LocalDev = context {
+        if context == ExecutionContext::LocalDev {
             return LicenseStatus::Valid;
         }
 
@@ -181,13 +219,13 @@ impl LicenseGate {
             return LicenseStatus::PublicOrGrantedUse;
         }
 
-        let has_valid_license = match env_provider
+        let has_valid_license = env_provider
             .get_var("GLEON_LICENSE_KEY")
             .filter(|k| !k.trim().is_empty())
-        {
-            Some(key) => Self::verify_key(&key, &context, now),
-            None => Err("No GLEON_LICENSE_KEY environment variable provided".to_string()),
-        };
+            .map_or_else(
+                || Err("No GLEON_LICENSE_KEY environment variable provided".to_string()),
+                |key| Self::verify_key(&key, &context, now),
+            );
 
         match has_valid_license {
             Ok(LicenseValidity::Valid) => LicenseStatus::Valid,
@@ -201,8 +239,8 @@ impl LicenseGate {
                     return LicenseStatus::UnofficialBuildInPrivateCI;
                 }
 
-                // Time-bomb check: > 90 days old (approx 90 * 24 * 60 * 60 = 7776000 seconds)
-                if is_valid_official_build && is_private_ci && now > build_timestamp + 7776000 {
+                // Time-bomb check: > 90 days old (approx 90 * 24 * 60 * 60 = 7_776_000 seconds)
+                if is_valid_official_build && is_private_ci && now > build_timestamp + 7_776_000 {
                     return LicenseStatus::ExpiredUnlicensedBinary;
                 }
 
@@ -278,9 +316,8 @@ impl LicenseGate {
                 return Ok(LicenseValidity::GracePeriod {
                     reason: "License expired within the last 14 days (grace period)".to_string(),
                 });
-            } else {
-                return Err("License has expired".to_string());
             }
+            return Err("License has expired".to_string());
         }
 
         Ok(LicenseValidity::Valid)
@@ -290,11 +327,19 @@ impl LicenseGate {
 /// Outcome of enforcing licensing policy.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum EnforcementAction {
+    /// Execution is allowed to proceed without restriction.
     Allow,
+    /// Execution proceeds, but a compliance warning was emitted.
     Warn,
+    /// Execution should be blocked due to a compliance violation.
     Block,
 }
 
+/// Applies enforcement rules for a given [`LicenseStatus`], printing compliance notices to
+/// stderr (and GitHub Actions annotations, when running in Actions) as a side effect.
+///
+/// Note: this function currently performs its own output side effects (`eprintln!`) rather
+/// than returning them as structured data; that will change in a later refactor.
 pub fn enforce_policy(
     status: LicenseStatus,
     strict_mode: bool,
@@ -349,6 +394,15 @@ pub fn enforce_policy(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
 
@@ -372,7 +426,7 @@ mod tests {
             "github_payload_ctx_{:?}.json",
             std::thread::current().id()
         ));
-        std::fs::write(&path, r#"{"repository":{"private":false}}"#).unwrap();
+        fs::write(&path, r#"{"repository":{"private":false}}"#).unwrap();
         vars.insert(
             "GITHUB_EVENT_PATH".to_string(),
             path.to_string_lossy().into_owned(),
@@ -389,7 +443,7 @@ mod tests {
             }
         );
 
-        let _ = std::fs::remove_file(path);
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -424,7 +478,7 @@ mod tests {
             "github_payload_fake_{:?}.json",
             std::thread::current().id()
         ));
-        std::fs::write(&path, r#"{"repository":{"private":false}}"#).unwrap();
+        fs::write(&path, r#"{"repository":{"private":false}}"#).unwrap();
         vars.insert(
             "GITHUB_EVENT_PATH".to_string(),
             path.to_string_lossy().into_owned(),
@@ -441,7 +495,7 @@ mod tests {
             }
         );
 
-        let _ = std::fs::remove_file(path);
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -528,7 +582,7 @@ mod tests {
         assert_eq!(
             identify_context(&MockEnv { vars: vars_circle }),
             ExecutionContext::GenericCI {
-                repo: "".to_string()
+                repo: String::new()
             }
         );
 
@@ -564,7 +618,7 @@ mod tests {
         let token = generate_test_license("foo/*", 2000);
 
         let empty_ctx = ExecutionContext::GenericCI {
-            repo: "".to_string(),
+            repo: String::new(),
         };
         let res_empty = LicenseGate::verify_key(&token, &empty_ctx, 100);
         assert!(res_empty.is_err());
@@ -591,7 +645,7 @@ mod tests {
         use std::io::Write;
         let temp = tempfile::tempdir().unwrap();
         let payload_path = temp.path().join("event.json");
-        let mut file = std::fs::File::create(&payload_path).unwrap();
+        let mut file = fs::File::create(&payload_path).unwrap();
         file.write_all(b"{\"repository\": {\"private\": true}}")
             .unwrap();
 
@@ -624,7 +678,7 @@ mod tests {
 
         // 2. Malformed JSON returns true (fail closed)
         let bad_json_path = temp.path().join("bad.json");
-        std::fs::write(&bad_json_path, "{ invalid json }").unwrap();
+        fs::write(&bad_json_path, "{ invalid json }").unwrap();
         vars.insert(
             "GITHUB_EVENT_PATH".to_string(),
             bad_json_path.to_string_lossy().into_owned(),
@@ -635,7 +689,7 @@ mod tests {
 
         // 3. JSON without repository returns true (fail closed)
         let no_repo_path = temp.path().join("norepo.json");
-        std::fs::write(&no_repo_path, "{}").unwrap();
+        fs::write(&no_repo_path, "{}").unwrap();
         vars.insert(
             "GITHUB_EVENT_PATH".to_string(),
             no_repo_path.to_string_lossy().into_owned(),
@@ -715,6 +769,8 @@ mod tests {
 
     #[test]
     fn test_verify_key_error_branches() {
+        use ed25519_dalek::{Signer, SigningKey};
+
         let ctx = ExecutionContext::GenericCI {
             repo: "foo/bar".to_string(),
         };
@@ -735,7 +791,6 @@ mod tests {
         let _valid_token = generate_test_license("foo/*", 2000);
 
         // Signature mismatch with valid signature format (signed with a different key)
-        use ed25519_dalek::{Signer, SigningKey};
         let payload = LicensePayload {
             owner: "test".to_string(),
             repo_pattern: "foo/*".to_string(),
@@ -745,7 +800,7 @@ mod tests {
         let payload_bytes = serde_json::to_vec(&payload).unwrap();
         let other_key = SigningKey::from_bytes(&[99u8; 32]);
         let sig = other_key.sign(&payload_bytes);
-        let mut invalid_sig_payload = payload_bytes.clone();
+        let mut invalid_sig_payload = payload_bytes;
         invalid_sig_payload.extend_from_slice(&sig.to_bytes());
         let invalid_token = base64::engine::general_purpose::STANDARD.encode(invalid_sig_payload);
         let err_sig_verify = LicenseGate::verify_key(&invalid_token, &ctx, 1000);
@@ -868,7 +923,7 @@ mod tests {
             "github_payload_{:?}.json",
             std::thread::current().id()
         ));
-        std::fs::write(&path, r#"{"repository":{"private":false}}"#).unwrap();
+        fs::write(&path, r#"{"repository":{"private":false}}"#).unwrap();
         vars.insert(
             "GITHUB_EVENT_PATH".to_string(),
             path.to_string_lossy().into_owned(),
@@ -879,7 +934,7 @@ mod tests {
         let status = LicenseGate::verify_internal(&env, false, 0);
         assert_eq!(status, LicenseStatus::PublicOrGrantedUse);
 
-        let _ = std::fs::remove_file(path);
+        let _ = fs::remove_file(path);
     }
 
     #[test]

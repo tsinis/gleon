@@ -26,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
     info!("gleon CLI starting up...");
 
     let current_dir = std::env::current_dir()
-        .map_err(|e| anyhow::anyhow!("Failed to determine current directory: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to determine current directory: {e}"))?;
 
     // Load environment configuration from .gleon/.env and .gleon/.env.local
     let dotenv = gleon_core::env::load_dotenv(&current_dir);
@@ -40,8 +40,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Run License/Compliance Check
     let license_status = gleon_core::license::LicenseGate::verify(&env);
-    if let gleon_core::license::EnforcementAction::Block =
-        gleon_core::license::enforce_policy(license_status, cli.strict, &env)
+    if gleon_core::license::enforce_policy(license_status, cli.strict, &env)
+        == gleon_core::license::EnforcementAction::Block
     {
         std::process::exit(42);
     }
@@ -75,6 +75,7 @@ fn get_storage_config(
 
 mod commands;
 
+#[allow(clippy::too_many_lines)] // TODO(C6): dedupe per-command ResolvedContext construction and exit-code mapping
 async fn run(
     cli: &Cli,
     current_dir: &std::path::Path,

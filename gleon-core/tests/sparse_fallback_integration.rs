@@ -1,9 +1,19 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    missing_docs
+)]
 //! End-to-end integration test verifying sparse multi-platform fallback baselines.
 //!
 //! Tests the full multi-platform lifecycle:
 //! 1. Seed base screenshots on macOS (3 tests).
 //! 2. Push baselines to remote storage adapter.
-//! 3. Switch to Linux with fallback_platform: macos.
+//! 3. Switch to Linux with `fallback_platform`: macos.
 //! 4. Modify test1 on Linux, verify diff passes test2 and test3 from macOS fallback and flags test1 as Mismatch.
 //! 5. Approve test1 on Linux (creates 1 sparse override on Linux).
 //! 6. Verify status is clean and diff passes with 1 Linux override + 2 macOS fallbacks.

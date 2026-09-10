@@ -1,4 +1,14 @@
 #![cfg(not(miri))]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    missing_docs
+)]
 
 use gleon_core::config::{DiffConfig, Mode};
 use gleon_core::engine::{ComparisonResult, MismatchDetail, compare_images};
@@ -30,7 +40,7 @@ fn test_report_generation_with_real_images_and_durability() {
     let comp_pixel_res = compare_images(&baseline_img, &actual_img, Mode::Pixel, &diff_config);
     let (pixel_detail, pixel_diff_img) = match comp_pixel_res {
         ComparisonResult::Mismatch { detail, diff_image } => (detail, diff_image),
-        other => panic!("Expected ComparisonResult::Mismatch, got {:?}", other),
+        other => panic!("Expected ComparisonResult::Mismatch, got {other:?}"),
     };
 
     // 2. Perform image comparison for SSIM mode
@@ -41,7 +51,7 @@ fn test_report_generation_with_real_images_and_durability() {
     let comp_ssim_res = compare_images(&baseline_img, &actual_img, Mode::Ssim, &ssim_config);
     let (ssim_detail, ssim_diff_img) = match comp_ssim_res {
         ComparisonResult::Mismatch { detail, diff_image } => (detail, diff_image),
-        other => panic!("Expected ComparisonResult::Mismatch, got {:?}", other),
+        other => panic!("Expected ComparisonResult::Mismatch, got {other:?}"),
     };
 
     // 3. Create fixtures directory for report outputs

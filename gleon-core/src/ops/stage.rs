@@ -35,7 +35,9 @@ pub enum StageError {
     /// Error decoding image file.
     #[error("Image decode error for '{path}'")]
     ImageDecode {
+        /// The path to the image that failed to decode.
         path: PathBuf,
+        /// The underlying decode error.
         #[source]
         source: image::ImageError,
     },
@@ -43,7 +45,9 @@ pub enum StageError {
     /// Error encoding image file.
     #[error("Image encode error for '{path}'")]
     ImageEncode {
+        /// The path to the image that failed to encode.
         path: PathBuf,
+        /// The underlying encode error.
         #[source]
         source: image::ImageError,
     },
@@ -60,8 +64,8 @@ pub enum StageError {
 impl From<crate::io::IoError> for StageError {
     fn from(err: crate::io::IoError) -> Self {
         match err {
-            crate::io::IoError::Io(e) => StageError::Io(e),
-            crate::io::IoError::JsonParse(e) => StageError::JsonParse(e),
+            crate::io::IoError::Io(e) => Self::Io(e),
+            crate::io::IoError::JsonParse(e) => Self::JsonParse(e),
         }
     }
 }
@@ -103,11 +107,28 @@ pub(crate) fn filter_test_cases(
 }
 
 /// Executes staging pipeline across the workspace.
+///
+/// # Errors
+///
+/// Returns an error if the workspace is not initialized, if the platform key cannot be
+/// resolved, if screenshots cannot be scanned, if any screenshot fails to decode, or if
+/// reading/writing manifests, blobs, or other filesystem data fails.
+#[allow(clippy::too_many_lines)] // TODO(C3): extract shared helpers into ops/common.rs
 pub fn stage_workspace(
     context: &ResolvedContext,
     base_dir: &Path,
     filter_paths: Option<&[PathBuf]>,
 ) -> Result<StageResult, StageError> {
+    use rayon::prelude::*;
+
+    struct StagedItem {
+        case_name: String,
+        sha256_hex: String,
+        phash_str: String,
+        width: u32,
+        height: u32,
+    }
+
     let gleon_dir = base_dir.join(".gleon");
     if std::fs::metadata(&gleon_dir).is_err() {
         return Err(StageError::NotInitialized);
@@ -123,7 +144,7 @@ pub fn stage_workspace(
     std::fs::create_dir_all(&blobs_dir).map_err(StageError::Io)?;
     std::fs::create_dir_all(&manifests_dir).map_err(StageError::Io)?;
 
-    let config = context.config.as_ref().cloned().unwrap_or_default();
+    let config = context.config.clone().unwrap_or_default();
 
     let mut test_cases =
         FileScanner::scan_workspace(&config, base_dir).map_err(StageError::Scanner)?;
@@ -134,16 +155,6 @@ pub fn stage_workspace(
     pb.set_message("Staging screenshots...");
 
     let mut workspace_index = WorkspaceIndex::load(&manifests_dir).map_err(StageError::Manifest)?;
-
-    use rayon::prelude::*;
-
-    struct StagedItem {
-        case_name: String,
-        sha256_hex: String,
-        phash_str: String,
-        width: u32,
-        height: u32,
-    }
 
     let processed_results: Result<Vec<StagedItem>, StageError> = test_cases
         .into_par_iter()
@@ -240,6 +251,15 @@ pub fn stage_workspace(
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
 
@@ -297,7 +317,7 @@ mod tests {
         };
         let cloned = res.clone();
         assert_eq!(res, cloned);
-        assert!(!format!("{:?}", res).is_empty());
+        assert!(!format!("{res:?}").is_empty());
         let default_res = StageResult::default();
         assert_eq!(default_res.total_screenshots_staged, 0);
     }

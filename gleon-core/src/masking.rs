@@ -13,6 +13,11 @@ use tracing::warn;
 /// image width/height, a warning is logged via `warn!`, and the operation continues safely.
 ///
 /// A width of `0%`, height of `0`, or an empty `zones` slice is treated as a no-op.
+///
+/// # Panics
+/// Does not panic in practice: internal pixel-slice indices are always clamped to the
+/// image's bounds before use, so the internal `.expect()` calls documenting that invariant
+/// can never trigger.
 pub fn apply_masks(img: &mut RgbaImage, zones: &[Zone]) {
     let img_w = img.width();
     let img_h = img.height();
@@ -88,7 +93,7 @@ pub fn apply_masks(img: &mut RgbaImage, zones: &[Zone]) {
     }
 }
 
-#[inline(always)]
+#[inline]
 fn fill_black(slice: &mut [u8]) {
     let pixel_val = u32::from_ne_bytes([0, 0, 0, 255]);
     if let Ok(u32_slice) = bytemuck::try_cast_slice_mut::<u8, u32>(slice) {
@@ -109,11 +114,27 @@ fn fill_black(slice: &mut [u8]) {
 fn resolve_dimension(dimension: Dimension, dim_px: u32) -> u32 {
     match dimension {
         Dimension::Pixels(px) => px,
-        Dimension::Percent(pct) => (pct / 100.0 * dim_px as f64).round() as u32,
+        Dimension::Percent(pct) => {
+            // `pct` is validated at config load time to lie within [0.0, 100.0], so the
+            // rounded result is always non-negative and within [0, dim_px], fitting `u32`
+            // without truncation or sign loss.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let resolved = (pct / 100.0 * f64::from(dim_px)).round() as u32;
+            resolved
+        }
     }
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use crate::config::Dimension;
@@ -281,7 +302,7 @@ mod tests {
             &mut img,
             &[zone(0, 0, Dimension::Pixels(1), Dimension::Pixels(1))],
         );
-        assert_eq!(*img.get_pixel(0, 0), image::Rgba([0, 0, 0, 255]));
+        assert_eq!(*img.get_pixel(0, 0), Rgba([0, 0, 0, 255]));
     }
 
     // ── apply_masks: out-of-bounds clamping ──────────────────────────────────

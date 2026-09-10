@@ -102,6 +102,7 @@ pub(crate) fn list_platform_dirs(
 /// # Errors
 /// Returns [`PushError`] if the workspace is not initialized, local blobs are missing,
 /// or remote storage operations fail.
+#[allow(clippy::too_many_lines)] // TODO(C4): extract transfer_blobs/SyncResult into ops/sync.rs
 pub async fn push_blobs(
     context: &ResolvedContext,
     base_dir: &Path,
@@ -246,7 +247,7 @@ pub async fn push_blobs(
     .buffer_unordered(adapter.concurrency());
 
     let upload_res = async {
-        while let Some(()) = upload_stream.try_next().await? {}
+        while upload_stream.try_next().await? == Some(()) {}
         Ok::<(), PushError>(())
     }
     .await;
@@ -262,6 +263,15 @@ pub async fn push_blobs(
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use crate::platform::PlatformError;
@@ -299,7 +309,7 @@ mod tests {
             local_mode: false,
         };
         assert_eq!(res.clone(), res);
-        assert!(!format!("{:?}", res).is_empty());
+        assert!(!format!("{res:?}").is_empty());
         let default_res = PushResult::default();
         assert_eq!(default_res.total_manifest_blobs, 0);
     }
@@ -486,6 +496,8 @@ mod tests {
     #[tokio::test]
     #[cfg(all(unix, not(miri)))]
     async fn test_push_metadata_io_error_propagation() {
+        use std::os::unix::fs::PermissionsExt;
+
         let temp = tempfile::tempdir().unwrap();
 
         let mut ctx = ResolvedContext::default();
@@ -497,7 +509,6 @@ mod tests {
         std::fs::create_dir_all(&plat_dir).unwrap();
 
         // Set parent directory permissions to 000 so stat on plat_dir fails with PermissionDenied
-        use std::os::unix::fs::PermissionsExt;
         let original_perms = std::fs::metadata(&manifests_dir).unwrap().permissions();
         std::fs::set_permissions(&manifests_dir, std::fs::Permissions::from_mode(0o000)).unwrap();
 

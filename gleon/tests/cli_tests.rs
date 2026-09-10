@@ -1,4 +1,14 @@
 #![cfg(not(miri))]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    missing_docs
+)]
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -922,15 +932,14 @@ fn test_cli_report_valid_pr_number_and_html_url() -> Result<(), Box<dyn std::err
     for i in 0..11 {
         items.push(format!(
             r#"{{
-                "name": "test_{}",
+                "name": "test_{i}",
                 "result": {{
                     "DecodeError": {{
-                        "relative_path": "test_{}.png",
+                        "relative_path": "test_{i}.png",
                         "error": "corrupt"
                     }}
                 }}
-            }}"#,
-            i, i
+            }}"#
         ));
     }
     let sample_json = format!("[{}]", items.join(","));

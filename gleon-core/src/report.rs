@@ -9,10 +9,15 @@ use std::sync::LazyLock;
 
 static JINJA_ENV: LazyLock<Environment<'static>> = LazyLock::new(|| {
     let mut env = Environment::new();
+    // Bundled templates are compiled into the binary and validated by the test
+    // suite; a syntax error here would be a build-time bug caught immediately,
+    // not a runtime condition callers need to handle.
+    #[allow(clippy::expect_used)]
     env.add_template("report.html", include_str!("templates/report.html"))
-        .unwrap();
+        .expect("bundled report.html template is valid minijinja syntax");
+    #[allow(clippy::expect_used)]
     env.add_template("junit.xml", include_str!("templates/junit.xml"))
-        .unwrap();
+        .expect("bundled junit.xml template is valid minijinja syntax");
     env
 });
 
@@ -41,17 +46,19 @@ pub enum ReportError {
 impl From<crate::io::IoError> for ReportError {
     fn from(err: crate::io::IoError) -> Self {
         match err {
-            crate::io::IoError::Io(e) => ReportError::Io(e),
-            crate::io::IoError::JsonParse(e) => ReportError::JsonParse(e),
+            crate::io::IoError::Io(e) => Self::Io(e),
+            crate::io::IoError::JsonParse(e) => Self::JsonParse(e),
         }
     }
 }
 
 /// Computes a relative path from `base` to `target`.
+///
 /// Precondition: `target` and `base` must share the same coordinate frame (both absolute or both relative).
 /// If one path is absolute and the other is relative, returns `target` unchanged.
 /// For example, if `target` is `.gleon/diffs/image.png` and `base` is `.gleon/reports`,
 /// the result is `../diffs/image.png`.
+#[must_use]
 pub fn make_relative_path(target: &std::path::Path, base: &std::path::Path) -> std::path::PathBuf {
     use std::path::{Component, PathBuf};
 
@@ -136,28 +143,44 @@ pub fn make_relative_path(target: &std::path::Path, base: &std::path::Path) -> s
     }
 }
 
+/// Resolves a screenshot path to a signed/absolute URL for embedding in a PR comment.
+///
+/// Returns `None` to fall back to `base_image_url`-relative linking (or `N/A` if
+/// that is also unset).
 pub type ImageUrlResolver<'a> = dyn Fn(&std::path::Path) -> Option<String> + Sync + 'a;
 
+/// Where the PR comment is being rendered, used to pick an appropriate footer.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExecutionContext {
+    /// Rendered for a local terminal invocation (e.g. `gleon diff`).
     #[default]
     LocalTerminal,
+    /// Rendered for a GitHub Actions workflow run.
     GitHubActions,
 }
 
+/// Options controlling how [`ReportGenerator::render_pr_comment`] links images and
+/// which footer it appends.
 #[derive(Default)]
 pub struct MarkdownReportOptions<'a> {
+    /// Base URL prepended to relative image paths when no `image_url_resolver` applies.
     pub base_image_url: Option<&'a str>,
+    /// URL of the full HTML report artifact, linked when rows are truncated.
     pub html_artifact_url: Option<&'a str>,
+    /// Optional per-path resolver for signed/absolute image URLs, tried before `base_image_url`.
     pub image_url_resolver: Option<&'a ImageUrlResolver<'a>>,
+    /// Where the comment is being rendered, selecting the footer text.
     pub context: ExecutionContext,
 }
 
+/// Generates HTML, `JUnit` XML, and Markdown reports from test results.
 pub struct ReportGenerator;
 
 impl ReportGenerator {
+    /// Footer appended to PR comments rendered for GitHub Actions.
     pub const FOOTER_GITHUB_ACTIONS: &'static str = "\n---\n*Reply with `/gleon approve` to update baseline images for this PR (see repository README for workflow setup instructions).*\n";
+    /// Footer appended to PR comments rendered for a local terminal.
     pub const FOOTER_LOCAL_TERMINAL: &'static str =
         "\n---\n*Run `gleon approve` to accept failed screenshots as new baselines locally.*\n";
 }
@@ -168,13 +191,14 @@ struct FormattedPath<'a> {
     report_dir: Option<&'a std::path::Path>,
 }
 
-impl<'a> std::fmt::Display for FormattedPath<'a> {
+impl std::fmt::Display for FormattedPath<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use std::path::Component;
-        let path_to_format = match self.report_dir {
-            Some(base) => std::borrow::Cow::Owned(make_relative_path(self.path, base)),
-            None => std::borrow::Cow::Borrowed(self.path),
-        };
+        let path_to_format = self
+            .report_dir
+            .map_or(std::borrow::Cow::Borrowed(self.path), |base| {
+                std::borrow::Cow::Owned(make_relative_path(self.path, base))
+            });
 
         let mut first = true;
         let mut last_was_slash = false;
@@ -224,7 +248,7 @@ impl<'a> std::fmt::Display for FormattedPath<'a> {
     }
 }
 
-impl<'a> Serialize for FormattedPath<'a> {
+impl Serialize for FormattedPath<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -259,23 +283,23 @@ impl Serialize for FormattedDimensions {
 
 struct HtmlMismatchMessageView<'a>(&'a MismatchDetail);
 
-impl<'a> std::fmt::Display for HtmlMismatchMessageView<'a> {
+impl std::fmt::Display for HtmlMismatchMessageView<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
             MismatchDetail::Pixel { diff_count } => {
-                write!(f, "Visual mismatch ({} pixels)", diff_count)
+                write!(f, "Visual mismatch ({diff_count} pixels)")
             }
             MismatchDetail::Ssim { ssim_score } => {
-                write!(f, "Visual mismatch (SSIM: {:.4})", ssim_score)
+                write!(f, "Visual mismatch (SSIM: {ssim_score:.4})")
             }
             MismatchDetail::SsimFallback { diff_count } => {
-                write!(f, "Visual mismatch (SSIM Fallback: {} pixels)", diff_count)
+                write!(f, "Visual mismatch (SSIM Fallback: {diff_count} pixels)")
             }
         }
     }
 }
 
-impl<'a> Serialize for HtmlMismatchMessageView<'a> {
+impl Serialize for HtmlMismatchMessageView<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -286,13 +310,13 @@ impl<'a> Serialize for HtmlMismatchMessageView<'a> {
 
 struct XmlDecodeErrorView<'a>(&'a str);
 
-impl<'a> std::fmt::Display for XmlDecodeErrorView<'a> {
+impl std::fmt::Display for XmlDecodeErrorView<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Decode error: {}", self.0)
     }
 }
 
-impl<'a> Serialize for XmlDecodeErrorView<'a> {
+impl Serialize for XmlDecodeErrorView<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -303,13 +327,13 @@ impl<'a> Serialize for XmlDecodeErrorView<'a> {
 
 struct XmlIoErrorView<'a>(&'a str);
 
-impl<'a> std::fmt::Display for XmlIoErrorView<'a> {
+impl std::fmt::Display for XmlIoErrorView<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "IO error: {}", self.0)
     }
 }
 
-impl<'a> Serialize for XmlIoErrorView<'a> {
+impl Serialize for XmlIoErrorView<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -319,7 +343,7 @@ impl<'a> Serialize for XmlIoErrorView<'a> {
 }
 
 struct XmlMissingBaselineView<'a>(&'a str);
-impl<'a> Serialize for XmlMissingBaselineView<'a> {
+impl Serialize for XmlMissingBaselineView<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -330,7 +354,7 @@ impl<'a> Serialize for XmlMissingBaselineView<'a> {
 
 // Lazy view for XML encode error message
 struct XmlEncodeErrorView<'a>(&'a str);
-impl<'a> Serialize for XmlEncodeErrorView<'a> {
+impl Serialize for XmlEncodeErrorView<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -365,29 +389,24 @@ impl Serialize for XmlDimensionMismatchView {
 
 struct XmlMismatchMessageView<'a>(&'a MismatchDetail);
 
-impl<'a> std::fmt::Display for XmlMismatchMessageView<'a> {
+impl std::fmt::Display for XmlMismatchMessageView<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
             MismatchDetail::Pixel { diff_count } => {
-                write!(f, "Visual mismatch detected ({} pixels)", diff_count)
+                write!(f, "Visual mismatch detected ({diff_count} pixels)")
             }
             MismatchDetail::Ssim { ssim_score } => {
-                write!(
-                    f,
-                    "Visual mismatch detected (SSIM score: {:.4})",
-                    ssim_score
-                )
+                write!(f, "Visual mismatch detected (SSIM score: {ssim_score:.4})")
             }
             MismatchDetail::SsimFallback { diff_count } => write!(
                 f,
-                "Visual mismatch detected (SSIM Fallback: {} pixels)",
-                diff_count
+                "Visual mismatch detected (SSIM Fallback: {diff_count} pixels)"
             ),
         }
     }
 }
 
-impl<'a> Serialize for XmlMismatchMessageView<'a> {
+impl Serialize for XmlMismatchMessageView<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -396,7 +415,8 @@ impl<'a> Serialize for XmlMismatchMessageView<'a> {
     }
 }
 
-impl<'a> Serialize for HtmlFailureView<'a> {
+#[allow(clippy::too_many_lines)] // TODO(C5): replace with flat derive(Serialize) DTO when report.rs splits into report/
+impl Serialize for HtmlFailureView<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -592,7 +612,7 @@ struct HtmlReportFailuresView<'a> {
     report_dir: Option<&'a std::path::Path>,
 }
 
-impl<'a> Serialize for HtmlReportFailuresView<'a> {
+impl Serialize for HtmlReportFailuresView<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -615,7 +635,7 @@ impl<'a> Serialize for HtmlReportFailuresView<'a> {
 // Lazy view for XML image result
 struct XmlTestImageResultView<'a>(&'a TestImageResult);
 
-impl<'a> Serialize for XmlTestImageResultView<'a> {
+impl Serialize for XmlTestImageResultView<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -673,17 +693,14 @@ impl<'a> Serialize for XmlTestImageResultView<'a> {
 // Lazy view for XML Test Case
 struct XmlTestCaseView<'a>(&'a TestCaseResult);
 
-impl<'a> Serialize for XmlTestCaseView<'a> {
+impl Serialize for XmlTestCaseView<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("XmlTestCase", 3)?;
-        state.serialize_field("name", &self.0.name)?;
-
         // For JUnit compatibility, we serialize the single result as a 1-element list
         struct ResultsSeq<'a>(&'a TestImageResult);
-        impl<'a> Serialize for ResultsSeq<'a> {
+        impl Serialize for ResultsSeq<'_> {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
                 S: Serializer,
@@ -694,13 +711,11 @@ impl<'a> Serialize for XmlTestCaseView<'a> {
             }
         }
 
+        let mut state = serializer.serialize_struct("XmlTestCase", 3)?;
+        state.serialize_field("name", &self.0.name)?;
         state.serialize_field("results", &ResultsSeq(&self.0.result))?;
 
-        let failures = if matches!(self.0.result, TestImageResult::Success { .. }) {
-            0
-        } else {
-            1
-        };
+        let failures = i32::from(!matches!(self.0.result, TestImageResult::Success { .. }));
         state.serialize_field("failures", &failures)?;
 
         state.end()
@@ -710,7 +725,7 @@ impl<'a> Serialize for XmlTestCaseView<'a> {
 // Lazy view for all test cases
 struct XmlTestCasesView<'a>(&'a [TestCaseResult]);
 
-impl<'a> Serialize for XmlTestCasesView<'a> {
+impl Serialize for XmlTestCasesView<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -723,8 +738,10 @@ impl<'a> Serialize for XmlTestCasesView<'a> {
     }
 }
 
+/// Displays a path using forward slashes regardless of platform, for embedding in
+/// Markdown/URLs (e.g. `foo/bar.png` even on Windows).
 pub struct PosixPathFormatter<'a>(pub &'a std::path::Path);
-impl<'a> std::fmt::Display for PosixPathFormatter<'a> {
+impl std::fmt::Display for PosixPathFormatter<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use std::fmt::Write;
         if self.0.as_os_str().is_empty() {
@@ -762,8 +779,10 @@ impl<'a> std::fmt::Display for PosixPathFormatter<'a> {
     }
 }
 
+/// Displays a string with characters that would break a Markdown table cell
+/// (`|`, backslash, backtick, brackets, newlines) escaped or replaced.
 pub struct MarkdownEscape<'a>(pub &'a str);
-impl<'a> std::fmt::Display for MarkdownEscape<'a> {
+impl std::fmt::Display for MarkdownEscape<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use std::fmt::Write;
         for c in self.0.chars() {
@@ -781,8 +800,10 @@ impl<'a> std::fmt::Display for MarkdownEscape<'a> {
     }
 }
 
+/// Displays a string with characters that would break a Markdown inline code
+/// span (`|`, backtick, newlines) escaped or replaced.
 pub struct CodeSpanEscape<'a>(pub &'a str);
-impl<'a> std::fmt::Display for CodeSpanEscape<'a> {
+impl std::fmt::Display for CodeSpanEscape<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use std::fmt::Write;
         for c in self.0.chars() {
@@ -800,6 +821,11 @@ impl<'a> std::fmt::Display for CodeSpanEscape<'a> {
 impl ReportGenerator {
     /// Generates a single self-contained HTML report string linking images via relative paths.
     /// Skips generation entirely if 100% of tests passed by returning None.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReportError::Render` if the bundled `report.html` template is
+    /// missing from the registry or fails to render against the failure data.
     pub fn generate_html(
         test_cases: &[TestCaseResult],
         report_dir: Option<&std::path::Path>,
@@ -814,7 +840,12 @@ impl ReportGenerator {
             return Ok(None);
         }
 
-        let tmpl = JINJA_ENV.get_template("report.html").unwrap();
+        let tmpl = JINJA_ENV
+            .get_template("report.html")
+            .map_err(|e| ReportError::Render {
+                template: "report.html",
+                source: e,
+            })?;
 
         let ctx = context! {
             total_tests => total_tests,
@@ -829,6 +860,11 @@ impl ReportGenerator {
     }
 
     /// Generates raw junit.xml file bytes mapping failures and decode/dimension errors to <failure> nodes.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReportError::Render` if the bundled `junit.xml` template is
+    /// missing from the registry or fails to render against the test case data.
     pub fn generate_junit_xml(test_cases: &[TestCaseResult]) -> Result<String, ReportError> {
         let total_tests = test_cases.len();
         let failed_tests = test_cases
@@ -836,7 +872,12 @@ impl ReportGenerator {
             .filter(|tc| !matches!(tc.result, TestImageResult::Success { .. }))
             .count();
 
-        let tmpl = JINJA_ENV.get_template("junit.xml").unwrap();
+        let tmpl = JINJA_ENV
+            .get_template("junit.xml")
+            .map_err(|e| ReportError::Render {
+                template: "junit.xml",
+                source: e,
+            })?;
 
         let ctx = context! {
             total_tests => total_tests,
@@ -855,11 +896,46 @@ impl ReportGenerator {
 
     /// Renders a GitHub PR comment in Markdown from the failed test cases.
     /// Truncates the table to `MAX_MARKDOWN_DIFF_ROWS` rows.
+    #[must_use]
+    #[allow(clippy::too_many_lines)] // TODO(C5): move to minijinja template (src/templates/pr_comment.md)
     pub fn render_pr_comment(
         test_cases: &[TestCaseResult],
         options: &MarkdownReportOptions,
     ) -> String {
         use std::fmt::Write;
+
+        struct ImgLinkFormatter<'a> {
+            base_url: Option<&'a str>,
+            path: Option<&'a std::path::Path>,
+            resolver: Option<&'a ImageUrlResolver<'a>>,
+        }
+        impl std::fmt::Display for ImgLinkFormatter<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                if let Some(p) = self.path {
+                    if let Some(signed_url) = self.resolver.and_then(|res_fn| res_fn(p)) {
+                        return write!(f, "[Image]({signed_url})");
+                    }
+                    if let Some(base) = self.base_url {
+                        let base = base.trim_end_matches('/');
+                        return write!(f, "[Image]({}/{})", base, PosixPathFormatter(p));
+                    }
+                }
+                f.write_str("N/A")
+            }
+        }
+
+        struct DeltaFormatter<'a>(&'a MismatchDetail);
+        impl std::fmt::Display for DeltaFormatter<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self.0 {
+                    MismatchDetail::Pixel { diff_count } => write!(f, "{diff_count} px"),
+                    MismatchDetail::Ssim { ssim_score } => write!(f, "{ssim_score:.4} SSIM"),
+                    MismatchDetail::SsimFallback { diff_count } => {
+                        write!(f, "{diff_count} px (fb)")
+                    }
+                }
+            }
+        }
 
         let failed_tests: Vec<_> = test_cases.iter().filter(|tc| !tc.passed()).collect();
         let total_failed = failed_tests.len();
@@ -869,10 +945,10 @@ impl ReportGenerator {
         }
 
         let mut out = String::new();
+        #[allow(clippy::expect_used)]
         writeln!(
             out,
-            "### ❌ Gleon Visual Regression Failure ({} diffs)\n",
-            total_failed
+            "### ❌ Gleon Visual Regression Failure ({total_failed} diffs)\n"
         )
         .expect("write infallible");
 
@@ -885,39 +961,6 @@ impl ReportGenerator {
         } else {
             out.push_str("| Test Name | Status | Error |\n");
             out.push_str("| :--- | :--- | :--- |\n");
-        }
-
-        struct ImgLinkFormatter<'a> {
-            base_url: Option<&'a str>,
-            path: Option<&'a std::path::Path>,
-            resolver: Option<&'a ImageUrlResolver<'a>>,
-        }
-        impl<'a> std::fmt::Display for ImgLinkFormatter<'a> {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                if let Some(p) = self.path {
-                    if let Some(signed_url) = self.resolver.and_then(|res_fn| res_fn(p)) {
-                        return write!(f, "[Image]({})", signed_url);
-                    }
-                    if let Some(base) = self.base_url {
-                        let base = base.trim_end_matches('/');
-                        return write!(f, "[Image]({}/{})", base, PosixPathFormatter(p));
-                    }
-                }
-                f.write_str("N/A")
-            }
-        }
-
-        struct DeltaFormatter<'a>(&'a MismatchDetail);
-        impl<'a> std::fmt::Display for DeltaFormatter<'a> {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                match self.0 {
-                    MismatchDetail::Pixel { diff_count } => write!(f, "{} px", diff_count),
-                    MismatchDetail::Ssim { ssim_score } => write!(f, "{:.4} SSIM", ssim_score),
-                    MismatchDetail::SsimFallback { diff_count } => {
-                        write!(f, "{} px (fb)", diff_count)
-                    }
-                }
-            }
         }
 
         for tc in failed_tests.iter().take(Self::MAX_MARKDOWN_DIFF_ROWS) {
@@ -933,6 +976,7 @@ impl ReportGenerator {
                         actual_path,
                         ..
                     } => {
+                        #[allow(clippy::expect_used)]
                         writeln!(
                             out,
                             "| `{}` | {} | {} | {} | `{}` |",
@@ -961,6 +1005,7 @@ impl ReportGenerator {
                         actual_path,
                         ..
                     } => {
+                        #[allow(clippy::expect_used)]
                         writeln!(
                             out,
                             "| `{}` | {} | {} | {} | `Dim` |",
@@ -984,6 +1029,7 @@ impl ReportGenerator {
                         .expect("write infallible");
                     }
                     TestImageResult::MissingBaseline { .. } => {
+                        #[allow(clippy::expect_used)]
                         writeln!(
                             out,
                             "| `{}` | {} | {} | {} | `Missing` |",
@@ -1007,6 +1053,7 @@ impl ReportGenerator {
                         .expect("write infallible");
                     }
                     TestImageResult::DecodeError { .. } => {
+                        #[allow(clippy::expect_used)]
                         writeln!(
                             out,
                             "| `{}` | {} | {} | {} | `Decode Error` |",
@@ -1030,6 +1077,7 @@ impl ReportGenerator {
                         .expect("write infallible");
                     }
                     TestImageResult::IoError { .. } => {
+                        #[allow(clippy::expect_used)]
                         writeln!(
                             out,
                             "| `{}` | {} | {} | {} | `IO Error` |",
@@ -1053,6 +1101,7 @@ impl ReportGenerator {
                         .expect("write infallible");
                     }
                     TestImageResult::EncodeError { actual_path, .. } => {
+                        #[allow(clippy::expect_used)]
                         writeln!(
                             out,
                             "| `{}` | {} | {} | {} | `Encode Error` |",
@@ -1080,6 +1129,7 @@ impl ReportGenerator {
             } else {
                 match res {
                     TestImageResult::Mismatch { detail, .. } => {
+                        #[allow(clippy::expect_used)]
                         writeln!(
                             out,
                             "| `{}` | Mismatch | {} |",
@@ -1089,6 +1139,7 @@ impl ReportGenerator {
                         .expect("write infallible");
                     }
                     TestImageResult::DimensionMismatch { .. } => {
+                        #[allow(clippy::expect_used)]
                         writeln!(
                             out,
                             "| `{}` | Dimension Mismatch | Dim mismatch |",
@@ -1097,6 +1148,7 @@ impl ReportGenerator {
                         .expect("write infallible");
                     }
                     TestImageResult::MissingBaseline { reason, .. } => {
+                        #[allow(clippy::expect_used)]
                         writeln!(
                             out,
                             "| `{}` | Missing Baseline | {} |",
@@ -1106,6 +1158,7 @@ impl ReportGenerator {
                         .expect("write infallible");
                     }
                     TestImageResult::DecodeError { error, .. } => {
+                        #[allow(clippy::expect_used)]
                         writeln!(
                             out,
                             "| `{}` | Decode Error | {} |",
@@ -1115,6 +1168,7 @@ impl ReportGenerator {
                         .expect("write infallible");
                     }
                     TestImageResult::IoError { error, .. } => {
+                        #[allow(clippy::expect_used)]
                         writeln!(
                             out,
                             "| `{}` | IO Error | {} |",
@@ -1124,6 +1178,7 @@ impl ReportGenerator {
                         .expect("write infallible");
                     }
                     TestImageResult::EncodeError { error, .. } => {
+                        #[allow(clippy::expect_used)]
                         writeln!(
                             out,
                             "| `{}` | Encode Error | {} |",
@@ -1140,7 +1195,8 @@ impl ReportGenerator {
         if total_failed > Self::MAX_MARKDOWN_DIFF_ROWS {
             let remaining = total_failed - Self::MAX_MARKDOWN_DIFF_ROWS;
             out.push_str("\n> ⚠️ **Truncated ");
-            write!(out, "{}", remaining).expect("write infallible");
+            #[allow(clippy::expect_used)]
+            write!(out, "{remaining}").expect("write infallible");
             out.push_str(" additional diffs.** ");
             match options.html_artifact_url {
                 Some(url) => {
@@ -1168,6 +1224,7 @@ impl ReportGenerator {
     }
 
     /// Generates a simple Markdown report summary string.
+    #[must_use]
     pub fn generate_markdown(test_cases: &[TestCaseResult]) -> String {
         use std::fmt::Write;
 
@@ -1175,10 +1232,10 @@ impl ReportGenerator {
         let failed = test_cases.iter().filter(|tc| !tc.passed()).count();
 
         let mut out = String::new();
+        #[allow(clippy::expect_used)]
         writeln!(
             out,
-            "# gleon Visual Regression Summary\n\n**Total Tests:** {}\n**Failed:** {}\n",
-            total, failed
+            "# gleon Visual Regression Summary\n\n**Total Tests:** {total}\n**Failed:** {failed}\n"
         )
         .expect("write infallible");
 
@@ -1198,6 +1255,7 @@ impl ReportGenerator {
 
             let path_fmt = PosixPathFormatter(res.relative_path());
             let path_str = path_fmt.to_string();
+            #[allow(clippy::expect_used)]
             writeln!(
                 out,
                 "| {} | {} | {} |",
@@ -1211,7 +1269,13 @@ impl ReportGenerator {
         out
     }
 
-    /// Generates markdown, JUnit XML, HTML, and JSON report files inside `runs_dir`.
+    /// Generates markdown, `JUnit` XML, HTML, and JSON report files inside `runs_dir`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReportError` if any of the underlying report generation steps
+    /// fail (template rendering) or if writing a report file to `runs_dir`
+    /// fails (I/O or JSON serialization).
     pub fn generate_all(
         runs_dir: &std::path::Path,
         test_cases: &[TestCaseResult],
@@ -1237,6 +1301,15 @@ impl ReportGenerator {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
@@ -1297,7 +1370,7 @@ mod tests {
             },
         };
         let options = MarkdownReportOptions {
-            context: Default::default(),
+            context: ExecutionContext::default(),
             base_image_url: Some("https://storage.cdn.com/run-1"),
             html_artifact_url: Some("https://github.com/org/repo/actions/runs/1/artifacts/2"),
             image_url_resolver: None,
@@ -1313,18 +1386,18 @@ mod tests {
         let mut test_cases = Vec::new();
         for i in 0..15 {
             test_cases.push(TestCaseResult {
-                name: format!("test_{}", i),
+                name: format!("test_{i}"),
                 result: TestImageResult::Mismatch {
-                    relative_path: PathBuf::from(format!("{}.png", i)),
+                    relative_path: PathBuf::from(format!("{i}.png")),
                     detail: MismatchDetail::Pixel { diff_count: i + 1 },
-                    diff_path: PathBuf::from(format!("diff_{}.png", i)),
-                    baseline_path: PathBuf::from(format!("base_{}.png", i)),
-                    actual_path: PathBuf::from(format!("act_{}.png", i)),
+                    diff_path: PathBuf::from(format!("diff_{i}.png")),
+                    baseline_path: PathBuf::from(format!("base_{i}.png")),
+                    actual_path: PathBuf::from(format!("act_{i}.png")),
                 },
             });
         }
         let options = MarkdownReportOptions {
-            context: Default::default(),
+            context: ExecutionContext::default(),
             base_image_url: None,
             html_artifact_url: Some("https://artifact.url/report.html"),
             image_url_resolver: None,
@@ -1363,7 +1436,7 @@ mod tests {
             },
         ];
         let options = MarkdownReportOptions {
-            context: Default::default(),
+            context: ExecutionContext::default(),
             base_image_url: Some("http://test.com"),
             html_artifact_url: None,
             image_url_resolver: None,
@@ -1411,7 +1484,7 @@ mod tests {
             },
         ];
         let options = MarkdownReportOptions {
-            context: Default::default(),
+            context: ExecutionContext::default(),
             base_image_url: None,
             html_artifact_url: None,
             image_url_resolver: None,
@@ -1444,7 +1517,7 @@ mod tests {
     fn test_render_pr_comment_pass_path() {
         let test_cases = vec![];
         let options = MarkdownReportOptions {
-            context: Default::default(),
+            context: ExecutionContext::default(),
             base_image_url: None,
             html_artifact_url: None,
             image_url_resolver: None,
@@ -1458,18 +1531,18 @@ mod tests {
         let mut test_cases = Vec::new();
         for i in 0..15 {
             test_cases.push(TestCaseResult {
-                name: format!("test_{}", i),
+                name: format!("test_{i}"),
                 result: TestImageResult::Mismatch {
-                    relative_path: PathBuf::from(format!("{}.png", i)),
+                    relative_path: PathBuf::from(format!("{i}.png")),
                     detail: MismatchDetail::Pixel { diff_count: i + 1 },
-                    diff_path: PathBuf::from(format!("diff_{}.png", i)),
-                    baseline_path: PathBuf::from(format!("base_{}.png", i)),
-                    actual_path: PathBuf::from(format!("act_{}.png", i)),
+                    diff_path: PathBuf::from(format!("diff_{i}.png")),
+                    baseline_path: PathBuf::from(format!("base_{i}.png")),
+                    actual_path: PathBuf::from(format!("act_{i}.png")),
                 },
             });
         }
         let options = MarkdownReportOptions {
-            context: Default::default(),
+            context: ExecutionContext::default(),
             base_image_url: Some("http://example.com"),
             html_artifact_url: None,
             image_url_resolver: None,
@@ -1492,7 +1565,7 @@ mod tests {
             },
         };
         let options = MarkdownReportOptions {
-            context: Default::default(),
+            context: ExecutionContext::default(),
             base_image_url: None,
             html_artifact_url: None,
             image_url_resolver: None,
@@ -1523,7 +1596,7 @@ mod tests {
             }
         };
         let options = MarkdownReportOptions {
-            context: Default::default(),
+            context: ExecutionContext::default(),
             base_image_url: None,
             html_artifact_url: None,
             image_url_resolver: Some(&resolver),
@@ -1621,7 +1694,7 @@ mod tests {
             report_dir: None,
         }
         .to_string();
-        assert!(formatted.contains("a"));
+        assert!(formatted.contains('a'));
 
         let empty_path = std::path::Path::new("");
         let formatted_empty = FormattedPath {
@@ -1693,7 +1766,7 @@ mod tests {
         }
 
         let opts = MarkdownReportOptions {
-            context: Default::default(),
+            context: ExecutionContext::default(),
             base_image_url: Some("https://storage.url"),
             html_artifact_url: Some("https://artifact.url"),
             image_url_resolver: None,
@@ -1710,7 +1783,7 @@ mod tests {
         let abs = PathBuf::from("/a/b/c");
         let rel = PathBuf::from("a/b/c");
         // Mixed absolute and relative returns target unchanged
-        assert_eq!(super::make_relative_path(&abs, &rel), abs);
+        assert_eq!(make_relative_path(&abs, &rel), abs);
 
         #[cfg(windows)]
         {
@@ -1755,7 +1828,7 @@ mod tests {
     #[test]
     fn test_posix_display_edge_cases() {
         let p = std::path::Path::new("C:\\.\\");
-        let s = super::PosixPathFormatter(p).to_string();
+        let s = PosixPathFormatter(p).to_string();
         assert!(!s.is_empty());
     }
 
@@ -1808,11 +1881,11 @@ mod tests {
     fn test_make_relative_path_curdir_and_empty_posix() {
         let target = PathBuf::from("./a/./b/../c");
         let base = PathBuf::from("./a/./d/../e");
-        let rel = super::make_relative_path(&target, &base);
+        let rel = make_relative_path(&target, &base);
         assert!(!rel.to_string_lossy().is_empty());
 
         let empty_p = PathBuf::from("");
-        let posix_empty = super::PosixPathFormatter(&empty_p).to_string();
+        let posix_empty = PosixPathFormatter(&empty_p).to_string();
         assert_eq!(posix_empty, ".");
     }
 
@@ -1822,24 +1895,24 @@ mod tests {
         let base = PathBuf::from("runs/latest");
         let target = PathBuf::from("runs/latest/../baseline/auth_login.png");
         let expected = PathBuf::from("../baseline/auth_login.png");
-        assert_eq!(super::make_relative_path(&target, &base), expected);
+        assert_eq!(make_relative_path(&target, &base), expected);
 
         let target2 = PathBuf::from("baseline/auth_login.png");
         let base2 = PathBuf::from("runs/latest");
         let expected2 = PathBuf::from("../../baseline/auth_login.png");
-        assert_eq!(super::make_relative_path(&target2, &base2), expected2);
+        assert_eq!(make_relative_path(&target2, &base2), expected2);
 
         let target3 = PathBuf::from("../outside/image.png");
         let base3 = PathBuf::from("reports");
         let expected3 = PathBuf::from("../../outside/image.png");
-        assert_eq!(super::make_relative_path(&target3, &base3), expected3);
+        assert_eq!(make_relative_path(&target3, &base3), expected3);
     }
 
     #[test]
     fn test_execution_context_footer() {
-        let tc = crate::scanner::TestCaseResult {
+        let tc = TestCaseResult {
             name: "fail".to_string(),
-            result: crate::scanner::TestImageResult::MissingBaseline {
+            result: TestImageResult::MissingBaseline {
                 relative_path: PathBuf::from("a"),
                 reason: "no baseline".to_string(),
             },

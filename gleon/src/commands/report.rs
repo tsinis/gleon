@@ -3,6 +3,7 @@ use gleon_core::io::load_json;
 use gleon_core::report::{MarkdownReportOptions, ReportGenerator};
 use gleon_core::scanner::TestCaseResult;
 
+#[allow(clippy::too_many_lines)] // TODO(C6): move pre-signing pipeline into gleon-core
 pub async fn run_report(
     env: &dyn gleon_core::git::EnvProvider,
     storage_cfg: Option<gleon_core::storage::StorageConfig>,
@@ -36,11 +37,14 @@ pub async fn run_report(
         }
 
         if let Ok(adapter) = gleon_core::storage::ObjectStoreAdapter::from_config(cfg) {
-            let expires_in = std::time::Duration::from_secs(7 * 24 * 3600);
+            let expires_in = std::time::Duration::from_hours(168);
 
-            let failed_tests: Vec<_> = report_data.iter().filter(|tc| !tc.passed()).collect();
             let limit = ReportGenerator::MAX_MARKDOWN_DIFF_ROWS;
-            let to_sign: Vec<_> = failed_tests.into_iter().take(limit).collect();
+            let to_sign: Vec<_> = report_data
+                .iter()
+                .filter(|tc| !tc.passed())
+                .take(limit)
+                .collect();
 
             let mut join_set = tokio::task::JoinSet::new();
             let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(adapter.concurrency()));
@@ -92,6 +96,10 @@ pub async fn run_report(
                 let adapter = adapter.clone();
                 let sem = semaphore.clone();
                 join_set.spawn(async move {
+                    // `sem` is owned by this task set and never closed while permits are
+                    // outstanding, so `acquire_owned` cannot fail here.
+                    // TODO(C6): propagate as a proper error once this pipeline moves into core.
+                    #[allow(clippy::expect_used)]
                     let _permit = sem.acquire_owned().await.expect("Semaphore closed");
                     adapter
                         .sign_blob_url(&normalized_key, expires_in)
@@ -159,7 +167,7 @@ pub async fn run_report(
             serde_json::to_string_pretty(&report_data)
                 .with_context(|| "Failed to serialize report to JSON")?
         } else {
-            return Err(anyhow!("Unsupported report format: '{}'", format));
+            return Err(anyhow!("Unsupported report format: '{format}'"));
         };
 
     if let Some(out_path) = out {
@@ -176,13 +184,22 @@ pub async fn run_report(
             .with_context(|| format!("Failed to write output to '{}'", out_path.display()))?;
         tracing::info!("Generated {} report at {}", format, out_path.display());
     } else {
-        println!("{}", report_content);
+        println!("{report_content}");
     }
 
     Ok(0)
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
 

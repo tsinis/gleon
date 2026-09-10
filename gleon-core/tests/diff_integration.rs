@@ -1,4 +1,14 @@
 #![cfg(not(miri))]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    missing_docs
+)]
 
 use gleon_core::cli::{Cli, Commands};
 use gleon_core::context::ResolvedContext;
@@ -64,7 +74,7 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli {
@@ -160,7 +170,7 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Diff {
@@ -207,7 +217,7 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Diff {
@@ -282,7 +292,7 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Diff {
@@ -384,7 +394,7 @@ screenshots:
             width: 1
             height: 1
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Diff {
@@ -434,7 +444,7 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "unmasked_app/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(
         base_path.join(".gleon").join("gleon.yaml"),
         initial_config_yaml,
@@ -463,7 +473,7 @@ screenshots:
             width: 1
             height: 1
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(
         base_path.join(".gleon").join("gleon.yaml"),
         masked_config_yaml,
@@ -496,8 +506,8 @@ fn test_diff_fallback_platform_integration() {
         .join("fixtures");
 
     // 1. Setup gleon.yaml with fallback_platform
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
-    std::fs::copy(
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::copy(
         fixtures_dir.join("fallback_config.yaml"),
         base_path.join(".gleon").join("gleon.yaml"),
     )
@@ -609,8 +619,7 @@ screenshots:
         .join("diff_form.png");
     assert!(
         expected_diff_file.is_file(),
-        "Diff image must be created at {:?}",
-        expected_diff_file
+        "Diff image must be created at {expected_diff_file:?}"
     );
 }
 
@@ -642,7 +651,7 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
     let cli = Cli {
@@ -679,8 +688,7 @@ screenshots:
         .join("form.png");
     assert!(
         expected_actual_file.is_file(),
-        "Actual image must be saved for MissingBaseline at {:?}",
-        expected_actual_file
+        "Actual image must be saved for MissingBaseline at {expected_actual_file:?}"
     );
 
     // Verify the content is exactly the same as the original PNG

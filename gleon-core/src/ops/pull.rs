@@ -64,6 +64,7 @@ pub struct PullResult {
 /// # Errors
 /// Returns [`PullError`] if the workspace is not initialized, remote blobs are missing,
 /// or remote storage operations fail.
+#[allow(clippy::too_many_lines)] // TODO(C4): extract transfer_blobs/SyncResult into ops/sync.rs
 pub async fn pull_blobs(
     context: &ResolvedContext,
     base_dir: &Path,
@@ -178,7 +179,7 @@ pub async fn pull_blobs(
     let progress_bar = crate::ui::create_progress_bar(missing_count as u64);
 
     let mut download_stream =
-        futures::stream::iter(missing_blobs.into_iter().map(|(hash, _plat)| {
+        futures::stream::iter(missing_blobs.into_iter().map(|(hash, origin_platform)| {
             let adapter = adapter.clone();
             let dest_path = blobs_root.join(hash.scheme()).join(hash.value());
             let pb = progress_bar.clone();
@@ -188,10 +189,10 @@ pub async fn pull_blobs(
                     &hash.value()[..8.min(hash.value().len())]
                 ));
                 let res = match adapter.download_blob(&hash, &dest_path).await {
-                    Ok(_) => Ok(()),
+                    Ok(()) => Ok(()),
                     Err(StorageError::BlobNotFound(_)) => Err(PullError::MissingRemoteBlob {
                         hash: hash.value().to_string(),
-                        platform: _plat,
+                        platform: origin_platform,
                     }),
                     Err(e) => Err(PullError::Storage(e)),
                 };
@@ -202,7 +203,7 @@ pub async fn pull_blobs(
         .buffer_unordered(adapter.concurrency());
 
     let download_res = async {
-        while let Some(()) = download_stream.try_next().await? {}
+        while download_stream.try_next().await? == Some(()) {}
         Ok::<(), PullError>(())
     }
     .await;
@@ -218,6 +219,15 @@ pub async fn pull_blobs(
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use crate::platform::PlatformError;
@@ -255,7 +265,7 @@ mod tests {
             local_mode: false,
         };
         assert_eq!(res.clone(), res);
-        assert!(!format!("{:?}", res).is_empty());
+        assert!(!format!("{res:?}").is_empty());
         let default_res = PullResult::default();
         assert_eq!(default_res.total_manifest_blobs, 0);
     }
@@ -289,6 +299,7 @@ mod tests {
     async fn test_pull_manifests_root_unreadable() {
         use std::os::unix::fs::PermissionsExt;
         // SAFETY: `libc::geteuid()` is a side-effect-free POSIX syscall query that returns the process EUID.
+        #[allow(unsafe_code)]
         if unsafe { libc::geteuid() } == 0 {
             return;
         }
@@ -356,6 +367,7 @@ mod tests {
     async fn test_pull_storage_io_error() {
         use std::os::unix::fs::PermissionsExt;
         // SAFETY: `libc::geteuid()` is a side-effect-free POSIX syscall query that returns the process EUID.
+        #[allow(unsafe_code)]
         if unsafe { libc::geteuid() } == 0 {
             return;
         }
@@ -369,8 +381,8 @@ mod tests {
 
         let hash = "1111111111111111111111111111111111111111111111111111111111111111";
         let manifest = crate::manifest::SingleTestManifest::new(
-            crate::manifest::ImageHash::new("sha256", hash).unwrap(),
-            crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap(),
+            ImageHash::new("sha256", hash).unwrap(),
+            ImageHash::new("dhash", "0000000000000000").unwrap(),
             1,
             1,
         )
@@ -385,16 +397,13 @@ mod tests {
         std::fs::create_dir_all(&remote_dir).unwrap();
         // Use a valid file storage URL
         let cfg = StorageConfig::new(format!("file://{}", remote_dir.display()));
-        let adapter = crate::storage::ObjectStoreAdapter::from_config(&cfg).unwrap();
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
         // Create an empty file to upload
         let empty_file = temp.path().join("empty");
         std::fs::write(&empty_file, "").unwrap();
         // Upload the dummy blob so it exists remotely
         adapter
-            .upload_blob(
-                &crate::manifest::ImageHash::new("sha256", hash).unwrap(),
-                &empty_file,
-            )
+            .upload_blob(&ImageHash::new("sha256", hash).unwrap(), &empty_file)
             .await
             .expect("upload dummy blob");
 
@@ -427,12 +436,12 @@ mod tests {
         };
 
         let cfg = StorageConfig::new("memory://");
-        let hash = crate::manifest::ImageHash::new(
+        let hash = ImageHash::new(
             "sha256",
             "1111111111111111111111111111111111111111111111111111111111111111",
         )
         .unwrap();
-        let phash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();
+        let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
 
         // 1. Create manifests in fallback-platform directory
         let fallback_manifests_dir = gleon_dir.join("manifests").join("fallback-platform");
@@ -485,25 +494,25 @@ mod tests {
 
         let remote_temp = tempfile::tempdir().unwrap();
         let cfg = StorageConfig::new(format!("file://{}", remote_temp.path().display()));
-        let adapter = crate::storage::ObjectStoreAdapter::from_config(&cfg).unwrap();
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
 
-        let hash1 = crate::manifest::ImageHash::new(
+        let hash1 = ImageHash::new(
             "sha256",
             "1111111111111111111111111111111111111111111111111111111111111111",
         )
         .unwrap();
-        let hash2 = crate::manifest::ImageHash::new(
+        let hash2 = ImageHash::new(
             "sha256",
             "2222222222222222222222222222222222222222222222222222222222222222",
         )
         .unwrap();
-        let dummy_hash = crate::manifest::ImageHash::new(
+        let dummy_hash = ImageHash::new(
             "sha256",
             "3333333333333333333333333333333333333333333333333333333333333333",
         )
         .unwrap();
 
-        let phash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();
+        let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
 
         // Upload blobs to remote
         let dummy_file = temp.path().join("blob_tmp");
@@ -589,10 +598,10 @@ mod tests {
         let remote_dir = temp.path().join("remote_blobs");
         std::fs::create_dir_all(&remote_dir).unwrap();
         let cfg = StorageConfig::new(format!("file://{}", remote_dir.display()));
-        let adapter = crate::storage::ObjectStoreAdapter::from_config(&cfg).unwrap();
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
 
-        let hash_a = crate::manifest::ImageHash::new("sha256", "a".repeat(64)).unwrap();
-        let phash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();
+        let hash_a = ImageHash::new("sha256", "a".repeat(64)).unwrap();
+        let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
 
         let dummy_file = temp.path().join("dummy");
         std::fs::write(&dummy_file, "blob data").unwrap();
@@ -622,10 +631,10 @@ mod tests {
         let remote_dir = temp.path().join("remote_blobs");
         std::fs::create_dir_all(&remote_dir).unwrap();
         let cfg = StorageConfig::new(format!("file://{}", remote_dir.display()));
-        let adapter = crate::storage::ObjectStoreAdapter::from_config(&cfg).unwrap();
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
 
-        let hash_b = crate::manifest::ImageHash::new("sha256", "b".repeat(64)).unwrap();
-        let phash = crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap();
+        let hash_b = ImageHash::new("sha256", "b".repeat(64)).unwrap();
+        let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
 
         let dummy_file = temp.path().join("dummy");
         std::fs::write(&dummy_file, "blob data b").unwrap();

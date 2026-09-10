@@ -14,6 +14,10 @@ pub enum SsimError {
 /// Under the hood, this uses `image_compare::rgba_hybrid_compare`.
 ///
 /// Returns the similarity score (where 1.0 is perfect similarity) and a diff image.
+///
+/// # Errors
+/// Returns [`SsimError::Compare`] if the underlying `image_compare::rgba_hybrid_compare`
+/// comparison fails, for example due to a dimension mismatch between the two images.
 pub fn compare_ssim(
     baseline: &RgbaImage,
     actual: &RgbaImage,
@@ -25,6 +29,15 @@ pub fn compare_ssim(
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use image::{ImageBuffer, Rgba};

@@ -28,7 +28,7 @@ pub enum ScannerError {
 
 use std::borrow::Cow;
 
-/// A single test screenshot file within a TestCase.
+/// A single test screenshot file within a `TestCase`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestImage {
     /// Relative path from the base directory (e.g. "billing/stripe/form.png")
@@ -66,6 +66,7 @@ pub enum TestImageResult {
         /// The decoding error message.
         error: String,
     },
+    /// The actual image has different dimensions than the baseline.
     DimensionMismatch {
         /// Relative path of the screenshot file.
         relative_path: PathBuf,
@@ -118,15 +119,16 @@ pub enum TestImageResult {
 
 impl TestImageResult {
     /// Returns the relative path of the screenshot file.
+    #[must_use]
     pub fn relative_path(&self) -> &Path {
         match self {
-            Self::Success { relative_path } => relative_path,
-            Self::DecodeError { relative_path, .. } => relative_path,
-            Self::MissingBaseline { relative_path, .. } => relative_path,
-            Self::DimensionMismatch { relative_path, .. } => relative_path,
-            Self::Mismatch { relative_path, .. } => relative_path,
-            Self::IoError { relative_path, .. } => relative_path,
-            Self::EncodeError { relative_path, .. } => relative_path,
+            Self::Success { relative_path }
+            | Self::DecodeError { relative_path, .. }
+            | Self::MissingBaseline { relative_path, .. }
+            | Self::DimensionMismatch { relative_path, .. }
+            | Self::Mismatch { relative_path, .. }
+            | Self::IoError { relative_path, .. }
+            | Self::EncodeError { relative_path, .. } => relative_path,
         }
     }
 }
@@ -142,13 +144,18 @@ pub struct TestCaseResult {
 
 impl TestCaseResult {
     /// Returns true if the screenshot result succeeded.
-    pub fn passed(&self) -> bool {
+    #[must_use]
+    pub const fn passed(&self) -> bool {
         matches!(self.result, TestImageResult::Success { .. })
     }
 }
 
 /// Validates that all segments of a test name contain only allowed characters `[a-z0-9_.-]`.
 /// The name can use either Unix-style forward slashes (`/`) or Windows-style backslashes (`\`) as separators.
+///
+/// # Errors
+/// Returns a message describing the offending segment if any segment is empty, is `.`/`..`,
+/// or contains characters outside `[a-z0-9_.-]`.
 pub fn validate_test_name(name: &str) -> Result<(), String> {
     for segment in name.split(['/', '\\']) {
         if segment.is_empty() {
@@ -156,15 +163,13 @@ pub fn validate_test_name(name: &str) -> Result<(), String> {
         }
         if segment == "." || segment == ".." {
             return Err(format!(
-                "Test name segment cannot be relative path navigation '{}'",
-                segment
+                "Test name segment cannot be relative path navigation '{segment}'"
             ));
         }
         for c in segment.chars() {
             if !c.is_ascii_lowercase() && !c.is_ascii_digit() && c != '_' && c != '-' && c != '.' {
                 return Err(format!(
-                    "Invalid character '{}' in test name segment '{}'. Only lowercase alphanumeric, '_', '-', and '.' are allowed.",
-                    c, segment
+                    "Invalid character '{c}' in test name segment '{segment}'. Only lowercase alphanumeric, '_', '-', and '.' are allowed."
                 ));
             }
         }
@@ -193,6 +198,13 @@ impl FileScanner {
     /// Scans screenshots inside `base_dir` using include and exclude glob patterns.
     /// Each discovered screenshot produces its own `TestCase`.
     /// The provided `rule` is attached to each resulting `TestCase` to carry mode/threshold/mask config.
+    ///
+    /// # Errors
+    /// Returns [`ScannerError::Pattern`] if any include/exclude glob fails to compile, or
+    /// [`ScannerError::InvalidTestName`] if a derived test name fails validation.
+    // `rule` is taken by value (an `Arc` clone) to keep this public API's call sites ergonomic;
+    // narrowing it to a reference is a breaking API change out of scope for this lint cleanup.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn scan_files(
         include_globs: &[GlobPattern],
         exclude_globs: &[GlobPattern],
@@ -258,6 +270,10 @@ impl FileScanner {
     }
 
     /// Scans the workspace based on the rules in `GleonConfig` and a given base directory.
+    ///
+    /// # Errors
+    /// Returns [`ScannerError::Pattern`] if any include/exclude glob fails to compile, or
+    /// [`ScannerError::InvalidTestName`] if a derived test name fails validation.
     pub fn scan_workspace(
         config: &GleonConfig,
         base_dir: &Path,
@@ -361,7 +377,7 @@ impl FileScanner {
         Ok(cases)
     }
 
-    /// Builds a WalkBuilder configured for gleon directory scanning.
+    /// Builds a `WalkBuilder` configured for gleon directory scanning.
     fn build_walker(base_dir: &Path, exclude_set: &globset::GlobSet) -> ignore::Walk {
         let exclude_for_filter = exclude_set.clone();
         let base_dir_for_filter = base_dir.to_path_buf();
@@ -401,6 +417,7 @@ impl FileScanner {
     }
 
     /// Normalizes path separators to forward slashes for cross-platform manifest key consistency.
+    #[must_use]
     pub fn normalize_path_str(path: &Path) -> Cow<'_, str> {
         match path.to_string_lossy() {
             Cow::Borrowed(s) => crate::manifest::normalize_test_name(s),
@@ -466,6 +483,15 @@ impl FileScanner {
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
 
@@ -786,13 +812,13 @@ screenshots:
         assert_eq!(pixel_case.name, "billing/form");
         assert_eq!(
             pixel_case.image.relative_path,
-            std::path::Path::new("billing/form.png")
+            Path::new("billing/form.png")
         );
 
         assert_eq!(ssim_case.name, "billing/receipt");
         assert_eq!(
             ssim_case.image.relative_path,
-            std::path::Path::new("billing/receipt.png")
+            Path::new("billing/receipt.png")
         );
     }
 
@@ -886,37 +912,37 @@ screenshots:
     fn test_derived_traits() {
         // This test ensures that derived traits (like Debug) are executed.
         let io_err = ScannerError::Io(std::io::Error::from(std::io::ErrorKind::NotFound));
-        assert!(!format!("{:?}", io_err).is_empty());
-        assert!(!format!("{}", io_err).is_empty());
+        assert!(!format!("{io_err:?}").is_empty());
+        assert!(!format!("{io_err}").is_empty());
 
         let invalid_err = ScannerError::InvalidTestName {
             name: "Foo".to_string(),
             reason: "UpperCase".to_string(),
         };
-        assert!(!format!("{:?}", invalid_err).is_empty());
-        assert!(!format!("{}", invalid_err).is_empty());
+        assert!(!format!("{invalid_err:?}").is_empty());
+        assert!(!format!("{invalid_err}").is_empty());
 
         let pattern_err = ScannerError::Pattern(globset::Glob::new("[").unwrap_err());
-        assert!(!format!("{:?}", pattern_err).is_empty());
+        assert!(!format!("{pattern_err:?}").is_empty());
 
         let mismatch_detail = MismatchDetail::Pixel { diff_count: 42 };
-        assert!(!format!("{:?}", mismatch_detail).is_empty());
-        assert!(mismatch_detail == MismatchDetail::Pixel { diff_count: 42 });
+        assert!(!format!("{mismatch_detail:?}").is_empty());
+        assert_eq!(mismatch_detail, MismatchDetail::Pixel { diff_count: 42 });
 
         let ssim_detail = MismatchDetail::Ssim { ssim_score: 0.99 };
-        assert!(!format!("{:?}", ssim_detail).is_empty());
+        assert!(!format!("{ssim_detail:?}").is_empty());
 
         let image_res = TestImageResult::DecodeError {
             relative_path: PathBuf::from("a.png"),
             error: "bad data".to_string(),
         };
-        assert!(!format!("{:?}", image_res).is_empty());
+        assert!(!format!("{image_res:?}").is_empty());
 
         let tc_res = TestCaseResult {
             name: "test".to_string(),
             result: image_res,
         };
-        assert!(!format!("{:?}", tc_res).is_empty());
+        assert!(!format!("{tc_res:?}").is_empty());
     }
 
     #[test]
@@ -974,11 +1000,11 @@ screenshots:
         let entry = entry_opt.expect("Should have found a file entry");
 
         // Now compile globs that match the absolute path
-        let include_set = globset::GlobSetBuilder::new()
+        let include_set = GlobSetBuilder::new()
             .add(globset::Glob::new("**/billing/*.png").unwrap())
             .build()
             .unwrap();
-        let exclude_set = globset::GlobSetBuilder::new().build().unwrap();
+        let exclude_set = GlobSetBuilder::new().build().unwrap();
 
         // Pass a completely different base_dir
         let different_base = Path::new("/some/different/dir");
@@ -988,8 +1014,7 @@ screenshots:
             FileScanner::parse_entry(&entry, different_base, &include_set, &exclude_set).unwrap();
         assert!(
             res.is_none(),
-            "Expected parse_entry to skip when prefix stripping fails, but got {:?}",
-            res
+            "Expected parse_entry to skip when prefix stripping fails, but got {res:?}"
         );
     }
 
@@ -1006,7 +1031,7 @@ screenshots:
 
         let test_case = TestCase {
             name: "test_case".to_string(),
-            image: test_image.clone(),
+            image: test_image,
             rule: std::sync::Arc::new(crate::config::ScreenshotRule {
                 include: vec![],
                 mode: crate::config::Mode::Pixel,
@@ -1032,12 +1057,12 @@ screenshots:
         let p1 = Path::new("billing/stripe/form.png");
         let res1 = FileScanner::normalize_path_str(p1);
         assert_eq!(res1, "billing/stripe/form.png");
-        assert!(matches!(res1, std::borrow::Cow::Borrowed(_)));
+        assert!(matches!(res1, Cow::Borrowed(_)));
 
         let p2 = Path::new("clean_path.png");
         let res2 = FileScanner::normalize_path_str(p2);
         assert_eq!(res2, "clean_path.png");
-        assert!(matches!(res2, std::borrow::Cow::Borrowed(_)));
+        assert!(matches!(res2, Cow::Borrowed(_)));
     }
 
     #[test]

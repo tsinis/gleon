@@ -1,4 +1,14 @@
 #![cfg(not(miri))]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    missing_docs
+)]
 
 use gleon_core::cli::{Cli, Commands};
 use gleon_core::config::GleonConfig;
@@ -43,7 +53,7 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "custom/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(&config_path, custom_yaml).unwrap();
 
     let cli = Cli::for_test(Commands::Init);

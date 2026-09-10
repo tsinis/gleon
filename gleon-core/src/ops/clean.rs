@@ -38,10 +38,8 @@ pub enum CleanError {
 impl From<crate::io::IoError> for CleanError {
     fn from(err: crate::io::IoError) -> Self {
         match err {
-            crate::io::IoError::Io(e) => CleanError::Io(e),
-            crate::io::IoError::JsonParse(e) => {
-                CleanError::Io(std::io::Error::other(e.to_string()))
-            }
+            crate::io::IoError::Io(e) => Self::Io(e),
+            crate::io::IoError::JsonParse(e) => Self::Io(std::io::Error::other(e.to_string())),
         }
     }
 }
@@ -71,6 +69,14 @@ pub struct CleanResult {
 }
 
 /// Cleans screenshot files, untracks them from Git index, updates .gitignore, and cleans runs cache.
+///
+/// # Errors
+///
+/// Returns an error if the workspace configuration cannot be scanned, if the `.gitignore` file
+/// exists but cannot be read (other than being missing) or cannot be written atomically, or if
+/// the `.gleon/runs`/`.gleon/diffs` cache directories exist but fail to be removed for a reason
+/// other than already being absent.
+#[allow(clippy::too_many_lines)] // TODO(C3): extract shared helpers into ops/common.rs
 pub fn clean_workspace(
     context: &ResolvedContext,
     base_path: &Path,
@@ -78,7 +84,7 @@ pub fn clean_workspace(
 ) -> Result<CleanResult, CleanError> {
     let mut result = CleanResult::default();
 
-    let config = context.config.as_ref().cloned().unwrap_or_default();
+    let config = context.config.clone().unwrap_or_default();
 
     // 1. Scan for all screenshots matched by rules in gleon.yaml
     let test_cases =
@@ -98,7 +104,7 @@ pub fn clean_workspace(
 
     // 2. In dry-run mode, populate preview without mutating disk or Git index
     if options.dry_run {
-        result.deleted_files = discovered_paths.clone();
+        result.deleted_files.clone_from(&discovered_paths);
         result.untracked_files.clear();
     } else {
         // 3. Delete files from disk and prune empty parent directories
@@ -175,7 +181,7 @@ pub fn clean_workspace(
     if !options.skip_gitignore {
         let gitignore_path = base_path.join(".gitignore");
         let existing = match std::fs::read_to_string(&gitignore_path) {
-            Ok(content) => content,
+            Ok(text) => text,
             Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(e) => return Err(CleanError::Io(e)),
         };
@@ -218,6 +224,8 @@ pub fn clean_workspace(
                     buffer.push('\n');
                 }
                 for entry in new_entries {
+                    // `String` implements `fmt::Write` infallibly; this can never return `Err`.
+                    #[allow(clippy::expect_used)]
                     writeln!(buffer, "{entry}").expect("writing to String cannot fail");
                 }
                 crate::io::write_file_atomically(&gitignore_path, |writer| {
@@ -257,6 +265,15 @@ pub fn clean_workspace(
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use crate::cli::{Cli, Commands};
@@ -448,19 +465,16 @@ screenshots:
         let io_err = CleanError::Io(std::io::Error::other("disk full"));
         assert!(io_err.to_string().contains("IO error: disk full"));
 
-        let git_err = CleanError::Git(crate::git::GitError::DetachedHead);
+        let git_err = CleanError::Git(GitError::DetachedHead);
         assert!(git_err.to_string().contains("Git error:"));
 
-        let ctx_err = CleanError::Context(crate::context::ContextError::Git(
-            crate::git::GitError::DetachedHead,
-        ));
+        let ctx_err = CleanError::Context(ContextError::Git(GitError::DetachedHead));
         assert!(ctx_err.to_string().contains("Context error:"));
 
-        let cfg_err =
-            CleanError::Config(crate::config::ConfigError::NotFound(PathBuf::from("foo")));
+        let cfg_err = CleanError::Config(ConfigError::NotFound(PathBuf::from("foo")));
         assert!(cfg_err.to_string().contains("Config error:"));
 
-        let scan_err = CleanError::Scanner(crate::scanner::ScannerError::InvalidTestName {
+        let scan_err = CleanError::Scanner(ScannerError::InvalidTestName {
             name: "bad".to_string(),
             reason: "invalid".to_string(),
         });

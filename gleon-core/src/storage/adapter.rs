@@ -99,15 +99,15 @@ impl StorageConfig {
 
 impl fmt::Debug for StorageConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let masked_url = match url::Url::parse(&self.url) {
-            Ok(mut parsed) => {
+        let masked_url = url::Url::parse(&self.url).map_or_else(
+            |_| self.url.clone(),
+            |mut parsed| {
                 if parsed.password().is_some() {
                     let _ = parsed.set_password(Some("[REDACTED]"));
                 }
                 parsed.to_string()
-            }
-            Err(_) => self.url.clone(),
-        };
+            },
+        );
 
         f.debug_struct("StorageConfig")
             .field("url", &masked_url)
@@ -268,10 +268,11 @@ impl ObjectStoreAdapter {
         expires_in: std::time::Duration,
     ) -> Option<String> {
         if let Some(signer) = &self.signer {
-            let mut path_str = relative_path.to_string();
-            if !self.prefix.as_ref().is_empty() {
-                path_str = format!("{}/{}", self.prefix.as_ref(), relative_path);
-            }
+            let path_str = if self.prefix.as_ref().is_empty() {
+                relative_path.to_string()
+            } else {
+                format!("{}/{}", self.prefix.as_ref(), relative_path)
+            };
             let path = object_store::path::Path::from(path_str);
             match signer
                 .signed_url(http::Method::GET, &path, expires_in)
@@ -368,6 +369,9 @@ impl ObjectStoreAdapter {
         }
 
         let mut file = tokio::fs::File::from_std(std_file);
+        // `len` was validated above to be <= MAX_BLOB_SIZE (100 MiB), which fits comfortably
+        // in `usize` on all supported platforms (including 32-bit targets).
+        #[allow(clippy::cast_possible_truncation)]
         let mut bytes = Vec::with_capacity(len as usize);
         tokio::io::AsyncReadExt::read_to_end(&mut file, &mut bytes)
             .await
@@ -381,6 +385,10 @@ impl ObjectStoreAdapter {
     }
 
     /// Checks if a blob exists on remote storage without downloading it.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if the remote existence check fails for a reason other than
+    /// the object simply not being found.
     pub async fn blob_exists(
         &self,
         hash: &crate::manifest::ImageHash,
@@ -478,6 +486,15 @@ impl ObjectStoreAdapter {
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
@@ -564,7 +581,7 @@ mod tests {
         let cfg = StorageConfig::new("memory://");
         let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
         let res = adapter
-            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_secs(60))
+            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_mins(1))
             .await;
         assert!(res.is_none());
     }
@@ -580,7 +597,7 @@ mod tests {
         cfg.aws_region = Some("us-east-1".to_string());
         let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
         let url = adapter
-            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_secs(60))
+            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_mins(1))
             .await
             .expect("Expected Some URL for S3 signing");
         assert!(url.contains("mybucket"));
@@ -597,7 +614,7 @@ mod tests {
         cfg.aws_region = Some("us-east-1".to_string());
         let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
         let url = adapter
-            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_secs(60))
+            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_mins(1))
             .await
             .expect("Expected Some URL for S3 signing");
         assert!(url.contains("mybucket"));
@@ -612,7 +629,7 @@ mod tests {
             .unwrap_or_else(|| StorageConfig::new("gs://mybucket"));
         let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
         let res = adapter
-            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_secs(60))
+            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_mins(1))
             .await;
         // Unauthenticated / metadata-less GCS safely falls back to None instead of failing
         assert!(res.is_none());

@@ -35,7 +35,7 @@ pub enum ResolveError {
 /// Represents a conflicted manifest file discovered during scanning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConflictedManifestItem {
-    /// Relative test path (e.g. "auth/login_screen").
+    /// Relative test path (e.g. "`auth/login_screen`").
     pub test_path: String,
     /// Platform component (e.g. "macos-aarch64").
     pub platform: String,
@@ -167,6 +167,15 @@ pub fn apply_resolution(
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
