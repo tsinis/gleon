@@ -1,7 +1,8 @@
 //! File scanner and image decoder for visual regression tests.
 
 use crate::config::{GleonConfig, GlobPattern};
-use globset::GlobSetBuilder;
+use crate::naming::{normalize_test_name, validate_test_name};
+use crate::walk::build_globset;
 
 use std::path::{Path, PathBuf};
 
@@ -150,47 +151,6 @@ impl TestCaseResult {
     }
 }
 
-/// Validates that all segments of a test name contain only allowed characters `[a-z0-9_.-]`.
-/// The name can use either Unix-style forward slashes (`/`) or Windows-style backslashes (`\`) as separators.
-///
-/// # Errors
-/// Returns a message describing the offending segment if any segment is empty, is `.`/`..`,
-/// or contains characters outside `[a-z0-9_.-]`.
-pub fn validate_test_name(name: &str) -> Result<(), String> {
-    for segment in name.split(['/', '\\']) {
-        if segment.is_empty() {
-            return Err("Test name segment cannot be empty".to_string());
-        }
-        if segment == "." || segment == ".." {
-            return Err(format!(
-                "Test name segment cannot be relative path navigation '{segment}'"
-            ));
-        }
-        for c in segment.chars() {
-            if !c.is_ascii_lowercase() && !c.is_ascii_digit() && c != '_' && c != '-' && c != '.' {
-                return Err(format!(
-                    "Invalid character '{c}' in test name segment '{segment}'. Only lowercase alphanumeric, '_', '-', and '.' are allowed."
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Default directories unconditionally pruned during scanner traversal to prevent hanging
-/// or indexing build artifacts across frontend ecosystems (Flutter, Android, iOS, Web/Node, Rust, Go).
-pub const DEFAULT_PRUNED_DIRECTORIES: &[&str] = &[
-    ".git",
-    ".gleon",
-    ".dart_tool",
-    "build",
-    "target",
-    "node_modules",
-    "vendor",
-    "DerivedData",
-    ".gradle",
-];
-
 /// Scanner for visual regression test screenshots.
 pub struct FileScanner;
 
@@ -211,17 +171,8 @@ impl FileScanner {
         base_dir: &Path,
         rule: std::sync::Arc<crate::config::ScreenshotRule>,
     ) -> Result<Vec<TestCase>, ScannerError> {
-        let mut include_builder = GlobSetBuilder::new();
-        for pat in include_globs {
-            include_builder.add(pat.as_glob().clone());
-        }
-        let include_set = include_builder.build()?;
-
-        let mut exclude_builder = GlobSetBuilder::new();
-        for pat in exclude_globs {
-            exclude_builder.add(pat.as_glob().clone());
-        }
-        let exclude_set = exclude_builder.build()?;
+        let include_set = build_globset(include_globs)?;
+        let exclude_set = build_globset(exclude_globs)?;
 
         let walker = Self::build_walker(base_dir, &exclude_set);
 
@@ -278,19 +229,14 @@ impl FileScanner {
         config: &GleonConfig,
         base_dir: &Path,
     ) -> Result<Vec<TestCase>, ScannerError> {
-        let mut exclude_builder = GlobSetBuilder::new();
-        for pat in &config.exclude {
-            exclude_builder.add(pat.as_glob().clone());
-        }
-        let exclude_set = exclude_builder.build()?;
+        let exclude_set = build_globset(&config.exclude)?;
 
         let mut rule_sets = Vec::new();
         for rule in &config.screenshots {
-            let mut include_builder = GlobSetBuilder::new();
-            for pat in &rule.include {
-                include_builder.add(pat.as_glob().clone());
-            }
-            rule_sets.push((std::sync::Arc::new(rule.clone()), include_builder.build()?));
+            rule_sets.push((
+                std::sync::Arc::new(rule.clone()),
+                build_globset(&rule.include)?,
+            ));
         }
 
         let walker = Self::build_walker(base_dir, &exclude_set);
@@ -353,7 +299,7 @@ impl FileScanner {
                     if let Err(reason) = validate_test_name(test_name_norm) {
                         return Err(ScannerError::InvalidTestName {
                             name: test_name_norm.to_string(),
-                            reason,
+                            reason: reason.to_string(),
                         });
                     }
                     temp_cases.insert(
@@ -389,7 +335,7 @@ impl FileScanner {
                     && entry
                         .file_name()
                         .to_str()
-                        .is_some_and(|name| DEFAULT_PRUNED_DIRECTORIES.contains(&name))
+                        .is_some_and(crate::walk::is_default_pruned_dir)
                 {
                     return false;
                 }
@@ -420,8 +366,8 @@ impl FileScanner {
     #[must_use]
     pub fn normalize_path_str(path: &Path) -> Cow<'_, str> {
         match path.to_string_lossy() {
-            Cow::Borrowed(s) => crate::manifest::normalize_test_name(s),
-            Cow::Owned(s) => match crate::manifest::normalize_test_name(&s) {
+            Cow::Borrowed(s) => normalize_test_name(s),
+            Cow::Owned(s) => match normalize_test_name(&s) {
                 Cow::Borrowed(_) => Cow::Owned(s),
                 Cow::Owned(new_s) => Cow::Owned(new_s),
             },
@@ -470,7 +416,7 @@ impl FileScanner {
         if let Err(reason) = validate_test_name(test_name_str) {
             return Err(ScannerError::InvalidTestName {
                 name: test_name_str.to_string(),
-                reason,
+                reason: reason.to_string(),
             });
         }
 
@@ -494,6 +440,7 @@ impl FileScanner {
 )]
 mod tests {
     use super::*;
+    use globset::GlobSetBuilder;
 
     // Tiny 1x1 valid PNG bytes
     const VALID_PNG_BYTES: &[u8] = &[
@@ -503,25 +450,6 @@ mod tests {
         0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
         0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
-
-    #[test]
-    fn test_validate_test_name() {
-        assert!(validate_test_name(".").is_err());
-        assert!(validate_test_name("billing").is_ok());
-        assert!(validate_test_name("billing/stripe").is_ok());
-        assert!(validate_test_name("billing/stripe-v2").is_ok());
-        assert!(validate_test_name("billing/stripe.v2").is_ok());
-        assert!(validate_test_name("billing/stripe_v2").is_ok());
-
-        assert!(validate_test_name("billing/Stripe").is_err());
-        assert!(validate_test_name("billing/").is_err());
-        assert!(validate_test_name("/billing").is_err());
-        assert!(validate_test_name("billing//stripe").is_err());
-        assert!(validate_test_name("billing/stripe$").is_err());
-        assert!(validate_test_name("billing/..").is_err());
-        assert!(validate_test_name("billing/.").is_err());
-        assert!(validate_test_name("billing/../stripe").is_err());
-    }
 
     #[test]
     fn test_normalize_path_str() {

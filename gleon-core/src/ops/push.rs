@@ -110,8 +110,8 @@ pub async fn push_blobs(
     all_platforms: bool,
     platform_override: Option<&str>,
 ) -> Result<PushResult, PushError> {
-    let gleon_dir = base_dir.join(".gleon");
-    match std::fs::metadata(&gleon_dir) {
+    let paths = crate::paths::GleonPaths::new(base_dir);
+    match std::fs::metadata(paths.gleon_dir()) {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(PushError::NotInitialized);
@@ -132,8 +132,8 @@ pub async fn push_blobs(
         }
     };
 
-    let manifests_root = gleon_dir.join("manifests");
-    let blobs_root = gleon_dir.join("blobs");
+    let manifests_root = paths.manifests_root();
+    let blobs_root = paths.blobs_root();
 
     let platform_dirs = if all_platforms {
         match list_platform_dirs(&manifests_root) {

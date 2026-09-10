@@ -107,7 +107,7 @@ struct GithubRepository {
 ///
 /// Fails closed: if the payload is missing, unreadable, unparsable, or lacks repository
 /// information, this returns `true` (private).
-pub fn parse_github_event_payload_is_private(env_provider: &dyn crate::git::EnvProvider) -> bool {
+pub fn parse_github_event_payload_is_private(env_provider: &dyn crate::env::EnvProvider) -> bool {
     let Some(path) = env_provider.get_var("GITHUB_EVENT_PATH") else {
         return true;
     };
@@ -123,16 +123,24 @@ pub fn parse_github_event_payload_is_private(env_provider: &dyn crate::git::EnvP
         .is_none_or(|repo| repo.private) // Fail closed: if event payload exists but fails to parse, treat as private
 }
 
-fn get_trimmed_var(env_provider: &dyn crate::git::EnvProvider, key: &str) -> Option<String> {
-    env_provider
-        .get_var(key)
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
 /// Identifies the current execution context (GitHub Actions, another CI provider, or local
 /// development) by inspecting well-known environment variables.
-pub fn identify_context(env_provider: &dyn crate::git::EnvProvider) -> ExecutionContext {
+pub fn identify_context(env_provider: &dyn crate::env::EnvProvider) -> ExecutionContext {
+    use crate::env::get_trimmed_var;
+
+    const OTHER_CI_MARKER_VARS: &[&str] = &[
+        "CI",
+        "CONTINUOUS_INTEGRATION",
+        "CIRCLECI",
+        "TRAVIS",
+        "GITLAB_CI",
+        "TF_BUILD",
+        "BUILDKITE",
+        "DRONE",
+        "TEAMCITY_VERSION",
+        "BITBUCKET_COMMIT",
+    ];
+
     // 1. GitHub Actions
     if get_trimmed_var(env_provider, "GITHUB_ACTIONS").as_deref() == Some("true")
         && let Some(repo) = get_trimmed_var(env_provider, "GITHUB_REPOSITORY")
@@ -157,16 +165,9 @@ pub fn identify_context(env_provider: &dyn crate::git::EnvProvider) -> Execution
 
     // 3. Fallback for other CIs
     if !repo.is_empty()
-        || env_provider.get_var("CI").is_some()
-        || env_provider.get_var("CONTINUOUS_INTEGRATION").is_some()
-        || env_provider.get_var("CIRCLECI").is_some()
-        || env_provider.get_var("TRAVIS").is_some()
-        || env_provider.get_var("GITLAB_CI").is_some()
-        || env_provider.get_var("TF_BUILD").is_some()
-        || env_provider.get_var("BUILDKITE").is_some()
-        || env_provider.get_var("DRONE").is_some()
-        || env_provider.get_var("TEAMCITY_VERSION").is_some()
-        || env_provider.get_var("BITBUCKET_COMMIT").is_some()
+        || OTHER_CI_MARKER_VARS
+            .iter()
+            .any(|var| env_provider.has_var(var))
     {
         return ExecutionContext::GenericCI { repo };
     }
@@ -180,7 +181,7 @@ pub struct LicenseGate;
 
 impl LicenseGate {
     /// Verifies the license/compliance status for the current process environment.
-    pub fn verify(env_provider: &dyn crate::git::EnvProvider) -> LicenseStatus {
+    pub fn verify(env_provider: &dyn crate::env::EnvProvider) -> LicenseStatus {
         let is_official = option_env!("GLEON_OFFICIAL_SECRET").is_some();
         let build_timestamp_str = option_env!("GLEON_BUILD_TIMESTAMP").unwrap_or("0");
         let build_timestamp: u64 = build_timestamp_str.trim().parse().unwrap_or(0);
@@ -189,7 +190,7 @@ impl LicenseGate {
     }
 
     fn verify_internal(
-        env_provider: &dyn crate::git::EnvProvider,
+        env_provider: &dyn crate::env::EnvProvider,
         is_official: bool,
         build_timestamp: u64,
     ) -> LicenseStatus {
@@ -343,7 +344,7 @@ pub enum EnforcementAction {
 pub fn enforce_policy(
     status: LicenseStatus,
     strict_mode: bool,
-    env_provider: &dyn crate::git::EnvProvider,
+    env_provider: &dyn crate::env::EnvProvider,
 ) -> EnforcementAction {
     match status {
         LicenseStatus::Valid | LicenseStatus::PublicOrGrantedUse => EnforcementAction::Allow,
@@ -410,7 +411,7 @@ mod tests {
         vars: std::collections::HashMap<String, String>,
     }
 
-    impl crate::git::EnvProvider for MockEnv {
+    impl crate::env::EnvProvider for MockEnv {
         fn get_var(&self, key: &str) -> Option<String> {
             self.vars.get(key).cloned()
         }
@@ -1002,17 +1003,12 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_public_api_and_get_trimmed_var() {
+    fn test_verify_public_api() {
         let env = MockEnv {
             vars: std::collections::HashMap::new(),
         };
         // Verify public LicenseGate::verify entrypoint
         let status = LicenseGate::verify(&env);
         assert_eq!(status, LicenseStatus::Valid);
-
-        // Test get_trimmed_var whitespace filter
-        let mut vars = std::collections::HashMap::new();
-        vars.insert("BLANK".to_string(), "   ".to_string());
-        assert_eq!(get_trimmed_var(&MockEnv { vars }, "BLANK"), None);
     }
 }

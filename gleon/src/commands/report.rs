@@ -5,7 +5,7 @@ use gleon_core::scanner::TestCaseResult;
 
 #[allow(clippy::too_many_lines)] // TODO(C6): move pre-signing pipeline into gleon-core
 pub async fn run_report(
-    env: &dyn gleon_core::git::EnvProvider,
+    env: &dyn gleon_core::env::EnvProvider,
     storage_cfg: Option<gleon_core::storage::StorageConfig>,
     format: &str,
     report_path: &std::path::Path,
@@ -212,7 +212,7 @@ mod tests {
         let nested_out = temp.path().join("nested").join("sub").join("output.md");
 
         struct DummyEnv;
-        impl gleon_core::git::EnvProvider for DummyEnv {
+        impl gleon_core::env::EnvProvider for DummyEnv {
             fn get_var(&self, _key: &str) -> Option<String> {
                 None
             }
@@ -249,7 +249,7 @@ mod tests {
         let out_path = temp.path().join("output.md");
 
         struct DummyEnv;
-        impl gleon_core::git::EnvProvider for DummyEnv {
+        impl gleon_core::env::EnvProvider for DummyEnv {
             fn get_var(&self, _key: &str) -> Option<String> {
                 None
             }
@@ -287,7 +287,7 @@ mod tests {
         gleon_core::io::save_json_atomically(&report_json_path, &vec![tc]).unwrap();
 
         struct DummyEnv;
-        impl gleon_core::git::EnvProvider for DummyEnv {
+        impl gleon_core::env::EnvProvider for DummyEnv {
             fn get_var(&self, _key: &str) -> Option<String> {
                 None
             }
@@ -343,7 +343,7 @@ mod tests {
         std::fs::write(&corrupt_report_path, "not json data").unwrap();
 
         struct DummyEnv;
-        impl gleon_core::git::EnvProvider for DummyEnv {
+        impl gleon_core::env::EnvProvider for DummyEnv {
             fn get_var(&self, _key: &str) -> Option<String> {
                 None
             }

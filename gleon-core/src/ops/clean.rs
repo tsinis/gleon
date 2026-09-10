@@ -241,9 +241,9 @@ pub fn clean_workspace(
 
     // 5. Clean cache directories (.gleon/runs and .gleon/diffs)
     if !options.keep_runs {
-        let gleon_dir = base_path.join(".gleon");
-        let runs_dir = gleon_dir.join("runs");
-        let diffs_dir = gleon_dir.join("diffs");
+        let paths = crate::paths::GleonPaths::new(base_path);
+        let runs_dir = paths.runs_root();
+        let diffs_dir = paths.diffs_dir();
 
         if !options.dry_run {
             match std::fs::remove_dir_all(&runs_dir) {

@@ -66,7 +66,7 @@ pub(crate) fn process_diff_case(
     workspace_index: &WorkspaceIndex,
     actual_dir: &Path,
     diffs_dir: &Path,
-    gleon_dir: &Path,
+    blobs_root: &Path,
 ) -> TestImageResult {
     let test_name = case.name.clone();
     let actual_bytes = match std::fs::read(&case.image.absolute_path) {
@@ -88,7 +88,7 @@ pub(crate) fn process_diff_case(
         };
         if is_byte_identical {
             let baseline_blob_path =
-                crate::storage::local_blob_path(&gleon_dir.join("blobs"), &baseline_entry.hash);
+                crate::storage::local_blob_path(blobs_root, &baseline_entry.hash);
             if !crate::storage::is_usable_blob(&baseline_blob_path) {
                 return TestImageResult::MissingBaseline {
                     relative_path: case.image.relative_path.clone(),
@@ -131,8 +131,7 @@ pub(crate) fn process_diff_case(
         };
     };
 
-    let baseline_blob_path =
-        crate::storage::local_blob_path(&gleon_dir.join("blobs"), &baseline_entry.hash);
+    let baseline_blob_path = crate::storage::local_blob_path(blobs_root, &baseline_entry.hash);
 
     let baseline_bytes = match std::fs::read(&baseline_blob_path) {
         Ok(b) => b,
@@ -272,8 +271,8 @@ pub fn run_diff(
 ) -> Result<DiffReportResult, DiffOpError> {
     use rayon::prelude::*;
 
-    let gleon_dir = base_dir.join(".gleon");
-    if std::fs::metadata(&gleon_dir).is_err() {
+    let paths = crate::paths::GleonPaths::new(base_dir);
+    if std::fs::metadata(paths.gleon_dir()).is_err() {
         return Err(DiffOpError::NotInitialized);
     }
 
@@ -282,7 +281,7 @@ pub fn run_diff(
         Err(e) => return Err(DiffOpError::Context(ContextError::Platform(e))),
     };
 
-    let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
+    let manifests_dir = paths.manifests_dir(&platform_key);
     let mut workspace_index = match WorkspaceIndex::load(&manifests_dir) {
         Ok(idx) => idx,
         Err(e) => return Err(DiffOpError::Manifest(e)),
@@ -293,7 +292,7 @@ pub fn run_diff(
         .as_deref()
         .filter(|&k| k != platform_key)
     {
-        let fallback_dir = gleon_dir.join("manifests").join(fallback_key);
+        let fallback_dir = paths.manifests_dir(fallback_key);
         let fb_index = WorkspaceIndex::load(&fallback_dir).map_err(DiffOpError::Manifest)?;
         if !fb_index.is_empty() {
             tracing::info!(
@@ -305,16 +304,17 @@ pub fn run_diff(
         }
     }
 
-    let runs_dir = gleon_dir.join("runs").join("latest");
+    let runs_dir = paths.runs_latest();
     match std::fs::remove_dir_all(&runs_dir) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(DiffOpError::Io(e)),
     }
-    let diffs_dir = runs_dir.join("diffs");
-    let actual_dir = runs_dir.join("actual");
+    let diffs_dir = paths.runs_latest_diffs();
+    let actual_dir = paths.runs_actual();
     std::fs::create_dir_all(&diffs_dir).map_err(DiffOpError::Io)?;
     std::fs::create_dir_all(&actual_dir).map_err(DiffOpError::Io)?;
+    let blobs_root = paths.blobs_root();
 
     let config = context.config.clone().unwrap_or_default();
     let test_cases = match FileScanner::scan_workspace(&config, base_dir) {
@@ -328,8 +328,13 @@ pub fn run_diff(
         .into_par_iter()
         .map(|case| {
             progress_bar.set_message(case.image.relative_path.display().to_string());
-            let result =
-                process_diff_case(&case, &workspace_index, &actual_dir, &diffs_dir, &gleon_dir);
+            let result = process_diff_case(
+                &case,
+                &workspace_index,
+                &actual_dir,
+                &diffs_dir,
+                &blobs_root,
+            );
             progress_bar.inc(1);
             TestCaseResult {
                 name: case.name,
@@ -642,7 +647,7 @@ mod tests {
             &WorkspaceIndex::new(),
             &actual_dir,
             &diffs_dir,
-            &gleon_dir,
+            &gleon_dir.join("blobs"),
         );
         assert!(matches!(res1, TestImageResult::IoError { .. }));
 
@@ -663,7 +668,13 @@ mod tests {
         let blob_dir = gleon_dir.join("blobs").join("sha256");
         std::fs::create_dir_all(&blob_dir).unwrap();
         std::fs::write(blob_dir.join(hash_val), "fake png").unwrap();
-        let res2 = process_diff_case(&case, &index, &actual_dir, &diffs_dir, &gleon_dir);
+        let res2 = process_diff_case(
+            &case,
+            &index,
+            &actual_dir,
+            &diffs_dir,
+            &gleon_dir.join("blobs"),
+        );
         assert!(matches!(res2, TestImageResult::DecodeError { .. }));
 
         // Create valid image
@@ -697,7 +708,7 @@ mod tests {
             &WorkspaceIndex::new(),
             &actual_dir,
             &diffs_dir,
-            &gleon_dir,
+            &gleon_dir.join("blobs"),
         );
 
         // Restore permissions before assertions

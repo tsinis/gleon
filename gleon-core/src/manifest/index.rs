@@ -1,31 +1,12 @@
 //! In-memory workspace index built from per-test manifest files.
 
-use ignore::WalkBuilder;
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
 use crate::manifest::ManifestError;
 use crate::manifest::single::SingleTestManifest;
-
-/// Normalizes path separators to forward slashes and lowercases test names without unnecessary allocations.
-#[must_use]
-pub fn normalize_test_name(test_name: &str) -> Cow<'_, str> {
-    if test_name.chars().any(|c| c.is_uppercase() || c == '\\') {
-        let mut s = String::with_capacity(test_name.len());
-        for c in test_name.chars() {
-            if c == '\\' {
-                s.push('/');
-            } else {
-                s.extend(c.to_lowercase());
-            }
-        }
-        Cow::Owned(s)
-    } else {
-        Cow::Borrowed(test_name)
-    }
-}
+use crate::naming::normalize_test_name;
 
 /// Validates a relative test path (e.g. `auth/login_screen`).
 /// Splits on both `/` and `\`, verifying that each segment contains only valid characters `[a-z0-9_.-]`.
@@ -34,7 +15,8 @@ pub fn normalize_test_name(test_name: &str) -> Cow<'_, str> {
 /// Returns [`ManifestError::Validation`] if `test_path` is empty, contains a segment with
 /// invalid characters, or attempts parent-directory traversal.
 pub fn validate_test_path(test_path: &str) -> Result<(), ManifestError> {
-    crate::scanner::validate_test_name(test_path).map_err(ManifestError::Validation)
+    crate::naming::validate_test_name(test_path)
+        .map_err(|e| ManifestError::Validation(e.to_string()))
 }
 
 /// In-memory index mapping test case relative paths to their `SingleTestManifest`.
@@ -67,17 +49,7 @@ impl WorkspaceIndex {
 
         let mut entries = BTreeMap::new();
         let mut source_paths = BTreeMap::new();
-        let walker = WalkBuilder::new(manifest_dir)
-            .standard_filters(false)
-            .filter_entry(|e| {
-                if e.file_type().is_some_and(|ft| ft.is_dir())
-                    && matches!(e.file_name().to_str(), Some(name) if name != ".gleon" && crate::scanner::DEFAULT_PRUNED_DIRECTORIES.contains(&name))
-                {
-                    return false;
-                }
-                true
-            })
-            .build();
+        let walker = crate::walk::pruned_walker(manifest_dir).build();
 
         for entry_res in walker {
             let entry = match entry_res {

@@ -4,6 +4,7 @@ use crate::config::ConfigError;
 use crate::context::{ContextError, ResolvedContext};
 use crate::engine::phash::compute_phash;
 use crate::manifest::{ImageHash, ManifestError, SingleTestManifest, WorkspaceIndex};
+use crate::paths::GleonPaths;
 use crate::scanner::{FileScanner, ScannerError};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -129,8 +130,8 @@ pub fn stage_workspace(
         height: u32,
     }
 
-    let gleon_dir = base_dir.join(".gleon");
-    if std::fs::metadata(&gleon_dir).is_err() {
+    let paths = GleonPaths::new(base_dir);
+    if std::fs::metadata(paths.gleon_dir()).is_err() {
         return Err(StageError::NotInitialized);
     }
 
@@ -139,8 +140,8 @@ pub fn stage_workspace(
         Err(e) => return Err(StageError::Context(ContextError::Platform(e))),
     };
 
-    let blobs_dir = gleon_dir.join("blobs").join("sha256");
-    let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
+    let blobs_dir = paths.blob_scheme_dir("sha256");
+    let manifests_dir = paths.manifests_dir(&platform_key);
     std::fs::create_dir_all(&blobs_dir).map_err(StageError::Io)?;
     std::fs::create_dir_all(&manifests_dir).map_err(StageError::Io)?;
 

@@ -1,5 +1,6 @@
 //! Git branch resolution and gitignore validation.
 
+use crate::env::{EnvProvider, OsEnv};
 use std::path::Path;
 
 /// Errors that can occur during Git operations.
@@ -58,21 +59,6 @@ pub enum GitError {
     /// IO error
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-}
-
-/// Helper trait for mocking environment variables in tests.
-pub trait EnvProvider: Sync {
-    /// Gets the environment variable value.
-    fn get_var(&self, key: &str) -> Option<String>;
-}
-
-/// Standard OS environment variable provider.
-pub struct OsEnv;
-
-impl EnvProvider for OsEnv {
-    fn get_var(&self, key: &str) -> Option<String> {
-        std::env::var(key).ok()
-    }
 }
 
 /// Resolver for Git branch context.
@@ -551,11 +537,7 @@ fn is_env_truthy(val: Option<&String>) -> bool {
 }
 
 fn resolve_ci_branch(env: &dyn EnvProvider) -> Option<String> {
-    let get_valid = |k: &str| {
-        env.get_var(k)
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| s.trim().to_string())
-    };
+    let get_valid = |k: &str| crate::env::get_trimmed_var(env, k);
 
     // 1. GitHub Actions
     if is_env_truthy(env.get_var("GITHUB_ACTIONS").as_ref())

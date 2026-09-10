@@ -108,7 +108,7 @@ fn test_resolve_branch_real_repo() {
         return;
     };
 
-    let result = GitResolver::resolve_branch_impl(None, &repo_root, &gleon_core::git::OsEnv);
+    let result = GitResolver::resolve_branch_impl(None, &repo_root, &gleon_core::env::OsEnv);
     assert!(
         result.is_ok(),
         "Expected branch resolution to succeed on real repo, got {result:?}"

@@ -1,6 +1,7 @@
 //! Initialization operation for gleon workspace.
 
 use crate::config::GleonConfig;
+use crate::paths::GleonPaths;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -52,23 +53,22 @@ pub fn init_workspace(
 ) -> Result<InitResult, InitError> {
     use std::io::Write;
 
-    let gleon_dir = base_dir.join(".gleon");
-    let blobs_dir = gleon_dir.join("blobs").join("sha256");
-    let runs_dir = gleon_dir.join("runs").join("latest");
+    let paths = GleonPaths::new(base_dir);
+    let gleon_dir = paths.gleon_dir();
+    let blobs_dir = paths.blob_scheme_dir("sha256");
+    let runs_dir = paths.runs_latest();
 
     std::fs::create_dir_all(&blobs_dir)?;
     std::fs::create_dir_all(&runs_dir)?;
 
     if let Ok(platform_key) = context.platform.to_key() {
-        let manifest_dir = gleon_dir.join("manifests").join(platform_key);
-        std::fs::create_dir_all(&manifest_dir)?;
+        std::fs::create_dir_all(paths.manifests_dir(&platform_key))?;
     } else {
-        let manifest_dir = gleon_dir.join("manifests");
-        std::fs::create_dir_all(&manifest_dir)?;
+        std::fs::create_dir_all(paths.manifests_root())?;
     }
 
     // Scaffold .gleon/.gitignore idempotently to prevent committing blobs/ or runs/ artifacts
-    let gitignore_path = gleon_dir.join(".gitignore");
+    let gitignore_path = paths.gitignore();
     let existing_content = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
     let mut to_append = String::new();
 
@@ -135,7 +135,7 @@ pub fn init_workspace(
         Err(e) => return Err(InitError::Io(e)),
     }
 
-    let internal_config = gleon_dir.join("gleon.yaml");
+    let internal_config = paths.config_file();
 
     let mut config_created = None;
     let default_config = GleonConfig::default();

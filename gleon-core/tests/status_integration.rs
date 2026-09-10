@@ -309,7 +309,7 @@ fn test_status_fallback_platform_integration() {
         ..Cli::for_test(Commands::Status { json: false })
     };
     struct EmptyEnv;
-    impl gleon_core::git::EnvProvider for EmptyEnv {
+    impl gleon_core::env::EnvProvider for EmptyEnv {
         fn get_var(&self, _key: &str) -> Option<String> {
             None
         }

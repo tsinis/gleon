@@ -16,25 +16,15 @@ pub enum ContextError {
     Git(#[from] crate::git::GitError),
 }
 
-/// Traverses parent directories starting from `start_dir` to find `gleon.yaml`.
+/// Traverses parent directories starting from `start_dir` to find `.gleon/gleon.yaml`.
 ///
-/// Mutates the path in-place using `pop()` to avoid heap allocations.
 /// Returns `Some((config_path, root_dir))` if found, or `None` if not found.
 #[must_use]
 pub fn find_config_and_root(
     start_dir: &std::path::Path,
 ) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
-    let mut current = start_dir.to_path_buf();
-    loop {
-        let candidate = current.join(".gleon").join("gleon.yaml");
-        if candidate.is_file() {
-            return Some((candidate, current));
-        }
-        if !current.pop() {
-            break;
-        }
-    }
-    None
+    let paths = crate::paths::find_workspace_root(start_dir, |p| p.config_file().is_file())?;
+    Some((paths.config_file(), paths.base_dir().to_path_buf()))
 }
 
 /// Fully resolved runtime context for a `gleon` command invocation,
@@ -84,7 +74,7 @@ impl ResolvedContext {
     /// or `ContextError::Git` if the current branch name is invalid.
     pub fn from_cli(cli: &Cli, base_dir: &std::path::Path) -> Result<Self, ContextError> {
         let env = PlatformEnv::from_env();
-        Self::from_cli_impl(cli, base_dir, &crate::git::OsEnv, &env)
+        Self::from_cli_impl(cli, base_dir, &crate::env::OsEnv, &env)
     }
 
     /// Builds a `ResolvedContext` from CLI arguments using an injectable
@@ -97,7 +87,7 @@ impl ResolvedContext {
     pub fn from_cli_with_env(
         cli: &Cli,
         base_dir: &std::path::Path,
-        env: &dyn crate::git::EnvProvider,
+        env: &dyn crate::env::EnvProvider,
     ) -> Result<Self, ContextError> {
         let platform_env = PlatformEnv::from_provider(env);
         Self::from_cli_impl(cli, base_dir, env, &platform_env)
@@ -113,7 +103,7 @@ impl ResolvedContext {
     pub fn from_cli_impl(
         cli: &Cli,
         base_dir: &std::path::Path,
-        env_provider: &dyn crate::git::EnvProvider,
+        env_provider: &dyn crate::env::EnvProvider,
         platform_env: &PlatformEnv,
     ) -> Result<Self, ContextError> {
         let (config, resolved_base_dir) = if let Some(ref path) = cli.config {
@@ -215,7 +205,7 @@ mod tests {
     use tempfile::tempdir;
 
     struct EmptyEnv;
-    impl crate::git::EnvProvider for EmptyEnv {
+    impl crate::env::EnvProvider for EmptyEnv {
         fn get_var(&self, _key: &str) -> Option<String> {
             None
         }

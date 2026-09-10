@@ -125,8 +125,8 @@ pub fn check_status(
 ) -> Result<StatusReport, StatusError> {
     use rayon::prelude::*;
 
-    let gleon_dir = base_dir.join(".gleon");
-    if std::fs::metadata(&gleon_dir).is_err() {
+    let paths = crate::paths::GleonPaths::new(base_dir);
+    if std::fs::metadata(paths.gleon_dir()).is_err() {
         return Err(StatusError::NotInitialized);
     }
 
@@ -135,7 +135,7 @@ pub fn check_status(
         Err(e) => return Err(StatusError::Context(ContextError::Platform(e))),
     };
 
-    let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
+    let manifests_dir = paths.manifests_dir(&platform_key);
     let mut workspace_index =
         WorkspaceIndex::load(&manifests_dir).map_err(StatusError::Manifest)?;
 
@@ -144,7 +144,7 @@ pub fn check_status(
         .as_deref()
         .filter(|&k| k != platform_key)
     {
-        let fallback_dir = gleon_dir.join("manifests").join(fallback_key);
+        let fallback_dir = paths.manifests_dir(fallback_key);
         let fb_index = WorkspaceIndex::load(&fallback_dir).map_err(StatusError::Manifest)?;
         if !fb_index.is_empty() {
             tracing::info!(
@@ -157,6 +157,7 @@ pub fn check_status(
     }
 
     let config = context.config.clone().unwrap_or_default();
+    let blobs_root = paths.blobs_root();
 
     // Scan workspace screenshots
     let test_cases = FileScanner::scan_workspace(&config, base_dir)?;
@@ -176,19 +177,15 @@ pub fn check_status(
                         let is_unchanged = if manifest.hash.scheme() == "sha256" {
                             let actual_sha256 = hex::encode(sha2::Sha256::digest(&raw_bytes));
                             if actual_sha256 == manifest.hash.value() {
-                                let baseline_blob_path = crate::storage::local_blob_path(
-                                    &gleon_dir.join("blobs"),
-                                    &manifest.hash,
-                                );
+                                let baseline_blob_path =
+                                    crate::storage::local_blob_path(&blobs_root, &manifest.hash);
                                 crate::storage::is_usable_blob(&baseline_blob_path)
                             } else {
                                 false
                             }
                         } else {
-                            let baseline_blob_path = crate::storage::local_blob_path(
-                                &gleon_dir.join("blobs"),
-                                &manifest.hash,
-                            );
+                            let baseline_blob_path =
+                                crate::storage::local_blob_path(&blobs_root, &manifest.hash);
                             match std::fs::read(&baseline_blob_path) {
                                 Ok(b_bytes) => raw_bytes == b_bytes,
                                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
@@ -201,10 +198,8 @@ pub fn check_status(
                         } else {
                             let matched_zones = case.rule.matched_mask_zones(&img.relative_path);
                             if !matched_zones.is_empty() {
-                                let baseline_blob_path = crate::storage::local_blob_path(
-                                    &gleon_dir.join("blobs"),
-                                    &manifest.hash,
-                                );
+                                let baseline_blob_path =
+                                    crate::storage::local_blob_path(&blobs_root, &manifest.hash);
 
                                 let b_bytes_res = std::fs::read(&baseline_blob_path);
                                 let b_bytes = match b_bytes_res {

@@ -63,13 +63,15 @@ impl StorageConfig {
     /// `GLEON_*` prefixed variables override standard `AWS_*` / `R2_*` variables.
     /// Returns `None` if `GLEON_STORAGE_URL` is missing or empty.
     #[must_use]
-    pub fn from_env(env: &dyn crate::git::EnvProvider) -> Option<Self> {
+    pub fn from_env(env: &dyn crate::env::EnvProvider) -> Option<Self> {
         let url_val = env.get_var("GLEON_STORAGE_URL")?;
         let url = url_val.trim();
         if url.is_empty() {
             return None;
         }
 
+        // Not `env::get_trimmed_var`: credentials are returned verbatim (untrimmed) on a
+        // non-blank match, with a fallback key, unlike that helper's trim-and-return semantics.
         let get_var = |gleon_key: &str, std_key: &str| -> Option<String> {
             env.get_var(gleon_key)
                 .filter(|v| !v.trim().is_empty())
@@ -500,7 +502,7 @@ mod tests {
     use std::collections::HashMap;
 
     struct MapEnv(HashMap<String, String>);
-    impl crate::git::EnvProvider for MapEnv {
+    impl crate::env::EnvProvider for MapEnv {
         fn get_var(&self, key: &str) -> Option<String> {
             self.0.get(key).cloned()
         }

@@ -207,8 +207,11 @@ pub fn validate_segment(s: &str) -> Result<std::borrow::Cow<'_, str>, PlatformEr
         ));
     }
 
-    let lowered = if trimmed.chars().any(char::is_uppercase) {
-        std::borrow::Cow::Owned(trimmed.to_lowercase())
+    // Only ASCII case-folding is applied: the charset check below rejects any non-ASCII
+    // character regardless, so Unicode-aware lowercasing would only spend extra work
+    // producing a string that's still invalid.
+    let lowered = if trimmed.bytes().any(|b| b.is_ascii_uppercase()) {
+        std::borrow::Cow::Owned(trimmed.to_ascii_lowercase())
     } else {
         std::borrow::Cow::Borrowed(trimmed)
     };
@@ -337,11 +340,11 @@ impl PlatformEnv {
     /// Production constructor — reads from the OS process environment.
     #[must_use]
     pub fn from_env() -> Self {
-        Self::from_provider(&crate::git::OsEnv)
+        Self::from_provider(&crate::env::OsEnv)
     }
 
     /// Injectable constructor — reads from any `EnvProvider`.
-    pub fn from_provider(env: &dyn crate::git::EnvProvider) -> Self {
+    pub fn from_provider(env: &dyn crate::env::EnvProvider) -> Self {
         Self {
             platform: env.get_var("GLEON_PLATFORM"),
             fallback_platform: env.get_var("GLEON_FALLBACK_PLATFORM"),

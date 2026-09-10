@@ -59,7 +59,7 @@ struct MergedEnv {
     dotenv: std::collections::HashMap<String, String>,
 }
 
-impl gleon_core::git::EnvProvider for MergedEnv {
+impl gleon_core::env::EnvProvider for MergedEnv {
     fn get_var(&self, key: &str) -> Option<String> {
         std::env::var(key)
             .ok()
@@ -68,7 +68,7 @@ impl gleon_core::git::EnvProvider for MergedEnv {
 }
 
 fn get_storage_config(
-    env: &dyn gleon_core::git::EnvProvider,
+    env: &dyn gleon_core::env::EnvProvider,
 ) -> Option<gleon_core::storage::StorageConfig> {
     gleon_core::storage::StorageConfig::from_env(env)
 }
@@ -79,7 +79,7 @@ mod commands;
 async fn run(
     cli: &Cli,
     current_dir: &std::path::Path,
-    env: &dyn gleon_core::git::EnvProvider,
+    env: &dyn gleon_core::env::EnvProvider,
 ) -> anyhow::Result<i32> {
     match &cli.command {
         Commands::Init => {

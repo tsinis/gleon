@@ -2,7 +2,7 @@
 
 use crate::context::ResolvedContext;
 use crate::manifest::single::SingleTestManifest;
-use ignore::WalkBuilder;
+use crate::paths::GleonPaths;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -49,7 +49,7 @@ pub fn lint_workspace_manifests(
     base_dir: &Path,
     platform_filter: Option<&str>,
 ) -> Result<LintReport, LintError> {
-    let manifests_root = base_dir.join(".gleon").join("manifests");
+    let manifests_root = GleonPaths::new(base_dir).manifests_root();
 
     let search_dir = match platform_filter {
         Some(p) => {
@@ -74,18 +74,7 @@ pub fn lint_workspace_manifests(
     let mut conflicted_files = Vec::new();
     let mut corrupted_files = Vec::new();
 
-    for entry_res in WalkBuilder::new(&search_dir)
-        .standard_filters(false)
-        .filter_entry(|e| {
-            if e.file_type().is_some_and(|ft| ft.is_dir())
-                && matches!(e.file_name().to_str(), Some(name) if name != ".gleon" && crate::scanner::DEFAULT_PRUNED_DIRECTORIES.contains(&name))
-            {
-                return false;
-            }
-            true
-        })
-        .build()
-    {
+    for entry_res in crate::walk::pruned_walker(&search_dir).build() {
         let entry = match entry_res {
             Ok(e) => e,
             Err(err) => {

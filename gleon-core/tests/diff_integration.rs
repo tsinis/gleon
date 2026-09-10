@@ -544,7 +544,7 @@ fn test_diff_fallback_platform_integration() {
         })
     };
     struct EmptyEnv;
-    impl gleon_core::git::EnvProvider for EmptyEnv {
+    impl gleon_core::env::EnvProvider for EmptyEnv {
         fn get_var(&self, _key: &str) -> Option<String> {
             None
         }

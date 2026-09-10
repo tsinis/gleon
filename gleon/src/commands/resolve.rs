@@ -144,8 +144,8 @@ where
         );
 
         if let Some(adapter) = adapter {
+            let blobs_root = gleon_core::paths::GleonPaths::new(&ctx.base_dir).blobs_root();
             for manifest in [&item.conflict.ours, &item.conflict.theirs] {
-                let blobs_root = ctx.base_dir.join(".gleon").join("blobs");
                 let local_blob = gleon_core::storage::local_blob_path(&blobs_root, &manifest.hash);
                 if !gleon_core::storage::is_usable_blob(&local_blob) {
                     info!(

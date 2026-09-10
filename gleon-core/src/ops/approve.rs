@@ -129,8 +129,8 @@ pub fn approve_workspace(
     const MAX_IMAGE_FILE_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
     const BATCH_SIZE: usize = 32;
 
-    let gleon_dir = base_dir.join(".gleon");
-    match std::fs::metadata(&gleon_dir) {
+    let gleon_paths = crate::paths::GleonPaths::new(base_dir);
+    match std::fs::metadata(gleon_paths.gleon_dir()) {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(ApproveError::NotInitialized);
@@ -139,7 +139,7 @@ pub fn approve_workspace(
     }
 
     let source_dir = from_dir.map_or_else(
-        || gleon_dir.join("runs").join("latest").join("actual"),
+        || gleon_paths.runs_actual(),
         |d| {
             if d.is_absolute() {
                 d.to_path_buf()
@@ -162,8 +162,8 @@ pub fn approve_workspace(
         .to_key()
         .map_err(ContextError::Platform)
         .map_err(ApproveError::Context)?;
-    let blobs_dir = gleon_dir.join("blobs").join("sha256");
-    let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
+    let blobs_dir = gleon_paths.blob_scheme_dir("sha256");
+    let manifests_dir = gleon_paths.manifests_dir(&platform_key);
     std::fs::create_dir_all(&blobs_dir).map_err(ApproveError::Io)?;
     std::fs::create_dir_all(&manifests_dir).map_err(ApproveError::Io)?;
 
@@ -176,7 +176,7 @@ pub fn approve_workspace(
         .filter(|&k| k != platform_key)
     {
         Some(fb_key) => {
-            let fb_dir = gleon_dir.join("manifests").join(fb_key);
+            let fb_dir = gleon_paths.manifests_dir(fb_key);
             Some(WorkspaceIndex::load(&fb_dir).map_err(ApproveError::Manifest)?)
         }
         None => None,
@@ -188,7 +188,7 @@ pub fn approve_workspace(
         .filter_entry(|e| {
             if e.depth() > 0
                 && e.file_type().is_some_and(|ft| ft.is_dir())
-                && matches!(e.file_name().to_str(), Some(name) if name.starts_with('.') || crate::scanner::DEFAULT_PRUNED_DIRECTORIES.contains(&name))
+                && matches!(e.file_name().to_str(), Some(name) if name.starts_with('.') || crate::naming::DEFAULT_PRUNED_DIRECTORIES.contains(&name))
             {
                 return false;
             }
@@ -264,7 +264,7 @@ pub fn approve_workspace(
                 }
             }
         }
-        let test_name = crate::manifest::normalize_test_name(&raw_test_name).into_owned();
+        let test_name = crate::naming::normalize_test_name(&raw_test_name).into_owned();
 
         let rel_to_source_buf = rel_to_source.to_path_buf();
         if let Some(existing_path) = resolved_tests.insert(test_name.clone(), file_path.clone()) {

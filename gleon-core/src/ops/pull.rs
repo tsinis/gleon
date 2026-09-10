@@ -72,8 +72,8 @@ pub async fn pull_blobs(
     all_platforms: bool,
     platform_override: Option<&str>,
 ) -> Result<PullResult, PullError> {
-    let gleon_dir = base_dir.join(".gleon");
-    if std::fs::metadata(&gleon_dir).is_err() {
+    let paths = crate::paths::GleonPaths::new(base_dir);
+    if std::fs::metadata(paths.gleon_dir()).is_err() {
         return Err(PullError::NotInitialized);
     }
 
@@ -90,8 +90,8 @@ pub async fn pull_blobs(
         }
     };
 
-    let manifests_root = gleon_dir.join("manifests");
-    let blobs_root = gleon_dir.join("blobs");
+    let manifests_root = paths.manifests_root();
+    let blobs_root = paths.blobs_root();
 
     let mut referenced_hashes = std::collections::BTreeSet::new();
     let mut missing_blobs = Vec::new();

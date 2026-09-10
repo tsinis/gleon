@@ -12,8 +12,12 @@ pub mod io;
 pub mod license;
 pub mod manifest;
 pub mod masking;
+/// Test name normalization and validation shared by the scanner and manifest layers.
+pub mod naming;
 /// High-level workspace operations (init, stage, approve, diff, push, pull, etc.) invoked by the CLI.
 pub mod ops;
+/// Canonical layout of the `.gleon` workspace directory.
+pub mod paths;
 /// Platform key resolution (os/arch/renderer/label) and conflict detection.
 pub mod platform;
 /// Rendering of run results into HTML, `JUnit` XML, markdown, and PR comment formats.
@@ -21,3 +25,5 @@ pub mod report;
 pub mod scanner;
 pub mod storage;
 pub mod ui;
+/// Shared directory-traversal and glob-set construction helpers.
+pub mod walk;
