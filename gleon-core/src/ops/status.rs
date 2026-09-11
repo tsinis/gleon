@@ -2,10 +2,10 @@
 
 use crate::context::ResolvedContext;
 use crate::ops::common::{
-    CoreError, ensure_initialized, load_config_and_scan, load_index_with_fallback, platform_key,
+    CoreError, ensure_initialized, index_keys_missing_from, load_config_and_scan,
+    load_merged_index_with_fallback, platform_key, sha256_hex_matches,
 };
 use serde::Serialize;
-use sha2::Digest;
 
 use std::path::PathBuf;
 use thiserror::Error;
@@ -91,6 +91,88 @@ impl StatusReport {
     }
 }
 
+/// Classifies one scanned test case against `workspace_index`: `(Some(path), None)` if it's
+/// untracked (added), `(None, Some(path))` if its content differs from the baseline once masks
+/// are applied (modified), or `(None, None)` if unchanged.
+///
+/// Pulled out of [`check_status`]'s parallel scan so the per-case comparison logic (hash/blob
+/// lookup, mask-aware image diffing) reads as its own unit rather than an ~80-line closure body.
+fn classify_test_case(
+    case: &crate::scanner::TestCase,
+    workspace_index: &crate::manifest::WorkspaceIndex,
+    blobs_root: &std::path::Path,
+) -> Result<(Option<PathBuf>, Option<PathBuf>), StatusError> {
+    let img = &case.image;
+
+    let Some(manifest) = workspace_index.get(&case.name) else {
+        return Ok((Some(img.relative_path.clone()), None));
+    };
+
+    let raw_bytes = std::fs::read(&img.absolute_path).map_err(CoreError::Io)?;
+    let is_unchanged = if manifest.hash.scheme() == "sha256" {
+        if sha256_hex_matches(&manifest.hash, &raw_bytes) {
+            crate::storage::has_usable_local_blob(blobs_root, &manifest.hash)
+        } else {
+            false
+        }
+    } else {
+        let baseline_blob_path = crate::storage::local_blob_path(blobs_root, &manifest.hash);
+        match std::fs::read(&baseline_blob_path) {
+            Ok(b_bytes) => raw_bytes == b_bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(CoreError::Io(e).into()),
+        }
+    };
+
+    if is_unchanged {
+        crate::manifest::SingleTestManifest::validate_image_bytes(&raw_bytes)
+            .map_err(CoreError::Manifest)?;
+        return Ok((None, None));
+    }
+
+    let matched_zones = case.rule.matched_mask_zones(&img.relative_path);
+    if matched_zones.is_empty() {
+        return Ok((None, Some(img.relative_path.clone())));
+    }
+
+    let baseline_blob_path = crate::storage::local_blob_path(blobs_root, &manifest.hash);
+    let b_bytes = match std::fs::read(&baseline_blob_path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((None, Some(img.relative_path.clone())));
+        }
+        Err(e) => return Err(CoreError::Io(e).into()),
+    };
+
+    if let Err(e) = crate::manifest::SingleTestManifest::validate_image_bytes(&b_bytes) {
+        return Err(CoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Invalid baseline dimensions/format: {e}"),
+        ))
+        .into());
+    }
+    let b_img = image::load_from_memory(&b_bytes)?;
+
+    if let Err(e) = crate::manifest::SingleTestManifest::validate_image_bytes(&raw_bytes) {
+        return Err(CoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Invalid actual image dimensions/format: {e}"),
+        ))
+        .into());
+    }
+    let a_img = image::load_from_memory(&raw_bytes)?;
+
+    let mut b_rgba = b_img.to_rgba8();
+    let mut a_rgba = a_img.to_rgba8();
+    crate::masking::apply_masks(&mut b_rgba, &matched_zones);
+    crate::masking::apply_masks(&mut a_rgba, &matched_zones);
+    if b_rgba == a_rgba {
+        return Ok((None, None));
+    }
+
+    Ok((None, Some(img.relative_path.clone())))
+}
+
 /// Evaluates status for the workspace at `base_dir`.
 ///
 /// # Errors
@@ -98,29 +180,17 @@ impl StatusReport {
 /// Returns an error if the workspace is not initialized, if the platform key cannot be
 /// resolved, if manifests or workspace configuration fail to load, if screenshots cannot be
 /// scanned, or if reading/decoding actual or baseline images fails.
-#[allow(clippy::too_many_lines)]
 pub fn check_status(context: &ResolvedContext) -> Result<StatusReport, StatusError> {
     use rayon::prelude::*;
 
     let paths = ensure_initialized(&context.base_dir)?;
     let platform_key = platform_key(context)?;
 
-    let (mut workspace_index, fallback_index) = load_index_with_fallback(
+    let workspace_index = load_merged_index_with_fallback(
         &paths,
         &platform_key,
         context.fallback_platform_key.as_deref(),
     )?;
-
-    if let Some(fb_index) = fallback_index
-        && !fb_index.is_empty()
-    {
-        tracing::info!(
-            "Using fallback platform '{}' for missing manifests on platform '{}'.",
-            context.fallback_platform_key.as_deref().unwrap_or_default(),
-            platform_key
-        );
-        workspace_index.merge_fallback(fb_index);
-    }
 
     let blobs_root = paths.blobs_root();
 
@@ -129,93 +199,7 @@ pub fn check_status(context: &ResolvedContext) -> Result<StatusReport, StatusErr
 
     let (mut added, mut modified) = test_cases
         .par_iter()
-        .map(
-            |case| -> Result<(Option<PathBuf>, Option<PathBuf>), StatusError> {
-                let baseline_manifest = workspace_index.get(&case.name);
-
-                let img = &case.image;
-
-                match baseline_manifest {
-                    None => Ok((Some(img.relative_path.clone()), None)),
-                    Some(manifest) => {
-                        let raw_bytes = std::fs::read(&img.absolute_path).map_err(CoreError::Io)?;
-                        let is_unchanged = if manifest.hash.scheme() == "sha256" {
-                            let actual_sha256 = hex::encode(sha2::Sha256::digest(&raw_bytes));
-                            if actual_sha256 == manifest.hash.value() {
-                                let baseline_blob_path =
-                                    crate::storage::local_blob_path(&blobs_root, &manifest.hash);
-                                crate::storage::is_usable_blob(&baseline_blob_path)
-                            } else {
-                                false
-                            }
-                        } else {
-                            let baseline_blob_path =
-                                crate::storage::local_blob_path(&blobs_root, &manifest.hash);
-                            match std::fs::read(&baseline_blob_path) {
-                                Ok(b_bytes) => raw_bytes == b_bytes,
-                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-                                Err(e) => return Err(CoreError::Io(e).into()),
-                            }
-                        };
-                        if is_unchanged {
-                            crate::manifest::SingleTestManifest::validate_image_bytes(&raw_bytes)
-                                .map_err(CoreError::Manifest)?;
-                            Ok((None, None))
-                        } else {
-                            let matched_zones = case.rule.matched_mask_zones(&img.relative_path);
-                            if !matched_zones.is_empty() {
-                                let baseline_blob_path =
-                                    crate::storage::local_blob_path(&blobs_root, &manifest.hash);
-
-                                let b_bytes_res = std::fs::read(&baseline_blob_path);
-                                let b_bytes = match b_bytes_res {
-                                    Ok(b) => b,
-                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                                        return Ok((None, Some(img.relative_path.clone())));
-                                    }
-                                    Err(e) => return Err(CoreError::Io(e).into()),
-                                };
-
-                                if let Err(e) =
-                                    crate::manifest::SingleTestManifest::validate_image_bytes(
-                                        &b_bytes,
-                                    )
-                                {
-                                    return Err(CoreError::Io(std::io::Error::new(
-                                        std::io::ErrorKind::InvalidData,
-                                        format!("Invalid baseline dimensions/format: {e}"),
-                                    ))
-                                    .into());
-                                }
-                                let b_img = image::load_from_memory(&b_bytes)?;
-
-                                if let Err(e) =
-                                    crate::manifest::SingleTestManifest::validate_image_bytes(
-                                        &raw_bytes,
-                                    )
-                                {
-                                    return Err(CoreError::Io(std::io::Error::new(
-                                        std::io::ErrorKind::InvalidData,
-                                        format!("Invalid actual image dimensions/format: {e}"),
-                                    ))
-                                    .into());
-                                }
-                                let a_img = image::load_from_memory(&raw_bytes)?;
-
-                                let mut b_rgba = b_img.to_rgba8();
-                                let mut a_rgba = a_img.to_rgba8();
-                                crate::masking::apply_masks(&mut b_rgba, &matched_zones);
-                                crate::masking::apply_masks(&mut a_rgba, &matched_zones);
-                                if b_rgba == a_rgba {
-                                    return Ok((None, None));
-                                }
-                            }
-                            Ok((None, Some(img.relative_path.clone())))
-                        }
-                    }
-                }
-            },
-        )
+        .map(|case| classify_test_case(case, &workspace_index, &blobs_root))
         .try_fold(
             || (Vec::new(), Vec::new()),
             |mut acc, item| -> Result<_, StatusError> {
@@ -247,13 +231,11 @@ pub fn check_status(context: &ResolvedContext) -> Result<StatusReport, StatusErr
     let mut deleted = Vec::new();
 
     // Identify deleted test cases (staged in index but no longer present on disk)
-    for staged_name in workspace_index.entries().keys() {
-        if !seen_test_cases.contains(staged_name.as_str()) {
-            let mut p = String::with_capacity(staged_name.len() + 4);
-            p.push_str(staged_name);
-            p.push_str(".png");
-            deleted.push(PathBuf::from(p));
-        }
+    for staged_name in index_keys_missing_from(&workspace_index, &seen_test_cases) {
+        let mut p = String::with_capacity(staged_name.len() + 4);
+        p.push_str(staged_name);
+        p.push_str(".png");
+        deleted.push(PathBuf::from(p));
     }
 
     added.sort();
@@ -283,6 +265,7 @@ mod tests {
     use crate::context::ContextError;
     use crate::manifest::{ManifestError, WorkspaceIndex};
     use crate::scanner::ScannerError;
+    use sha2::Digest;
 
     #[test]
     fn test_status_error_display() {

@@ -2,7 +2,9 @@
 
 use crate::context::ResolvedContext;
 use crate::manifest::{ManifestError, WorkspaceIndex};
-use crate::ops::common::{CoreError, build_manifest, ensure_initialized, hash_and_measure};
+use crate::ops::common::{
+    CoreError, build_manifest, ensure_initialized, hash_and_measure, index_keys_missing_from,
+};
 use crate::scanner::FileScanner;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -148,11 +150,8 @@ pub fn stage_workspace(
             .iter()
             .map(|item| item.case_name.as_str())
             .collect();
-        let orphan_names: Vec<_> = workspace_index
-            .entries()
-            .keys()
-            .filter(|k| !scanned_names.contains(k.as_str()))
-            .cloned()
+        let orphan_names: Vec<String> = index_keys_missing_from(&workspace_index, &scanned_names)
+            .map(String::from)
             .collect();
         for existing in orphan_names {
             workspace_index

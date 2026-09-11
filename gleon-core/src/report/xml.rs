@@ -11,58 +11,17 @@ use super::format::FormattedPath;
 use crate::engine::MismatchDetail;
 use crate::results::{TestCaseResult, TestImageResult};
 
-struct XmlDecodeErrorView<'a>(&'a str);
+/// Lazy view prepending a static prefix (`"Decode error: "`, `"IO error: "`, ...) to a failure
+/// message, shared by every `TestImageResult` variant whose XML `failure_message` is just
+/// `"{prefix}: {message}"`.
+struct XmlPrefixedMessage<'a>(&'static str, &'a str);
 
-impl std::fmt::Display for XmlDecodeErrorView<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Decode error: {}", self.0)
-    }
-}
-
-impl Serialize for XmlDecodeErrorView<'_> {
+impl Serialize for XmlPrefixedMessage<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        serializer.collect_str(self)
-    }
-}
-
-struct XmlIoErrorView<'a>(&'a str);
-
-impl std::fmt::Display for XmlIoErrorView<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "IO error: {}", self.0)
-    }
-}
-
-impl Serialize for XmlIoErrorView<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.collect_str(self)
-    }
-}
-
-struct XmlMissingBaselineView<'a>(&'a str);
-impl Serialize for XmlMissingBaselineView<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.collect_str(&format_args!("Missing baseline: {}", self.0))
-    }
-}
-
-// Lazy view for XML encode error message
-struct XmlEncodeErrorView<'a>(&'a str);
-impl Serialize for XmlEncodeErrorView<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.collect_str(&format_args!("Encode error: {}", self.0))
+        serializer.collect_str(&format_args!("{}: {}", self.0, self.1))
     }
 }
 
@@ -142,19 +101,31 @@ impl Serialize for XmlTestImageResultView<'_> {
             }
             TestImageResult::DecodeError { error, .. } => {
                 state.serialize_field("status", "DecodeError")?;
-                state.serialize_field("failure_message", &Some(XmlDecodeErrorView(error)))?;
+                state.serialize_field(
+                    "failure_message",
+                    &Some(XmlPrefixedMessage("Decode error", error)),
+                )?;
             }
             TestImageResult::IoError { error, .. } => {
                 state.serialize_field("status", "IoError")?;
-                state.serialize_field("failure_message", &Some(XmlIoErrorView(error)))?;
+                state.serialize_field(
+                    "failure_message",
+                    &Some(XmlPrefixedMessage("IO error", error)),
+                )?;
             }
             TestImageResult::EncodeError { error, .. } => {
                 state.serialize_field("status", "EncodeError")?;
-                state.serialize_field("failure_message", &Some(XmlEncodeErrorView(error)))?;
+                state.serialize_field(
+                    "failure_message",
+                    &Some(XmlPrefixedMessage("Encode error", error)),
+                )?;
             }
             TestImageResult::MissingBaseline { reason, .. } => {
                 state.serialize_field("status", "MissingBaseline")?;
-                state.serialize_field("failure_message", &Some(XmlMissingBaselineView(reason)))?;
+                state.serialize_field(
+                    "failure_message",
+                    &Some(XmlPrefixedMessage("Missing baseline", reason)),
+                )?;
             }
             TestImageResult::DimensionMismatch {
                 baseline_size,
@@ -233,10 +204,7 @@ impl super::ReportGenerator {
     /// missing from the registry or fails to render against the test case data.
     pub fn generate_junit_xml(test_cases: &[TestCaseResult]) -> Result<String, ReportError> {
         let total_tests = test_cases.len();
-        let failed_tests = test_cases
-            .iter()
-            .filter(|tc| !matches!(tc.result, TestImageResult::Success { .. }))
-            .count();
+        let failed_tests = test_cases.iter().filter(|tc| !tc.passed()).count();
 
         let tmpl = super::JINJA_ENV
             .get_template("junit.xml")

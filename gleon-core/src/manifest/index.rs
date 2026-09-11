@@ -195,11 +195,7 @@ impl WorkspaceIndex {
                 _ => false,
             };
             if !is_same_file {
-                match fs::remove_file(&old_path) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(ManifestError::StdIo(e)),
-                }
+                remove_file_ignore_missing(&old_path)?;
             }
         }
 
@@ -229,19 +225,11 @@ impl WorkspaceIndex {
 
         if let Some(old_source) = self.source_paths.remove(canonical_key) {
             let old_path = manifest_file_path(manifest_dir, &old_source);
-            match fs::remove_file(&old_path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(ManifestError::StdIo(e)),
-            }
+            remove_file_ignore_missing(&old_path)?;
         }
 
         let target_path = manifest_file_path(manifest_dir, canonical_key);
-        match fs::remove_file(&target_path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(ManifestError::StdIo(e)),
-        }
+        remove_file_ignore_missing(&target_path)?;
         Ok(self.entries.remove(canonical_key))
     }
 }
@@ -250,6 +238,15 @@ fn manifest_file_path(dir: &Path, key: &str) -> std::path::PathBuf {
     let mut file_name = std::ffi::OsString::from(key);
     file_name.push(".json");
     dir.join(file_name)
+}
+
+/// Removes the file at `path`, treating it already being absent as success.
+fn remove_file_ignore_missing(path: &Path) -> Result<(), ManifestError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(ManifestError::StdIo(e)),
+    }
 }
 
 #[cfg(test)]

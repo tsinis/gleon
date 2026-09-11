@@ -13,7 +13,7 @@ use crate::manifest::{ImageHash, ManifestError, SingleTestManifest, WorkspaceInd
 use crate::paths::GleonPaths;
 use crate::scanner::{FileScanner, ScannerError, TestCase};
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Errors shared across `ops::*` operations.
 #[derive(Debug, thiserror::Error)]
@@ -102,6 +102,91 @@ pub fn load_index_with_fallback(
         .transpose()?;
 
     Ok((workspace_index, fallback_index))
+}
+
+/// Loads the workspace index for `platform_key` and merges in fallback-platform entries for any
+/// test name missing locally, logging when the fallback is actually used.
+///
+/// Convenience wrapper around [`load_index_with_fallback`] for callers (`run_diff`,
+/// `check_status`) that always want the merged view; callers needing the fallback index kept
+/// separate (e.g. `pull_blobs`, which only wants blobs for entries missing from the primary
+/// index, not a merged view of both) should call [`load_index_with_fallback`] directly instead.
+///
+/// # Errors
+/// Returns [`CoreError::Manifest`] if either index fails to load.
+pub fn load_merged_index_with_fallback(
+    paths: &GleonPaths,
+    platform_key: &str,
+    fallback_platform_key: Option<&str>,
+) -> Result<WorkspaceIndex, CoreError> {
+    let (mut workspace_index, fallback_index) =
+        load_index_with_fallback(paths, platform_key, fallback_platform_key)?;
+
+    if let Some(fb_index) = fallback_index
+        && !fb_index.is_empty()
+    {
+        tracing::info!(
+            "Using fallback platform '{}' for missing manifests on platform '{}'.",
+            fallback_platform_key.unwrap_or_default(),
+            platform_key
+        );
+        workspace_index.merge_fallback(fb_index);
+    }
+
+    Ok(workspace_index)
+}
+
+/// Resolves the manifest search directory for a `platform_filter` argument shared by
+/// `lint_workspace_manifests` and `scan_conflicts`.
+///
+/// `manifests_root` itself when `platform_filter` is unset, or `manifests_root/<platform_filter>`
+/// when it's exactly one valid path segment.
+///
+/// # Errors
+/// Returns `Err(platform_filter)` (the original string, unchanged) if it isn't a single valid
+/// segment, so callers can wrap it in their own `InvalidPlatformFilter` error variant.
+pub fn resolve_platform_filter_dir<'a>(
+    manifests_root: &Path,
+    platform_filter: Option<&'a str>,
+) -> Result<PathBuf, &'a str> {
+    let Some(p) = platform_filter else {
+        return Ok(manifests_root.to_path_buf());
+    };
+
+    let path = Path::new(p);
+    let mut components = path.components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(seg)), None)
+            if crate::manifest::index::validate_test_path(&seg.to_string_lossy()).is_ok() =>
+        {
+            Ok(manifests_root.join(p))
+        }
+        _ => Err(p),
+    }
+}
+
+/// Returns `true` if `hash`'s scheme is `sha256` and its hex value matches the SHA-256 digest.
+///
+/// Always `false` for any other scheme — callers fall back to their own scheme-specific
+/// comparison (e.g. reading and byte-comparing the local blob) in that case.
+#[must_use]
+pub fn sha256_hex_matches(hash: &ImageHash, bytes: &[u8]) -> bool {
+    hash.scheme() == "sha256" && hex::encode(Sha256::digest(bytes)) == hash.value()
+}
+
+/// Returns `index`'s keys with no matching entry in `present` (by exact string match).
+///
+/// Shared by callers that need to find staged manifests whose test case no longer exists on
+/// disk — `stage_workspace` prunes these as orphans, `check_status` reports them as deletions.
+pub fn index_keys_missing_from<'a, S: std::hash::BuildHasher>(
+    index: &'a WorkspaceIndex,
+    present: &std::collections::HashSet<&str, S>,
+) -> impl Iterator<Item = &'a str> {
+    index
+        .entries()
+        .keys()
+        .map(String::as_str)
+        .filter(move |k| !present.contains(k))
 }
 
 /// Loads the effective `GleonConfig` from `context` (or its default) and scans the workspace

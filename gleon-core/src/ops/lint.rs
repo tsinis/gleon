@@ -2,8 +2,9 @@
 
 use crate::context::ResolvedContext;
 use crate::manifest::single::SingleTestManifest;
+use crate::ops::common::resolve_platform_filter_dir;
 use crate::paths::GleonPaths;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use thiserror::Error;
 
 /// Errors that can occur during manifest linting.
@@ -51,23 +52,8 @@ pub fn lint_workspace_manifests(
     let base_dir = ctx.base_dir.as_path();
     let manifests_root = GleonPaths::new(base_dir).manifests_root();
 
-    let search_dir = match platform_filter {
-        Some(p) => {
-            let path = Path::new(p);
-            let mut components = path.components();
-            match (components.next(), components.next()) {
-                (Some(std::path::Component::Normal(seg)), None) => {
-                    let seg_str = seg.to_string_lossy();
-                    if crate::manifest::index::validate_test_path(&seg_str).is_err() {
-                        return Err(LintError::InvalidPlatformFilter(p.to_string()));
-                    }
-                    manifests_root.join(p)
-                }
-                _ => return Err(LintError::InvalidPlatformFilter(p.to_string())),
-            }
-        }
-        None => manifests_root,
-    };
+    let search_dir = resolve_platform_filter_dir(&manifests_root, platform_filter)
+        .map_err(|p| LintError::InvalidPlatformFilter(p.to_string()))?;
 
     let mut total_files = 0;
     let mut valid_files = 0;

@@ -7,7 +7,9 @@ use thiserror::Error;
 use crate::context::ResolvedContext;
 use crate::manifest::{ImageHash, WorkspaceIndex};
 use crate::ops::common::{CoreError, ensure_initialized};
-use crate::ops::sync::{active_storage_config, resolve_platform_dirs, transfer_with_progress};
+use crate::ops::sync::{
+    active_storage_config, resolve_platform_dirs, short_hash, transfer_with_progress,
+};
 use crate::storage::{ObjectStoreAdapter, StorageConfig, StorageError};
 
 /// Errors that can occur during a pull operation.
@@ -115,8 +117,7 @@ pub async fn pull_blobs(
 
     let mut register_blob = |hash: &ImageHash, origin_platform: &str| {
         if referenced_hashes.insert(hash.clone()) {
-            let local_blob_path = crate::storage::local_blob_path(&blobs_root, hash);
-            if crate::storage::is_usable_blob(&local_blob_path) {
+            if crate::storage::has_usable_local_blob(&blobs_root, hash) {
                 skipped_blobs += 1;
             } else {
                 missing_blobs.push((hash.clone(), origin_platform.to_string()));
@@ -159,10 +160,7 @@ pub async fn pull_blobs(
             let adapter = adapter.clone();
             let dest_path = blobs_root.join(hash.scheme()).join(hash.value());
             async move {
-                pb.set_message(format!(
-                    "Downloading {}",
-                    &hash.value()[..8.min(hash.value().len())]
-                ));
+                pb.set_message(format!("Downloading {}", short_hash(&hash)));
                 let res = match adapter.download_blob(&hash, &dest_path).await {
                     Ok(()) => Ok(()),
                     Err(StorageError::BlobNotFound(_)) => Err(PullError::MissingRemoteBlob {

@@ -63,6 +63,18 @@ pub fn local_blob_path(
     blobs_root.join(hash.scheme()).join(hash.value())
 }
 
+/// Returns `true` if `hash`'s blob exists under `blobs_root` and is usable.
+///
+/// A convenience for callers that only need the yes/no answer, not the path itself (which
+/// they'd otherwise compute via [`local_blob_path`] just to immediately discard).
+#[must_use]
+pub fn has_usable_local_blob(
+    blobs_root: &std::path::Path,
+    hash: &crate::manifest::ImageHash,
+) -> bool {
+    is_usable_blob(&local_blob_path(blobs_root, hash))
+}
+
 /// Returns `true` only if `path` is an existing regular file and not a symlink.
 #[must_use]
 pub fn is_usable_blob(path: &std::path::Path) -> bool {

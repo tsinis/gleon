@@ -149,19 +149,18 @@ impl ObjectStoreAdapter {
     /// Returns [`StorageError::InvalidUrl`] if the URL or parameters cannot be parsed by `object_store`.
     #[instrument(skip(config), level = "debug")]
     pub fn from_config(config: &StorageConfig) -> Result<Self, StorageError> {
-        let parsed_url = url::Url::parse(&config.url).map_err(|e| StorageError::InvalidUrl {
+        let invalid_url = |e: &dyn fmt::Display| StorageError::InvalidUrl {
             url: config.url.clone(),
             reason: e.to_string(),
-        })?;
+        };
+
+        let parsed_url = url::Url::parse(&config.url).map_err(|e| invalid_url(&e))?;
 
         let url_path = parsed_url.path().trim_start_matches('/');
         let prefix = if url_path.is_empty() {
             object_store::path::Path::default()
         } else {
-            object_store::path::Path::parse(url_path).map_err(|e| StorageError::InvalidUrl {
-                url: config.url.clone(),
-                reason: e.to_string(),
-            })?
+            object_store::path::Path::parse(url_path).map_err(|e| invalid_url(&e))?
         };
 
         let (store, signer): (
@@ -195,10 +194,7 @@ impl ObjectStoreAdapter {
                     builder = builder.with_endpoint(r2_endpoint);
                 }
 
-                let s3 = builder.build().map_err(|e| StorageError::InvalidUrl {
-                    url: config.url.clone(),
-                    reason: e.to_string(),
-                })?;
+                let s3 = builder.build().map_err(|e| invalid_url(&e))?;
                 let s3_arc = Arc::new(s3);
                 (s3_arc.clone(), Some(s3_arc))
             }
@@ -208,10 +204,7 @@ impl ObjectStoreAdapter {
                 if let Some(sec) = &config.gcp_service_account_key {
                     builder = builder.with_service_account_key(sec);
                 }
-                let gcs = builder.build().map_err(|e| StorageError::InvalidUrl {
-                    url: config.url.clone(),
-                    reason: e.to_string(),
-                })?;
+                let gcs = builder.build().map_err(|e| invalid_url(&e))?;
                 let gcs_arc = Arc::new(gcs);
                 (gcs_arc.clone(), Some(gcs_arc))
             }
@@ -231,10 +224,7 @@ impl ObjectStoreAdapter {
                 }
 
                 let (raw_store, path) =
-                    parse_url_opts(&parsed_url, opts).map_err(|e| StorageError::InvalidUrl {
-                        url: config.url.clone(),
-                        reason: e.to_string(),
-                    })?;
+                    parse_url_opts(&parsed_url, opts).map_err(|e| invalid_url(&e))?;
 
                 let store: Arc<dyn ObjectStore> = if path.as_ref().is_empty() {
                     Arc::from(raw_store)
@@ -327,16 +317,12 @@ impl ObjectStoreAdapter {
             options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
         }
 
-        let std_file = options
-            .open(src_path)
-            .map_err(|source| StorageError::Io { source })?;
+        let std_file = options.open(src_path)?;
 
         // On Windows, opening a reparse point with FILE_FLAG_OPEN_REPARSE_POINT succeeds.
         // We must inspect the metadata of the opened handle to reject symlinks.
         // On Unix, O_NOFOLLOW fails to open symlinks with ELOOP, but this check is a harmless safety net.
-        let metadata = std_file
-            .metadata()
-            .map_err(|source| StorageError::Io { source })?;
+        let metadata = std_file.metadata()?;
 
         #[cfg(windows)]
         let is_symlink_or_reparse = {
@@ -375,9 +361,7 @@ impl ObjectStoreAdapter {
         // in `usize` on all supported platforms (including 32-bit targets).
         #[allow(clippy::cast_possible_truncation)]
         let mut bytes = Vec::with_capacity(len as usize);
-        tokio::io::AsyncReadExt::read_to_end(&mut file, &mut bytes)
-            .await
-            .map_err(|source| StorageError::Io { source })?;
+        tokio::io::AsyncReadExt::read_to_end(&mut file, &mut bytes).await?;
         self.store
             .put(&key, object_store::PutPayload::from(bytes))
             .await
@@ -434,17 +418,11 @@ impl ObjectStoreAdapter {
         tokio::task::spawn_blocking(move || -> Result<(), StorageError> {
             let parent_dir = dest_path_buf.parent().unwrap_or_else(|| Path::new("."));
 
-            std::fs::create_dir_all(parent_dir).map_err(|source| StorageError::Io { source })?;
+            std::fs::create_dir_all(parent_dir)?;
 
-            let mut temp_file =
-                NamedTempFile::new_in(parent_dir).map_err(|source| StorageError::Io { source })?;
-            temp_file
-                .write_all(&bytes)
-                .map_err(|source| StorageError::Io { source })?;
-            temp_file
-                .as_file()
-                .sync_all()
-                .map_err(|source| StorageError::Io { source })?;
+            let mut temp_file = NamedTempFile::new_in(parent_dir)?;
+            temp_file.write_all(&bytes)?;
+            temp_file.as_file().sync_all()?;
             temp_file
                 .persist(&dest_path_buf)
                 .map_err(|e| StorageError::PersistFailed {

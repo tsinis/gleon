@@ -19,6 +19,64 @@ struct ApprovedItem {
     height: u32,
 }
 
+const MAX_IMAGE_FILE_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
+
+/// Reads, size-checks, decodes, and hashes one approval candidate screenshot.
+///
+/// Pulled out of `approve_workspace`'s bounded-parallel batch loop so the per-file
+/// read/validate/hash logic reads as its own unit rather than an anonymous closure body.
+fn process_approve_candidate(
+    test_name: &str,
+    file_path: &Path,
+    rel_to_source: &Path,
+) -> Result<ApprovedItem, ApproveError> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(file_path).map_err(CoreError::Io)?;
+    let metadata = file.metadata().map_err(CoreError::Io)?;
+    if metadata.len() > MAX_IMAGE_FILE_SIZE {
+        return Err(ApproveError::ImageTooLarge {
+            path: rel_to_source.to_path_buf(),
+            size: metadata.len(),
+            limit: MAX_IMAGE_FILE_SIZE,
+        });
+    }
+
+    // Safe: metadata.len() was just checked against MAX_IMAGE_FILE_SIZE (64 MB) above,
+    // which fits in a usize on every supported target.
+    #[allow(clippy::cast_possible_truncation)]
+    let mut raw_png_bytes = Vec::with_capacity(metadata.len() as usize);
+    let bytes_read = (&mut file)
+        .take(MAX_IMAGE_FILE_SIZE + 1)
+        .read_to_end(&mut raw_png_bytes)
+        .map_err(CoreError::Io)? as u64;
+
+    if bytes_read > MAX_IMAGE_FILE_SIZE {
+        return Err(ApproveError::ImageTooLarge {
+            path: rel_to_source.to_path_buf(),
+            size: bytes_read,
+            limit: MAX_IMAGE_FILE_SIZE,
+        });
+    }
+
+    let (sha256_hex, phash_str, width, height) =
+        hash_and_measure(&raw_png_bytes).map_err(|e| match e {
+            ManifestError::Image(source) => ApproveError::ImageDecode {
+                path: rel_to_source.to_path_buf(),
+                source,
+            },
+            other => CoreError::Manifest(other).into(),
+        })?;
+
+    Ok(ApprovedItem {
+        test_name: test_name.to_string(),
+        raw_png_bytes,
+        sha256_hex,
+        phash_str,
+        width,
+        height,
+    })
+}
+
 /// Errors that can occur during baseline approval.
 #[derive(Debug, Error)]
 pub enum ApproveError {
@@ -96,7 +154,6 @@ pub fn approve_workspace(
     paths: &[PathBuf],
     from_dir: Option<&Path>,
 ) -> Result<ApproveResult, ApproveError> {
-    const MAX_IMAGE_FILE_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
     const BATCH_SIZE: usize = 32;
 
     let base_dir = context.base_dir.as_path();
@@ -236,51 +293,7 @@ pub fn approve_workspace(
         let processed_items: Result<Vec<ApprovedItem>, ApproveError> = chunk
             .into_par_iter()
             .map(|(test_name, file_path, rel_to_source)| {
-                use std::io::Read;
-                let mut file = std::fs::File::open(file_path).map_err(CoreError::Io)?;
-                let metadata = file.metadata().map_err(CoreError::Io)?;
-                if metadata.len() > MAX_IMAGE_FILE_SIZE {
-                    return Err(ApproveError::ImageTooLarge {
-                        path: rel_to_source.clone(),
-                        size: metadata.len(),
-                        limit: MAX_IMAGE_FILE_SIZE,
-                    });
-                }
-
-                // Safe: metadata.len() was just checked against MAX_IMAGE_FILE_SIZE (64 MB) above,
-                // which fits in a usize on every supported target.
-                #[allow(clippy::cast_possible_truncation)]
-                let mut raw_png_bytes = Vec::with_capacity(metadata.len() as usize);
-                let bytes_read = (&mut file)
-                    .take(MAX_IMAGE_FILE_SIZE + 1)
-                    .read_to_end(&mut raw_png_bytes)
-                    .map_err(CoreError::Io)? as u64;
-
-                if bytes_read > MAX_IMAGE_FILE_SIZE {
-                    return Err(ApproveError::ImageTooLarge {
-                        path: rel_to_source.clone(),
-                        size: bytes_read,
-                        limit: MAX_IMAGE_FILE_SIZE,
-                    });
-                }
-
-                let (sha256_hex, phash_str, width, height) = hash_and_measure(&raw_png_bytes)
-                    .map_err(|e| match e {
-                        ManifestError::Image(source) => ApproveError::ImageDecode {
-                            path: rel_to_source.clone(),
-                            source,
-                        },
-                        other => CoreError::Manifest(other).into(),
-                    })?;
-
-                Ok(ApprovedItem {
-                    test_name: test_name.clone(),
-                    raw_png_bytes,
-                    sha256_hex,
-                    phash_str,
-                    width,
-                    height,
-                })
+                process_approve_candidate(test_name, file_path, rel_to_source)
             })
             .collect();
 

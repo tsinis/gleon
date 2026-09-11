@@ -8,48 +8,42 @@ use serde::{Serialize, Serializer};
 /// If one path is absolute and the other is relative, returns `target` unchanged.
 /// For example, if `target` is `.gleon/diffs/image.png` and `base` is `.gleon/reports`,
 /// the result is `../diffs/image.png`.
+/// Lexically normalizes a path's components: collapses `foo/../` pairs and drops `.` segments,
+/// without touching the filesystem.
+fn normalize_components(path: &std::path::Path) -> Vec<std::path::Component<'_>> {
+    use std::path::Component;
+
+    let mut normalized = Vec::new();
+    for comp in path.components() {
+        match comp {
+            Component::ParentDir => {
+                if let Some(Component::Normal(_)) = normalized.last() {
+                    normalized.pop();
+                } else {
+                    normalized.push(comp);
+                }
+            }
+            Component::CurDir => {}
+            _ => normalized.push(comp),
+        }
+    }
+    normalized
+}
+
 pub(super) fn make_relative_path(
     target: &std::path::Path,
     base: &std::path::Path,
 ) -> std::path::PathBuf {
-    use std::path::{Component, PathBuf};
+    #[cfg(windows)]
+    use std::path::Component;
+    use std::path::PathBuf;
 
     if target.is_absolute() != base.is_absolute() {
         return target.to_path_buf();
     }
 
-    let mut norm_target = Vec::new();
-    for comp in target.components() {
-        match comp {
-            Component::ParentDir => {
-                if let Some(Component::Normal(_)) = norm_target.last() {
-                    norm_target.pop();
-                } else {
-                    norm_target.push(comp);
-                }
-            }
-            Component::CurDir => {}
-            _ => norm_target.push(comp),
-        }
-    }
-
-    let mut norm_base = Vec::new();
-    for comp in base.components() {
-        match comp {
-            Component::ParentDir => {
-                if let Some(Component::Normal(_)) = norm_base.last() {
-                    norm_base.pop();
-                } else {
-                    norm_base.push(comp);
-                }
-            }
-            Component::CurDir => {}
-            _ => norm_base.push(comp),
-        }
-    }
-
-    let mut target_comps = norm_target.into_iter();
-    let mut base_comps = norm_base.into_iter();
+    let mut target_comps = normalize_components(target).into_iter();
+    let mut base_comps = normalize_components(base).into_iter();
 
     #[cfg(windows)]
     if let (Some(Component::Prefix(p1)), Some(Component::Prefix(p2))) =

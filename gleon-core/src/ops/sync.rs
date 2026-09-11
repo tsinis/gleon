@@ -19,6 +19,14 @@ use crate::ops::common::CoreError;
 use crate::platform::validate_segment;
 use crate::storage::StorageConfig;
 
+/// Truncates a hash's hex value to its first 8 characters (or fewer, if shorter) for a
+/// human-readable progress-bar message — not for any addressing/lookup purpose.
+#[must_use]
+pub fn short_hash(hash: &ImageHash) -> &str {
+    let value = hash.value();
+    &value[..8.min(value.len())]
+}
+
 /// Discovers valid platform directories under `.gleon/manifests/`.
 ///
 /// A "valid" entry is a directory whose name doesn't start with `.` and contains only

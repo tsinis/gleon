@@ -5,11 +5,11 @@ use crate::engine::{ComparisonResult, compare_images};
 use crate::manifest::WorkspaceIndex;
 use crate::masking::apply_masks;
 use crate::ops::common::{
-    CoreError, ensure_initialized, load_config_and_scan, load_index_with_fallback, platform_key,
+    CoreError, ensure_initialized, load_config_and_scan, load_merged_index_with_fallback,
+    platform_key, sha256_hex_matches,
 };
 use crate::report::{ReportError, ReportGenerator};
 use crate::results::{TestCaseResult, TestImageResult};
-use sha2::Digest;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -67,14 +67,9 @@ pub(crate) fn process_diff_case(
     let single_manifest_opt = workspace_index.get(&test_name);
 
     if let Some(baseline_entry) = single_manifest_opt {
-        let is_byte_identical = baseline_entry.hash.scheme() == "sha256" && {
-            let actual_sha256 = hex::encode(sha2::Sha256::digest(&actual_bytes));
-            actual_sha256 == baseline_entry.hash.value()
-        };
+        let is_byte_identical = sha256_hex_matches(&baseline_entry.hash, &actual_bytes);
         if is_byte_identical {
-            let baseline_blob_path =
-                crate::storage::local_blob_path(blobs_root, &baseline_entry.hash);
-            if !crate::storage::is_usable_blob(&baseline_blob_path) {
+            if !crate::storage::has_usable_local_blob(blobs_root, &baseline_entry.hash) {
                 return TestImageResult::MissingBaseline {
                     relative_path: case.image.relative_path.clone(),
                     reason: format!("Baseline blob not found: {}", baseline_entry.hash.value()),
@@ -256,22 +251,11 @@ pub fn run_diff(context: &ResolvedContext) -> Result<DiffReportResult, DiffOpErr
     let paths = ensure_initialized(&context.base_dir)?;
     let platform_key = platform_key(context)?;
 
-    let (mut workspace_index, fallback_index) = load_index_with_fallback(
+    let workspace_index = load_merged_index_with_fallback(
         &paths,
         &platform_key,
         context.fallback_platform_key.as_deref(),
     )?;
-
-    if let Some(fb_index) = fallback_index
-        && !fb_index.is_empty()
-    {
-        tracing::info!(
-            "Using fallback platform '{}' for missing manifests on platform '{}'.",
-            context.fallback_platform_key.as_deref().unwrap_or_default(),
-            platform_key
-        );
-        workspace_index.merge_fallback(fb_index);
-    }
 
     let runs_dir = paths.runs_latest();
     match std::fs::remove_dir_all(&runs_dir) {
@@ -344,6 +328,7 @@ mod tests {
     use crate::context::ContextError;
     use crate::manifest::ManifestError;
     use crate::scanner::ScannerError;
+    use sha2::Digest;
 
     #[test]
     fn test_diff_error_display() {

@@ -6,7 +6,8 @@ use thiserror::Error;
 use crate::context::ResolvedContext;
 use crate::ops::common::{CoreError, ensure_initialized};
 use crate::ops::sync::{
-    active_storage_config, collect_referenced_hashes, resolve_platform_dirs, transfer_with_progress,
+    active_storage_config, collect_referenced_hashes, resolve_platform_dirs, short_hash,
+    transfer_with_progress,
 };
 use crate::storage::{ObjectStoreAdapter, StorageConfig, StorageError};
 
@@ -113,8 +114,7 @@ pub async fn push_blobs(
         if existing_remote_hashes.contains(&hash) {
             skipped_blobs += 1;
         } else {
-            let local_blob_path = crate::storage::local_blob_path(&blobs_root, &hash);
-            if !crate::storage::is_usable_blob(&local_blob_path) {
+            if !crate::storage::has_usable_local_blob(&blobs_root, &hash) {
                 return Err(PushError::MissingLocalBlob {
                     hash: hash.value().to_string(),
                     platform,
@@ -131,10 +131,7 @@ pub async fn push_blobs(
         let adapter = adapter.clone();
         let src_path = blobs_root.join(hash.scheme()).join(hash.value());
         async move {
-            pb.set_message(format!(
-                "Uploading {}",
-                &hash.value()[..8.min(hash.value().len())]
-            ));
+            pb.set_message(format!("Uploading {}", short_hash(&hash)));
             let res = adapter
                 .upload_blob(&hash, &src_path)
                 .await

@@ -236,10 +236,7 @@ impl super::ReportGenerator {
         report_dir: Option<&std::path::Path>,
     ) -> Result<Option<String>, ReportError> {
         let total_tests = test_cases.len();
-        let failed_tests = test_cases
-            .iter()
-            .filter(|tc| !matches!(tc.result, TestImageResult::Success { .. }))
-            .count();
+        let failed_tests = test_cases.iter().filter(|tc| !tc.passed()).count();
 
         if failed_tests == 0 {
             return Ok(None);
