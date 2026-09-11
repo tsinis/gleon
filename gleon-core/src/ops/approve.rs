@@ -252,26 +252,13 @@ pub fn approve_workspace(
             }
         }
 
-        let mut raw_test_name = String::new();
-        let mut comps = rel_to_source.components().peekable();
-        while let Some(comp) = comps.next() {
-            if let std::path::Component::Normal(c) = comp {
-                if !raw_test_name.is_empty() {
-                    raw_test_name.push('/');
-                }
-                let s = c.to_string_lossy();
-                if comps.peek().is_none() {
-                    let len = s.len();
-                    if len >= 4 && s[len - 4..].eq_ignore_ascii_case(".png") {
-                        raw_test_name.push_str(&s[..len - 4]);
-                    } else {
-                        raw_test_name.push_str(&s);
-                    }
-                } else {
-                    raw_test_name.push_str(&s);
-                }
-            }
-        }
+        // Derive the canonical test name exactly the way `FileScanner` does for the same file:
+        // strip the extension, normalize separators, fold case. Hand-rolling it here (stripping
+        // a hardcoded `".png"` by byte offset) both risked slicing a multi-byte filename and
+        // would silently disagree with the scanner the moment another input format is accepted,
+        // filing approved baselines under a name `diff`/`status` never look up.
+        let without_ext = rel_to_source.with_extension("");
+        let raw_test_name = crate::scanner::FileScanner::normalize_path_str(&without_ext);
         let test_name = crate::naming::normalize_test_name(&raw_test_name).into_owned();
 
         let rel_to_source_buf = rel_to_source.to_path_buf();

@@ -196,7 +196,8 @@ impl Serialize for XmlTestCasesView<'_> {
 }
 
 impl super::ReportGenerator {
-    /// Generates raw junit.xml file bytes mapping failures and decode/dimension errors to <failure> nodes.
+    /// Generates raw junit.xml file bytes mapping failures and decode/dimension errors to
+    /// `<failure>` nodes.
     ///
     /// # Errors
     ///

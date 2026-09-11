@@ -18,18 +18,27 @@ use crate::exit_code::ExitCode;
 fn format_failure(context: &str, err: &dyn std::error::Error) -> String {
     use std::fmt::Write as _;
 
-    let mut out = format!("{context}: {err}");
+    /// `Error::source()` may return anything, including a cycle; cap the walk so a malformed
+    /// chain can never hang the CLI on its error path. Real chains are 2-3 deep.
+    const MAX_CAUSE_DEPTH: usize = 8;
+
+    let mut parent = err.to_string();
+    let mut out = format!("{context}: {parent}");
     let mut source = err.source();
-    while let Some(cause) = source {
+
+    for _ in 0..MAX_CAUSE_DEPTH {
+        let Some(cause) = source else { break };
         let rendered = cause.to_string();
-        // Skip causes the parent already interpolated itself (`#[error("IO error: {0}")]`),
-        // so only genuinely hidden ones get appended and nothing is echoed twice.
-        if !out.contains(&rendered) {
+        // Skip only causes the *immediate parent* already interpolated itself
+        // (`#[error("IO error: {0}")]`). Comparing against the whole accumulated line instead
+        // would also drop causes whose text happens to occur in the caller's context string.
+        if !parent.contains(&rendered) {
             // Writing to a `String` via `fmt::Write` never fails.
             #[allow(clippy::expect_used)]
             write!(out, ": {rendered}").expect("write! to a String cannot fail");
         }
         source = cause.source();
+        parent = rendered;
     }
     out
 }
@@ -124,6 +133,62 @@ mod tests {
                 .count(),
             1,
             "cause must appear exactly once: {msg}"
+        );
+    }
+
+    /// A source chain that never terminates — `Error::source()` implementations are free to
+    /// return anything, and a cycle here must not hang the CLI on its error path.
+    #[derive(Debug)]
+    struct Cyclic;
+    impl std::fmt::Display for Cyclic {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("round and round")
+        }
+    }
+    impl std::error::Error for Cyclic {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&Cyclic)
+        }
+    }
+
+    #[test]
+    fn test_format_failure_terminates_on_cyclic_source_chain() {
+        // Would loop forever if the walk were unbounded: the dedup check does not help here,
+        // since the repeated cause is skipped but the chain still advances endlessly.
+        let msg = format_failure("ctx", &Cyclic);
+        assert!(msg.starts_with("ctx: round and round"));
+    }
+
+    #[test]
+    fn test_format_failure_keeps_cause_that_only_the_context_mentions() {
+        // The dedup must compare against the *parent error*, not the whole accumulated line:
+        // otherwise a cause whose text happens to appear in the caller-supplied context
+        // (here "report") would be silently dropped.
+        #[derive(Debug)]
+        struct Bare;
+        impl std::fmt::Display for Bare {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("report")
+            }
+        }
+        impl std::error::Error for Bare {}
+
+        #[derive(Debug)]
+        struct Outer(Bare);
+        impl std::fmt::Display for Outer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("template rendering failed")
+            }
+        }
+        impl std::error::Error for Outer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        assert_eq!(
+            format_failure("Error generating report", &Outer(Bare)),
+            "Error generating report: template rendering failed: report"
         );
     }
 

@@ -1,10 +1,10 @@
 //! Generates HTML, `JUnit` XML, and Markdown reports from test results.
 //!
-//! Split by output format: [`html`] (`report.html`), [`xml`] (`junit.xml`), and [`markdown`]
-//! (PR-comment/summary Markdown), plus [`presign`] (signing remote storage URLs for a Markdown
-//! PR comment's images), sharing the path-formatting helpers in [`format`] and the [`JINJA_ENV`]
-//! template registry defined here. Each submodule contributes its generator methods via its own
-//! `impl ReportGenerator` block.
+//! Split by output format across private submodules: `html` (`report.html`), `xml`
+//! (`junit.xml`), and `markdown` (PR-comment/summary Markdown), plus `presign` (signing remote
+//! storage URLs for a Markdown PR comment's images), sharing the path-formatting helpers in
+//! `format` and the bundled-template registry defined here. Each submodule contributes its
+//! generator methods via its own `impl ReportGenerator` block.
 
 mod format;
 mod html;

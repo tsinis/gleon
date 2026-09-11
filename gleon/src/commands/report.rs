@@ -1,3 +1,5 @@
+//! Implementation of the `gleon report` subcommand.
+
 use anyhow::{Context, Result, anyhow};
 use gleon_core::io::load_json;
 use gleon_core::report::{MarkdownReportOptions, ReportGenerator};

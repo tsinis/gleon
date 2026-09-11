@@ -169,3 +169,45 @@ screenshots:
 
     assert!(matches!(result, Err(ApproveError::ImageDecode { .. })));
 }
+
+/// Characterization test for the path -> test-name derivation used by `approve`, pinning it to
+/// the same result `FileScanner` produces for the same file. The two used to derive names
+/// independently (approve hand-rolled a `".png"`/byte-slice strip), so this guards against them
+/// drifting apart — a drift would silently file approved baselines under a name that `diff`
+/// and `status` never look up.
+#[test]
+fn test_approve_derives_same_test_name_as_scanner_for_nested_uppercase_extension() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path();
+    fs::create_dir_all(base.join(".gleon")).unwrap();
+
+    // Nested path, uppercase extension, dots inside the stem.
+    let rel = Path::new("auth").join("Login.Screen.PNG");
+    let source_dir = base.join("artifacts");
+    fs::create_dir_all(source_dir.join("auth")).unwrap();
+    fs::write(
+        source_dir.join(&rel),
+        include_bytes!("fixtures/baseline_100x100.png"),
+    )
+    .unwrap();
+
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base).unwrap();
+    let res = approve_workspace(&ctx, &[], Some(&source_dir)).unwrap();
+
+    assert_eq!(res.total_approved, 1);
+    assert_eq!(
+        res.approved_test_cases,
+        vec!["auth/login.screen".to_string()],
+        "extension stripped, separators normalized, case folded"
+    );
+
+    // And the manifest really lands at that path on disk.
+    let platform = ctx.platform.to_key().unwrap();
+    let manifest = base
+        .join(".gleon")
+        .join("manifests")
+        .join(platform)
+        .join("auth")
+        .join("login.screen.json");
+    assert!(manifest.is_file(), "expected manifest at {manifest:?}");
+}
