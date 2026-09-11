@@ -36,7 +36,7 @@ fn test_scanner_with_real_fixture() {
         masks: vec![],
     });
 
-    let cases: Vec<TestCase> = FileScanner::scan_files(&include, &exclude, &base_dir, rule)
+    let cases: Vec<TestCase> = FileScanner::scan_files(&include, &exclude, &base_dir, &rule)
         .expect("Scanning files should succeed");
 
     // We found all the expected PNG files (9 files total in the fixtures dir)

@@ -60,14 +60,11 @@ impl FileScanner {
     /// # Errors
     /// Returns [`ScannerError::Pattern`] if any include/exclude glob fails to compile, or
     /// [`ScannerError::InvalidTestName`] if a derived test name fails validation.
-    // `rule` is taken by value (an `Arc` clone) to keep this public API's call sites ergonomic;
-    // narrowing it to a reference is a breaking API change out of scope for this lint cleanup.
-    #[allow(clippy::needless_pass_by_value)]
     pub fn scan_files(
         include_globs: &[GlobPattern],
         exclude_globs: &[GlobPattern],
         base_dir: &Path,
-        rule: std::sync::Arc<crate::config::ScreenshotRule>,
+        rule: &std::sync::Arc<crate::config::ScreenshotRule>,
     ) -> Result<Vec<TestCase>, ScannerError> {
         let include_set = build_globset(include_globs)?;
         let exclude_set = build_globset(exclude_globs)?;
@@ -391,7 +388,7 @@ mod tests {
             &include,
             &exclude,
             base_path,
-            std::sync::Arc::new(crate::config::ScreenshotRule {
+            &std::sync::Arc::new(crate::config::ScreenshotRule {
                 include: include.clone(),
                 mode: crate::config::Mode::Pixel,
                 diff: crate::config::DiffConfig::default(),
@@ -436,7 +433,7 @@ mod tests {
             &include,
             &exclude,
             base_path,
-            std::sync::Arc::new(crate::config::ScreenshotRule {
+            &std::sync::Arc::new(crate::config::ScreenshotRule {
                 include: include.clone(),
                 mode: crate::config::Mode::Pixel,
                 diff: crate::config::DiffConfig::default(),
@@ -471,7 +468,7 @@ mod tests {
             &include,
             &exclude,
             base_path,
-            std::sync::Arc::new(crate::config::ScreenshotRule {
+            &std::sync::Arc::new(crate::config::ScreenshotRule {
                 include: include.clone(),
                 mode: crate::config::Mode::Pixel,
                 diff: crate::config::DiffConfig::default(),
@@ -500,7 +497,7 @@ mod tests {
             &include,
             &exclude,
             base_path,
-            std::sync::Arc::new(crate::config::ScreenshotRule {
+            &std::sync::Arc::new(crate::config::ScreenshotRule {
                 include: include.clone(),
                 mode: crate::config::Mode::Pixel,
                 diff: crate::config::DiffConfig::default(),
@@ -531,7 +528,7 @@ mod tests {
             &include,
             &exclude,
             base_path,
-            std::sync::Arc::new(crate::config::ScreenshotRule {
+            &std::sync::Arc::new(crate::config::ScreenshotRule {
                 include: include.clone(),
                 mode: crate::config::Mode::Pixel,
                 diff: crate::config::DiffConfig::default(),
@@ -667,7 +664,7 @@ screenshots:
             &include,
             &exclude,
             base_path,
-            std::sync::Arc::new(crate::config::ScreenshotRule {
+            &std::sync::Arc::new(crate::config::ScreenshotRule {
                 include: include.clone(),
                 mode: crate::config::Mode::Pixel,
                 diff: crate::config::DiffConfig::default(),
@@ -720,7 +717,7 @@ screenshots:
             &include,
             &exclude,
             base_path,
-            std::sync::Arc::new(crate::config::ScreenshotRule {
+            &std::sync::Arc::new(crate::config::ScreenshotRule {
                 include: include.clone(),
                 mode: crate::config::Mode::Pixel,
                 diff: crate::config::DiffConfig::default(),
@@ -790,7 +787,7 @@ screenshots:
             &include,
             &exclude,
             base_path,
-            std::sync::Arc::new(crate::config::ScreenshotRule {
+            &std::sync::Arc::new(crate::config::ScreenshotRule {
                 include: include.clone(),
                 mode: crate::config::Mode::Pixel,
                 diff: crate::config::DiffConfig::default(),
