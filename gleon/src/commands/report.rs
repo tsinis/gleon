@@ -3,7 +3,14 @@ use gleon_core::io::load_json;
 use gleon_core::report::{MarkdownReportOptions, ReportGenerator};
 use gleon_core::results::TestCaseResult;
 
-#[allow(clippy::too_many_lines)] // TODO(C6): move pre-signing pipeline into gleon-core
+use crate::commands::report_failure;
+use crate::exit_code::ExitCode;
+
+/// Runs the `gleon report` subcommand.
+///
+/// Returns [`ExitCode::Success`] once the report has been generated (and written or printed), or
+/// [`ExitCode::Failure`] for any error along the way (bad arguments, malformed input report,
+/// template rendering, or I/O) — every subcommand reports failures the same way.
 pub async fn run_report(
     env: &dyn gleon_core::env::EnvProvider,
     storage_cfg: Option<gleon_core::storage::StorageConfig>,
@@ -11,7 +18,21 @@ pub async fn run_report(
     report_path: &std::path::Path,
     pr_number: Option<u64>,
     out: Option<&std::path::Path>,
-) -> Result<i32> {
+) -> ExitCode {
+    match run_report_inner(env, storage_cfg, format, report_path, pr_number, out).await {
+        Ok(()) => ExitCode::Success,
+        Err(e) => report_failure("Error generating report", format_args!("{e:#}")),
+    }
+}
+
+async fn run_report_inner(
+    env: &dyn gleon_core::env::EnvProvider,
+    storage_cfg: Option<gleon_core::storage::StorageConfig>,
+    format: &str,
+    report_path: &std::path::Path,
+    pr_number: Option<u64>,
+    out: Option<&std::path::Path>,
+) -> Result<()> {
     if let Some(pr) = pr_number {
         if pr == 0 {
             return Err(anyhow!("PR number must be greater than 0"));
@@ -38,89 +59,8 @@ pub async fn run_report(
 
         if let Ok(adapter) = gleon_core::storage::ObjectStoreAdapter::from_config(cfg) {
             let expires_in = std::time::Duration::from_hours(168);
-
-            let limit = ReportGenerator::MAX_MARKDOWN_DIFF_ROWS;
-            let to_sign: Vec<_> = report_data
-                .iter()
-                .filter(|tc| !tc.passed())
-                .take(limit)
-                .collect();
-
-            let mut join_set = tokio::task::JoinSet::new();
-            let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(adapter.concurrency()));
-
-            let mut unique_paths = std::collections::HashSet::new();
-            for tc in to_sign {
-                let paths: Vec<&std::path::Path> = match &tc.result {
-                    gleon_core::results::TestImageResult::Mismatch {
-                        baseline_path,
-                        actual_path,
-                        diff_path,
-                        ..
-                    } => {
-                        vec![
-                            baseline_path.as_path(),
-                            actual_path.as_path(),
-                            diff_path.as_path(),
-                        ]
-                    }
-                    gleon_core::results::TestImageResult::DimensionMismatch {
-                        baseline_path,
-                        actual_path,
-                        ..
-                    } => {
-                        vec![baseline_path.as_path(), actual_path.as_path()]
-                    }
-                    gleon_core::results::TestImageResult::EncodeError { actual_path, .. } => {
-                        vec![actual_path.as_path()]
-                    }
-                    gleon_core::results::TestImageResult::MissingBaseline {
-                        relative_path, ..
-                    }
-                    | gleon_core::results::TestImageResult::DecodeError { relative_path, .. }
-                    | gleon_core::results::TestImageResult::IoError { relative_path, .. } => {
-                        vec![relative_path.as_path()]
-                    }
-                    _ => vec![],
-                };
-
-                for p in paths {
-                    unique_paths.insert(p);
-                }
-            }
-
-            for p in unique_paths {
-                let normalized_key =
-                    gleon_core::scanner::FileScanner::normalize_path_str(p).to_string();
-                let path_buf = p.to_path_buf();
-                let adapter = adapter.clone();
-                let sem = semaphore.clone();
-                join_set.spawn(async move {
-                    // `sem` is owned by this task set and never closed while permits are
-                    // outstanding, so `acquire_owned` cannot fail here.
-                    // TODO(C6): propagate as a proper error once this pipeline moves into core.
-                    #[allow(clippy::expect_used)]
-                    let _permit = sem.acquire_owned().await.expect("Semaphore closed");
-                    adapter
-                        .sign_blob_url(&normalized_key, expires_in)
-                        .await
-                        .map(|signed| (path_buf, signed))
-                });
-            }
-
-            while let Some(res) = join_set.join_next().await {
-                match res {
-                    Ok(Some((p, signed))) => {
-                        let _ = signed_urls.insert(p, signed);
-                    }
-                    Ok(None) => {
-                        tracing::warn!("Failed to generate pre-signed URL for blob path");
-                    }
-                    Err(e) => {
-                        tracing::warn!("URL signing task panicked or was cancelled: {}", e);
-                    }
-                }
-            }
+            signed_urls =
+                ReportGenerator::sign_image_urls(&adapter, &report_data, expires_in).await;
         }
     }
 
@@ -187,7 +127,7 @@ pub async fn run_report(
         println!("{report_content}");
     }
 
-    Ok(0)
+    Ok(())
 }
 
 #[cfg(all(test, not(miri)))]
@@ -228,7 +168,7 @@ mod tests {
         )
         .await;
 
-        assert!(res.is_ok());
+        assert_eq!(res, ExitCode::Success);
         assert!(nested_out.is_file());
     }
 
@@ -266,7 +206,7 @@ mod tests {
         )
         .await;
 
-        assert!(res.is_ok());
+        assert_eq!(res, ExitCode::Success);
         let md = std::fs::read_to_string(&out_path).unwrap();
         assert!(md.contains("Encode Error"));
         assert!(md.contains("actual_enc.png"));
@@ -304,7 +244,7 @@ mod tests {
             Some(&junit_out),
         )
         .await;
-        assert!(res_junit.is_ok());
+        assert_eq!(res_junit, ExitCode::Success);
         let xml = std::fs::read_to_string(&junit_out).unwrap();
         assert!(xml.contains("<testsuites") || xml.contains("<testsuite"));
 
@@ -319,7 +259,7 @@ mod tests {
             Some(&html_out),
         )
         .await;
-        assert!(res_html.is_ok());
+        assert_eq!(res_html, ExitCode::Success);
         let html = std::fs::read_to_string(&html_out).unwrap();
         assert!(html.contains("<!DOCTYPE html>") || html.contains("<html"));
 
@@ -333,7 +273,7 @@ mod tests {
             None,
         )
         .await;
-        assert!(res_unsupported.is_err());
+        assert_eq!(res_unsupported, ExitCode::Failure);
     }
 
     #[tokio::test]
@@ -359,7 +299,7 @@ mod tests {
             None,
         )
         .await;
-        assert!(res_err.is_err());
+        assert_eq!(res_err, ExitCode::Failure);
 
         // Test HTML format written to custom nested directory
         let valid_report = temp.path().join("valid.json");
@@ -382,7 +322,7 @@ mod tests {
             Some(&nested_html_out),
         )
         .await;
-        assert!(res_html.is_ok());
+        assert_eq!(res_html, ExitCode::Success);
         assert!(nested_html_out.exists());
     }
 }

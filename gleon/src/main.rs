@@ -2,9 +2,11 @@
 
 use clap::Parser;
 use cli::{Cli, Commands};
+use exit_code::ExitCode;
 use tracing::info;
 
 mod cli;
+mod exit_code;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -53,7 +55,17 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(42);
     }
 
-    let exit_code = run(&cli, &current_dir, &env).await?;
+    // Any error still bubbling here means a command couldn't even start (e.g. context
+    // resolution failed) — every command that *did* start reports its own failures via
+    // `commands::report_failure`, so this is the one remaining spot that needs to log+exit
+    // consistently with those.
+    let exit_code = match run(&cli, &current_dir, &env).await {
+        Ok(code) => code,
+        Err(e) => {
+            tracing::error!("{e:#}");
+            i32::from(ExitCode::Failure)
+        }
+    };
     if exit_code != 0 {
         std::process::exit(exit_code);
     }
@@ -82,159 +94,153 @@ fn get_storage_config(
 
 mod commands;
 
-#[allow(clippy::too_many_lines)] // TODO(C6): dedupe per-command ResolvedContext construction and exit-code mapping
+/// Resolves the active [`gleon_core::context::ResolvedContext`] for the current invocation —
+/// every subcommand needing workspace/platform/branch context builds it the same way, so this
+/// is the one place that does.
+fn resolve_context(
+    cli: &Cli,
+    current_dir: &std::path::Path,
+    env: &dyn gleon_core::env::EnvProvider,
+) -> anyhow::Result<gleon_core::context::ResolvedContext> {
+    gleon_core::context::ResolvedContext::resolve(
+        &gleon_core::context::ContextOptions::from(cli),
+        current_dir,
+        env,
+    )
+    .map_err(|e| anyhow::anyhow!(e))
+}
+
+/// Runs `gleon init`.
+fn run_init(ctx: &gleon_core::context::ResolvedContext) -> anyhow::Result<()> {
+    let res = gleon_core::ops::init_workspace(ctx).map_err(|e| anyhow::anyhow!(e))?;
+    info!("Initialized gleon workspace at {}", res.gleon_dir.display());
+    if let Some(ref config_path) = res.config_created {
+        info!(
+            "Created default configuration file at {}",
+            config_path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Runs `gleon status`.
+fn run_status(ctx: &gleon_core::context::ResolvedContext, json: bool) -> anyhow::Result<()> {
+    let report = gleon_core::ops::check_status(ctx).map_err(|e| anyhow::anyhow!(e))?;
+    if json {
+        println!("{}", report.format_json().map_err(|e| anyhow::anyhow!(e))?);
+    } else {
+        print!("{}", report.format_text());
+    }
+    Ok(())
+}
+
+/// Runs `gleon stage`.
+fn run_stage(
+    ctx: &gleon_core::context::ResolvedContext,
+    paths: &[std::path::PathBuf],
+) -> anyhow::Result<()> {
+    let filter = if paths.is_empty() { None } else { Some(paths) };
+    let res = gleon_core::ops::stage_workspace(ctx, filter).map_err(|e| anyhow::anyhow!(e))?;
+    if res.total_screenshots_staged == 0 {
+        info!("Already up to date.");
+    } else {
+        info!(
+            "Staged {} screenshot(s) across {} test case(s).",
+            res.total_screenshots_staged,
+            res.staged_test_cases.len()
+        );
+    }
+    Ok(())
+}
+
+/// Runs `gleon diff`, or delegates to `gleon resolve` first if `--resolve` was passed.
+async fn run_diff_command(
+    ctx: &gleon_core::context::ResolvedContext,
+    resolve: bool,
+    storage_cfg: Option<gleon_core::storage::StorageConfig>,
+) -> anyhow::Result<i32> {
+    if resolve {
+        let code = commands::resolve::run_resolve(ctx, None, false, storage_cfg).await;
+        return Ok(code.into());
+    }
+
+    let report = gleon_core::ops::run_diff(ctx).map_err(|e| anyhow::anyhow!(e))?;
+    info!(
+        "Ran {} test(s). Passed: {}, Failed: {}.",
+        report.total_tests,
+        report.total_tests.saturating_sub(report.failed_tests),
+        report.failed_tests
+    );
+    info!("Report generated at {}", report.runs_dir.display());
+    let code = if report.passed {
+        ExitCode::Success
+    } else {
+        ExitCode::Failure
+    };
+    Ok(code.into())
+}
+
 async fn run(
     cli: &Cli,
     current_dir: &std::path::Path,
     env: &dyn gleon_core::env::EnvProvider,
 ) -> anyhow::Result<i32> {
     match &cli.command {
-        Commands::Init => {
-            let ctx = gleon_core::context::ResolvedContext::resolve(
-                &gleon_core::context::ContextOptions::from(cli),
-                current_dir,
-                env,
-            )
-            .map_err(|e| anyhow::anyhow!(e))?;
-            let res = gleon_core::ops::init_workspace(&ctx).map_err(|e| anyhow::anyhow!(e))?;
-            info!("Initialized gleon workspace at {}", res.gleon_dir.display());
-            if let Some(ref config_path) = res.config_created {
-                info!(
-                    "Created default configuration file at {}",
-                    config_path.display()
-                );
-            }
-        }
-        Commands::Status { json } => {
-            let ctx = gleon_core::context::ResolvedContext::resolve(
-                &gleon_core::context::ContextOptions::from(cli),
-                current_dir,
-                env,
-            )
-            .map_err(|e| anyhow::anyhow!(e))?;
-            let report = gleon_core::ops::check_status(&ctx).map_err(|e| anyhow::anyhow!(e))?;
-            if *json {
-                println!("{}", report.format_json().map_err(|e| anyhow::anyhow!(e))?);
-            } else {
-                print!("{}", report.format_text());
-            }
-        }
-        Commands::Stage { paths } => {
-            let ctx = gleon_core::context::ResolvedContext::resolve(
-                &gleon_core::context::ContextOptions::from(cli),
-                current_dir,
-                env,
-            )
-            .map_err(|e| anyhow::anyhow!(e))?;
-            let filter = if paths.is_empty() {
-                None
-            } else {
-                Some(paths.as_slice())
-            };
-            let res =
-                gleon_core::ops::stage_workspace(&ctx, filter).map_err(|e| anyhow::anyhow!(e))?;
-            if res.total_screenshots_staged == 0 {
-                info!("Already up to date.");
-            } else {
-                info!(
-                    "Staged {} screenshot(s) across {} test case(s).",
-                    res.total_screenshots_staged,
-                    res.staged_test_cases.len()
-                );
-            }
-        }
+        Commands::Init => run_init(&resolve_context(cli, current_dir, env)?)?,
+        Commands::Status { json } => run_status(&resolve_context(cli, current_dir, env)?, *json)?,
+        Commands::Stage { paths } => run_stage(&resolve_context(cli, current_dir, env)?, paths)?,
         Commands::Diff {
             auto_pull: _,
             resolve,
         } => {
-            let ctx = gleon_core::context::ResolvedContext::resolve(
-                &gleon_core::context::ContextOptions::from(cli),
-                current_dir,
-                env,
-            )
-            .map_err(|e| anyhow::anyhow!(e))?;
-
-            if *resolve {
-                let storage_cfg = get_storage_config(env);
-                return commands::resolve::run_resolve(&ctx, None, false, storage_cfg).await;
-            }
-
-            let report = gleon_core::ops::run_diff(&ctx).map_err(|e| anyhow::anyhow!(e))?;
-            info!(
-                "Ran {} test(s). Passed: {}, Failed: {}.",
-                report.total_tests,
-                report.total_tests.saturating_sub(report.failed_tests),
-                report.failed_tests
-            );
-            info!("Report generated at {}", report.runs_dir.display());
-            if !report.passed {
-                return Ok(1);
-            }
+            let ctx = resolve_context(cli, current_dir, env)?;
+            let storage_cfg = get_storage_config(env);
+            return run_diff_command(&ctx, *resolve, storage_cfg).await;
         }
         Commands::LintManifests { platform } => {
-            let ctx = gleon_core::context::ResolvedContext::resolve(
-                &gleon_core::context::ContextOptions::from(cli),
-                current_dir,
-                env,
-            )
-            .map_err(|e| anyhow::anyhow!(e))?;
-            return commands::lint::run_lint(&ctx, platform.as_deref());
+            let ctx = resolve_context(cli, current_dir, env)?;
+            return Ok(commands::lint::run_lint(&ctx, platform.as_deref()).into());
         }
         Commands::Resolve { test_path, fetch } => {
-            let ctx = gleon_core::context::ResolvedContext::resolve(
-                &gleon_core::context::ContextOptions::from(cli),
-                current_dir,
-                env,
-            )
-            .map_err(|e| anyhow::anyhow!(e))?;
+            let ctx = resolve_context(cli, current_dir, env)?;
             let storage_cfg = get_storage_config(env);
-            return commands::resolve::run_resolve(&ctx, test_path.as_deref(), *fetch, storage_cfg)
-                .await;
+            let code =
+                commands::resolve::run_resolve(&ctx, test_path.as_deref(), *fetch, storage_cfg)
+                    .await;
+            return Ok(code.into());
         }
-        Commands::Test => {
-            info!("Subcommand test is not fully implemented yet");
-        }
+        Commands::Test => info!("Subcommand test is not fully implemented yet"),
         Commands::Pull {
             all_platforms,
             platform,
         } => {
-            let ctx = gleon_core::context::ResolvedContext::resolve(
-                &gleon_core::context::ContextOptions::from(cli),
-                current_dir,
-                env,
-            )
-            .map_err(|e| anyhow::anyhow!(e))?;
+            let ctx = resolve_context(cli, current_dir, env)?;
             let storage_cfg = get_storage_config(env);
-            return commands::pull::run_pull(
+            let code = commands::pull::run_pull(
                 &ctx,
                 storage_cfg.as_ref(),
                 *all_platforms,
                 platform.as_deref(),
             )
             .await;
+            return Ok(code.into());
         }
         Commands::Push {
             all_platforms,
             platform,
         } => {
-            let ctx = gleon_core::context::ResolvedContext::resolve(
-                &gleon_core::context::ContextOptions::from(cli),
-                current_dir,
-                env,
-            )
-            .map_err(|e| anyhow::anyhow!(e))?;
+            let ctx = resolve_context(cli, current_dir, env)?;
             let storage_cfg = get_storage_config(env);
-            return commands::push::run_push(
+            let code = commands::push::run_push(
                 &ctx,
                 storage_cfg.as_ref(),
                 *all_platforms,
                 platform.as_deref(),
             )
             .await;
+            return Ok(code.into());
         }
-        Commands::Gc => {
-            info!("Subcommand gc is not fully implemented yet");
-        }
+        Commands::Gc => info!("Subcommand gc is not fully implemented yet"),
         Commands::Report {
             format,
             report,
@@ -242,7 +248,7 @@ async fn run(
             out,
         } => {
             let storage_cfg = get_storage_config(env);
-            return commands::report::run_report(
+            let code = commands::report::run_report(
                 env,
                 storage_cfg,
                 format,
@@ -251,29 +257,21 @@ async fn run(
                 out.as_deref(),
             )
             .await;
+            return Ok(code.into());
         }
         Commands::Approve { paths, from } => {
-            let ctx = gleon_core::context::ResolvedContext::resolve(
-                &gleon_core::context::ContextOptions::from(cli),
-                current_dir,
-                env,
-            )
-            .map_err(|e| anyhow::anyhow!(e))?;
-            return commands::approve::run_approve(&ctx, paths, from.as_ref());
+            let ctx = resolve_context(cli, current_dir, env)?;
+            return Ok(commands::approve::run_approve(&ctx, paths, from.as_ref()).into());
         }
         Commands::Clean {
             dry_run,
             skip_gitignore,
             keep_runs,
         } => {
-            let ctx = gleon_core::context::ResolvedContext::resolve(
-                &gleon_core::context::ContextOptions::from(cli),
-                current_dir,
-                env,
-            )
-            .map_err(|e| anyhow::anyhow!(e))?;
-            return commands::clean::run_clean(&ctx, *dry_run, *skip_gitignore, *keep_runs);
+            let ctx = resolve_context(cli, current_dir, env)?;
+            let code = commands::clean::run_clean(&ctx, *dry_run, *skip_gitignore, *keep_runs);
+            return Ok(code.into());
         }
     }
-    Ok(0)
+    Ok(ExitCode::Success.into())
 }

@@ -8,13 +8,16 @@ use gleon_core::storage::{ObjectStoreAdapter, StorageConfig};
 use std::io::IsTerminal;
 use tracing::{error, info, warn};
 
+use crate::commands::report_failure;
+use crate::exit_code::ExitCode;
+
 /// Runs interactive resolution for conflicted manifest files.
 pub async fn run_resolve(
     ctx: &ResolvedContext,
     test_path_filter: Option<&str>,
     fetch: bool,
     storage_config: Option<StorageConfig>,
-) -> anyhow::Result<i32> {
+) -> ExitCode {
     run_resolve_with_tty(
         ctx,
         test_path_filter,
@@ -32,15 +35,12 @@ pub async fn run_resolve_with_tty(
     fetch: bool,
     storage_config: Option<StorageConfig>,
     is_terminal: bool,
-) -> anyhow::Result<i32> {
+) -> ExitCode {
     info!("Scanning for conflicted manifest files...");
 
     let mut conflicts = match scan_conflicts(&ctx.base_dir, None) {
         Ok(c) => c,
-        Err(e) => {
-            error!("Error scanning for conflicts: {e}");
-            return Ok(1);
-        }
+        Err(e) => return report_failure("Error scanning for conflicts", e),
     };
 
     if let Some(filter) = test_path_filter {
@@ -49,7 +49,7 @@ pub async fn run_resolve_with_tty(
 
     if conflicts.is_empty() {
         info!("No conflicted manifest files found.");
-        return Ok(0);
+        return ExitCode::Success;
     }
 
     info!("Found {} conflicted manifest file(s).", conflicts.len());
@@ -75,11 +75,11 @@ pub async fn run_resolve_with_tty(
     if !is_terminal {
         error!("Terminal is non-interactive (not a TTY). Cannot prompt for resolution.");
         error!("Run 'gleon resolve' in an interactive terminal environment.");
-        return Ok(1);
+        return ExitCode::Failure;
     }
 
     let resolved_count =
-        resolve_conflicts_with_selector(ctx, conflicts, adapter.as_ref(), |item| {
+        match resolve_conflicts_with_selector(ctx, conflicts, adapter.as_ref(), |item| {
             let choices = format_conflict_choices(item);
 
             Select::new()
@@ -89,14 +89,18 @@ pub async fn run_resolve_with_tty(
                 .interact()
                 .map_err(Into::into)
         })
-        .await?;
+        .await
+        {
+            Ok(count) => count,
+            Err(e) => return report_failure("Error resolving manifest conflicts", e),
+        };
 
     info!(
         "Successfully resolved {} manifest conflict(s).",
         resolved_count
     );
 
-    Ok(0)
+    ExitCode::Success
 }
 
 /// Formats selectable prompt choice descriptions for a conflicted manifest item.
@@ -202,11 +206,9 @@ mod tests {
         let temp = tempdir().unwrap();
         let ctx = ResolvedContext::from_options(&ContextOptions::default(), temp.path()).unwrap();
 
-        // Missing manifest directory causes scan_conflicts to fail -> return Ok(1)
-        let res = run_resolve_with_tty(&ctx, None, false, None, false)
-            .await
-            .unwrap();
-        assert_eq!(res, 1);
+        // Missing manifest directory causes scan_conflicts to fail -> Failure
+        let res = run_resolve_with_tty(&ctx, None, false, None, false).await;
+        assert_eq!(res, ExitCode::Failure);
     }
 
     #[tokio::test]
@@ -227,38 +229,28 @@ mod tests {
 
         // 1. Filter out all test paths
         let res_filtered =
-            run_resolve_with_tty(&ctx, Some("nonexistent_filter"), false, None, false)
-                .await
-                .unwrap();
-        assert_eq!(res_filtered, 0);
+            run_resolve_with_tty(&ctx, Some("nonexistent_filter"), false, None, false).await;
+        assert_eq!(res_filtered, ExitCode::Success);
 
         // 2. Matching filter in non-interactive mode
-        let res_matching = run_resolve_with_tty(&ctx, Some("login"), false, None, false)
-            .await
-            .unwrap();
-        assert_eq!(res_matching, 1);
+        let res_matching = run_resolve_with_tty(&ctx, Some("login"), false, None, false).await;
+        assert_eq!(res_matching, ExitCode::Failure);
 
         // 3. Fetch mode without storage config
-        let res_fetch_local = run_resolve_with_tty(&ctx, Some("login"), true, None, false)
-            .await
-            .unwrap();
-        assert_eq!(res_fetch_local, 1);
+        let res_fetch_local = run_resolve_with_tty(&ctx, Some("login"), true, None, false).await;
+        assert_eq!(res_fetch_local, ExitCode::Failure);
 
         // 4. Fetch mode with invalid storage config
         let invalid_storage = StorageConfig::new("invalid_scheme://bucket".to_string());
         let res_fetch_invalid =
-            run_resolve_with_tty(&ctx, Some("login"), true, Some(invalid_storage), false)
-                .await
-                .unwrap();
-        assert_eq!(res_fetch_invalid, 1);
+            run_resolve_with_tty(&ctx, Some("login"), true, Some(invalid_storage), false).await;
+        assert_eq!(res_fetch_invalid, ExitCode::Failure);
 
         // 5. Fetch mode with valid memory storage config (hits Ok(a) => Some(a))
         let valid_storage = StorageConfig::new("memory://");
         let res_fetch_valid =
-            run_resolve_with_tty(&ctx, Some("login"), true, Some(valid_storage), false)
-                .await
-                .unwrap();
-        assert_eq!(res_fetch_valid, 1);
+            run_resolve_with_tty(&ctx, Some("login"), true, Some(valid_storage), false).await;
+        assert_eq!(res_fetch_valid, ExitCode::Failure);
     }
 
     #[tokio::test]

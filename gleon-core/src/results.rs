@@ -88,6 +88,32 @@ impl TestImageResult {
             | Self::EncodeError { relative_path, .. } => relative_path,
         }
     }
+
+    /// Returns the image paths worth pre-signing a remote storage URL for (e.g. to embed direct
+    /// links in a PR comment): baseline/actual/diff for a full comparison, whichever partial set
+    /// was actually produced otherwise, or the screenshot's own relative path when no comparison
+    /// images exist at all. Empty for [`Self::Success`] (nothing to link to).
+    #[must_use]
+    pub fn signable_paths(&self) -> Vec<&Path> {
+        match self {
+            Self::Mismatch {
+                baseline_path,
+                actual_path,
+                diff_path,
+                ..
+            } => vec![baseline_path, actual_path, diff_path],
+            Self::DimensionMismatch {
+                baseline_path,
+                actual_path,
+                ..
+            } => vec![baseline_path, actual_path],
+            Self::EncodeError { actual_path, .. } => vec![actual_path],
+            Self::MissingBaseline { relative_path, .. }
+            | Self::DecodeError { relative_path, .. }
+            | Self::IoError { relative_path, .. } => vec![relative_path],
+            Self::Success { .. } => vec![],
+        }
+    }
 }
 
 /// Represents the final evaluation result of a complete test case.
@@ -104,5 +130,68 @@ impl TestCaseResult {
     #[must_use]
     pub const fn passed(&self) -> bool {
         matches!(self.result, TestImageResult::Success { .. })
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_signable_paths_per_variant() {
+        let mismatch = TestImageResult::Mismatch {
+            relative_path: PathBuf::from("rel.png"),
+            detail: MismatchDetail::Pixel { diff_count: 1 },
+            diff_path: PathBuf::from("diff.png"),
+            baseline_path: PathBuf::from("base.png"),
+            actual_path: PathBuf::from("actual.png"),
+        };
+        assert_eq!(
+            mismatch.signable_paths(),
+            vec![
+                Path::new("base.png"),
+                Path::new("actual.png"),
+                Path::new("diff.png")
+            ]
+        );
+
+        let dim_mismatch = TestImageResult::DimensionMismatch {
+            relative_path: PathBuf::from("rel.png"),
+            baseline_size: (1, 1),
+            actual_size: (2, 2),
+            baseline_path: PathBuf::from("base.png"),
+            actual_path: PathBuf::from("actual.png"),
+        };
+        assert_eq!(
+            dim_mismatch.signable_paths(),
+            vec![Path::new("base.png"), Path::new("actual.png")]
+        );
+
+        let encode_error = TestImageResult::EncodeError {
+            relative_path: PathBuf::from("rel.png"),
+            actual_path: PathBuf::from("actual.png"),
+            error: "bad".to_string(),
+        };
+        assert_eq!(encode_error.signable_paths(), vec![Path::new("actual.png")]);
+
+        let missing = TestImageResult::MissingBaseline {
+            relative_path: PathBuf::from("rel.png"),
+            reason: "none".to_string(),
+        };
+        assert_eq!(missing.signable_paths(), vec![Path::new("rel.png")]);
+
+        let success = TestImageResult::Success {
+            relative_path: PathBuf::from("rel.png"),
+        };
+        assert!(success.signable_paths().is_empty());
     }
 }
