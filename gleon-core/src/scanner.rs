@@ -1,6 +1,6 @@
 //! File scanner and image decoder for visual regression tests.
 
-use crate::config::{GleonConfig, GlobPattern};
+use crate::config::GleonConfig;
 use crate::naming::{normalize_test_name, validate_test_name};
 use crate::walk::build_globset;
 
@@ -53,68 +53,6 @@ pub struct TestCase {
 pub struct FileScanner;
 
 impl FileScanner {
-    /// Scans screenshots inside `base_dir` using include and exclude glob patterns.
-    /// Each discovered screenshot produces its own `TestCase`.
-    /// The provided `rule` is attached to each resulting `TestCase` to carry mode/threshold/mask config.
-    ///
-    /// # Errors
-    /// Returns [`ScannerError::Pattern`] if any include/exclude glob fails to compile, or
-    /// [`ScannerError::InvalidTestName`] if a derived test name fails validation.
-    pub fn scan_files(
-        include_globs: &[GlobPattern],
-        exclude_globs: &[GlobPattern],
-        base_dir: &Path,
-        rule: &std::sync::Arc<crate::config::ScreenshotRule>,
-    ) -> Result<Vec<TestCase>, ScannerError> {
-        let include_set = build_globset(include_globs)?;
-        let exclude_set = build_globset(exclude_globs)?;
-
-        let walker = Self::build_walker(base_dir, &exclude_set);
-
-        let mut temp_cases = std::collections::BTreeMap::<String, TestImage>::new();
-
-        for entry_res in walker {
-            let entry = match entry_res {
-                Ok(e) => e,
-                Err(err) => {
-                    tracing::warn!("Skipping unreadable directory or path: {}", err);
-                    continue;
-                }
-            };
-
-            if let Some((test_name, rel_path, abs_path)) =
-                Self::parse_entry(&entry, base_dir, &include_set, &exclude_set)?
-            {
-                if temp_cases.contains_key(test_name.as_str()) {
-                    tracing::warn!(
-                        "Duplicate test name '{}' detected for relative path {:?}. Skipping duplicate.",
-                        test_name,
-                        rel_path
-                    );
-                } else {
-                    temp_cases.insert(
-                        test_name,
-                        TestImage {
-                            relative_path: rel_path,
-                            absolute_path: abs_path,
-                        },
-                    );
-                }
-            }
-        }
-
-        let cases = temp_cases
-            .into_iter()
-            .map(|(name, image)| TestCase {
-                name,
-                image,
-                rule: rule.clone(),
-            })
-            .collect::<Vec<_>>();
-
-        Ok(cases)
-    }
-
     /// Scans the workspace based on the rules in `GleonConfig` and a given base directory.
     ///
     /// # Errors
@@ -268,59 +206,6 @@ impl FileScanner {
             },
         }
     }
-
-    /// Parses a directory entry and returns the parsed paths if it's a valid matching PNG.
-    fn parse_entry(
-        entry: &ignore::DirEntry,
-        base_dir: &Path,
-        include_set: &globset::GlobSet,
-        exclude_set: &globset::GlobSet,
-    ) -> Result<Option<(String, PathBuf, PathBuf)>, ScannerError> {
-        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-            return Ok(None);
-        }
-        let path = entry.path();
-
-        if !path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
-        {
-            return Ok(None);
-        }
-
-        let rel_path = match path.strip_prefix(base_dir) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!("Failed to strip base_dir prefix from path: {}", e);
-                return Ok(None);
-            }
-        };
-        let rel_path_str = Self::normalize_path_str(rel_path);
-
-        if !include_set.is_match(rel_path_str.as_ref())
-            || exclude_set.is_match(rel_path_str.as_ref())
-        {
-            return Ok(None);
-        }
-
-        let path_without_ext = rel_path.with_extension("");
-        let test_name_cow = Self::normalize_path_str(&path_without_ext);
-        let test_name_str = test_name_cow.as_ref();
-
-        if let Err(reason) = validate_test_name(test_name_str) {
-            return Err(ScannerError::InvalidTestName {
-                name: test_name_str.to_string(),
-                reason: reason.to_string(),
-            });
-        }
-
-        Ok(Some((
-            test_name_str.to_string(),
-            rel_path.to_path_buf(),
-            path.to_path_buf(),
-        )))
-    }
 }
 
 #[cfg(all(test, not(miri)))]
@@ -334,10 +219,25 @@ impl FileScanner {
     clippy::nursery
 )]
 mod tests {
+    use crate::config::GlobPattern;
+
+    /// Builds the `GleonConfig` equivalent of the old `scan_files(include, exclude, ..)` call,
+    /// so the behaviours those tests pinned keep being exercised through the real entry point.
+    fn config_from(include: &[GlobPattern], exclude: &[GlobPattern]) -> GleonConfig {
+        GleonConfig {
+            screenshots: vec![crate::config::ScreenshotRule {
+                include: include.to_vec(),
+                mode: crate::config::Mode::Pixel,
+                diff: crate::config::DiffConfig::default(),
+                masks: vec![],
+            }],
+            exclude: exclude.to_vec(),
+            ..GleonConfig::default()
+        }
+    }
     use super::*;
     use crate::engine::MismatchDetail;
     use crate::results::{TestCaseResult, TestImageResult};
-    use globset::GlobSetBuilder;
 
     // Tiny 1x1 valid PNG bytes
     const VALID_PNG_BYTES: &[u8] = &[
@@ -364,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_files_success_and_corrupt() {
+    fn test_scan_workspace_success_and_corrupt() {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_path = temp_dir.path();
 
@@ -384,18 +284,8 @@ mod tests {
         let include = vec![GlobPattern::new("**/*.png").unwrap()];
         let exclude = vec![];
 
-        let cases = FileScanner::scan_files(
-            &include,
-            &exclude,
-            base_path,
-            &std::sync::Arc::new(crate::config::ScreenshotRule {
-                include: include.clone(),
-                mode: crate::config::Mode::Pixel,
-                diff: crate::config::DiffConfig::default(),
-                masks: vec![],
-            }),
-        )
-        .unwrap();
+        let cases =
+            FileScanner::scan_workspace(&config_from(&include, &exclude), base_path).unwrap();
 
         // We expect two test cases: "billing/stripe/form" and "settings/corrupt"
         assert_eq!(cases.len(), 2);
@@ -413,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_files_with_excludes() {
+    fn test_scan_workspace_with_excludes() {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_path = temp_dir.path();
 
@@ -429,18 +319,8 @@ mod tests {
         // Exclude everything under settings/
         let exclude = vec![GlobPattern::new("settings/**/*.png").unwrap()];
 
-        let cases = FileScanner::scan_files(
-            &include,
-            &exclude,
-            base_path,
-            &std::sync::Arc::new(crate::config::ScreenshotRule {
-                include: include.clone(),
-                mode: crate::config::Mode::Pixel,
-                diff: crate::config::DiffConfig::default(),
-                masks: vec![],
-            }),
-        )
-        .unwrap();
+        let cases =
+            FileScanner::scan_workspace(&config_from(&include, &exclude), base_path).unwrap();
 
         // Only billing/stripe/form should remain
         assert_eq!(cases.len(), 1);
@@ -448,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_files_with_uppercase_excludes() {
+    fn test_scan_workspace_with_uppercase_excludes() {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_path = temp_dir.path();
 
@@ -464,25 +344,15 @@ mod tests {
         // Exclude with lowercase glob matching uppercase folder
         let exclude = vec![GlobPattern::new("settings/**/*.png").unwrap()];
 
-        let cases = FileScanner::scan_files(
-            &include,
-            &exclude,
-            base_path,
-            &std::sync::Arc::new(crate::config::ScreenshotRule {
-                include: include.clone(),
-                mode: crate::config::Mode::Pixel,
-                diff: crate::config::DiffConfig::default(),
-                masks: vec![],
-            }),
-        )
-        .unwrap();
+        let cases =
+            FileScanner::scan_workspace(&config_from(&include, &exclude), base_path).unwrap();
 
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0].name, "billing/stripe/form");
     }
 
     #[test]
-    fn test_scan_files_empty_results() {
+    fn test_scan_workspace_empty_results() {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_path = temp_dir.path();
 
@@ -493,18 +363,8 @@ mod tests {
         let include = vec![GlobPattern::new("**/*.png").unwrap()];
         let exclude = vec![];
 
-        let cases = FileScanner::scan_files(
-            &include,
-            &exclude,
-            base_path,
-            &std::sync::Arc::new(crate::config::ScreenshotRule {
-                include: include.clone(),
-                mode: crate::config::Mode::Pixel,
-                diff: crate::config::DiffConfig::default(),
-                masks: vec![],
-            }),
-        )
-        .unwrap();
+        let cases =
+            FileScanner::scan_workspace(&config_from(&include, &exclude), base_path).unwrap();
         assert!(
             cases.is_empty(),
             "Expected empty results when no PNG files match include patterns"
@@ -512,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_files_include_mismatch() {
+    fn test_scan_workspace_include_mismatch() {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_path = temp_dir.path();
 
@@ -524,18 +384,8 @@ mod tests {
         let include = vec![GlobPattern::new("settings/**/*.png").unwrap()];
         let exclude = vec![];
 
-        let cases = FileScanner::scan_files(
-            &include,
-            &exclude,
-            base_path,
-            &std::sync::Arc::new(crate::config::ScreenshotRule {
-                include: include.clone(),
-                mode: crate::config::Mode::Pixel,
-                diff: crate::config::DiffConfig::default(),
-                masks: vec![],
-            }),
-        )
-        .unwrap();
+        let cases =
+            FileScanner::scan_workspace(&config_from(&include, &exclude), base_path).unwrap();
         assert!(
             cases.is_empty(),
             "Expected empty results when PNG does not match include set"
@@ -660,17 +510,7 @@ screenshots:
         let include = vec![GlobPattern::new("**/*.png").unwrap()];
         let exclude = vec![];
 
-        let result = FileScanner::scan_files(
-            &include,
-            &exclude,
-            base_path,
-            &std::sync::Arc::new(crate::config::ScreenshotRule {
-                include: include.clone(),
-                mode: crate::config::Mode::Pixel,
-                diff: crate::config::DiffConfig::default(),
-                masks: vec![],
-            }),
-        );
+        let result = FileScanner::scan_workspace(&config_from(&include, &exclude), base_path);
         assert!(result.is_err());
         assert!(matches!(
             result.err().unwrap(),
@@ -713,17 +553,7 @@ screenshots:
         let include = vec![GlobPattern::new("**/*.png").unwrap()];
         let exclude = vec![];
 
-        let result = FileScanner::scan_files(
-            &include,
-            &exclude,
-            base_path,
-            &std::sync::Arc::new(crate::config::ScreenshotRule {
-                include: include.clone(),
-                mode: crate::config::Mode::Pixel,
-                diff: crate::config::DiffConfig::default(),
-                masks: vec![],
-            }),
-        );
+        let result = FileScanner::scan_workspace(&config_from(&include, &exclude), base_path);
 
         // Always restore permissions before running assertions!
         make_readable(&unreadable_dir);
@@ -771,7 +601,7 @@ screenshots:
     }
 
     #[test]
-    fn test_scan_files_case_insensitive_extension() {
+    fn test_scan_workspace_case_insensitive_extension() {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_path = temp_dir.path();
 
@@ -783,63 +613,12 @@ screenshots:
         let include = vec![GlobPattern::new("**/*.png").unwrap()];
         let exclude = vec![];
 
-        let cases = FileScanner::scan_files(
-            &include,
-            &exclude,
-            base_path,
-            &std::sync::Arc::new(crate::config::ScreenshotRule {
-                include: include.clone(),
-                mode: crate::config::Mode::Pixel,
-                diff: crate::config::DiffConfig::default(),
-                masks: vec![],
-            }),
-        )
-        .unwrap();
+        let cases =
+            FileScanner::scan_workspace(&config_from(&include, &exclude), base_path).unwrap();
         assert_eq!(
             cases.len(),
             2,
             "Expected to find both uppercase and mixed-case PNG files"
-        );
-    }
-
-    #[test]
-    fn test_parse_entry_strip_prefix_failure() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let base_path = temp_dir.path();
-
-        let billing_dir = base_path.join("billing");
-        std::fs::create_dir_all(&billing_dir).unwrap();
-        let img_path = billing_dir.join("form.png");
-        std::fs::write(&img_path, VALID_PNG_BYTES).unwrap();
-
-        // Perform a walk to get a real DirEntry
-        let walker = ignore::WalkBuilder::new(base_path).build();
-        let mut entry_opt = None;
-        for entry_res in walker {
-            let entry = entry_res.unwrap();
-            if entry.path().is_file() {
-                entry_opt = Some(entry);
-                break;
-            }
-        }
-        let entry = entry_opt.expect("Should have found a file entry");
-
-        // Now compile globs that match the absolute path
-        let include_set = GlobSetBuilder::new()
-            .add(globset::Glob::new("**/billing/*.png").unwrap())
-            .build()
-            .unwrap();
-        let exclude_set = GlobSetBuilder::new().build().unwrap();
-
-        // Pass a completely different base_dir
-        let different_base = Path::new("/some/different/dir");
-
-        // This should fail to strip prefix.
-        let res =
-            FileScanner::parse_entry(&entry, different_base, &include_set, &exclude_set).unwrap();
-        assert!(
-            res.is_none(),
-            "Expected parse_entry to skip when prefix stripping fails, but got {res:?}"
         );
     }
 

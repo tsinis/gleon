@@ -72,6 +72,20 @@ pub fn validate_test_name(name: &str) -> Result<(), TestNameError> {
     Ok(())
 }
 
+/// Normalizes path separators (`\\` -> `/`) **without touching case**.
+///
+/// Use this whenever the string is still a real filesystem or repository path (Git index
+/// lookups, remote object keys). [`normalize_test_name`] additionally folds case, which is
+/// correct for test *identities* but corrupts paths on case-sensitive systems.
+#[must_use]
+pub fn normalize_path_separators(path: &str) -> Cow<'_, str> {
+    if path.contains('\\') {
+        Cow::Owned(path.replace('\\', "/"))
+    } else {
+        Cow::Borrowed(path)
+    }
+}
+
 /// Normalizes path separators to forward slashes and lowercases ASCII test names without
 /// unnecessary allocations.
 ///

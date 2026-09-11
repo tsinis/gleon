@@ -38,9 +38,29 @@ pub(super) fn make_relative_path(
     use std::path::Component;
     use std::path::PathBuf;
 
-    if target.is_absolute() != base.is_absolute() {
+    // Bring both paths into one coordinate frame first. `gleon report html --out report.html`
+    // hands us a relative (often empty) report dir while the recorded image paths are absolute;
+    // bailing out with the target unchanged would embed `file:///...` links in the artifact.
+    let (absolute_target, absolute_base);
+    let (target, base) = if target.is_absolute() == base.is_absolute() {
+        (target, base)
+    } else if let Ok(cwd) = std::env::current_dir() {
+        absolute_target = if target.is_absolute() {
+            target.to_path_buf()
+        } else {
+            cwd.join(target)
+        };
+        absolute_base = if base.is_absolute() {
+            base.to_path_buf()
+        } else {
+            cwd.join(base)
+        };
+        (absolute_target.as_path(), absolute_base.as_path())
+    } else {
+        // No usable working directory to anchor against: leave the target untouched rather
+        // than inventing a relationship between the two paths.
         return target.to_path_buf();
-    }
+    };
 
     let mut target_comps = normalize_components(target).into_iter();
     let mut base_comps = normalize_components(base).into_iter();
@@ -186,10 +206,25 @@ mod tests {
 
     #[test]
     fn test_make_relative_path_edge_cases() {
-        let abs = PathBuf::from("/a/b/c");
-        let rel = PathBuf::from("a/b/c");
-        // Mixed absolute and relative returns target unchanged
-        assert_eq!(make_relative_path(&abs, &rel), abs);
+        // Mixed frames are anchored to the working directory rather than bailing out with the
+        // absolute target (which used to leak `file:///...` links into `--out` HTML reports).
+        let cwd = std::env::current_dir().unwrap();
+        let target = cwd.join("reports").join("img.png");
+        let relative_base = PathBuf::from("reports");
+        assert_eq!(
+            make_relative_path(&target, &relative_base),
+            PathBuf::from("img.png"),
+            "relative base resolves against the cwd the report is written from"
+        );
+
+        // Nothing sensible to relate them by once anchoring is impossible is covered by the
+        // same-frame path below.
+        let outside = PathBuf::from("/definitely/not/under/cwd/img.png");
+        let rel = make_relative_path(&outside, &relative_base);
+        assert!(
+            rel.is_relative(),
+            "still produces a relative link, got {rel:?}"
+        );
 
         #[cfg(windows)]
         {

@@ -44,7 +44,7 @@ pub(crate) fn filter_test_cases(
     if let Some(filters) = filter_paths {
         let normalized_filters: Vec<_> = filters
             .iter()
-            .map(|f| (f, FileScanner::normalize_path_str(f).to_lowercase()))
+            .map(|f| (f, FileScanner::normalize_path_str(f).into_owned()))
             .collect();
 
         test_cases.retain(|case| {

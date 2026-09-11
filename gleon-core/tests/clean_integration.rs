@@ -169,3 +169,62 @@ screenshots:
     assert!(!golden_file.exists());
     assert!(base_path.join(".gitignore").exists());
 }
+
+/// `clean` must untrack files whose repository path contains uppercase characters.
+///
+/// The index lookup is byte-exact, so case-folding the path before `entry_index_by_path`
+/// silently misses the entry: the file is deleted from disk but left staged, leaving the
+/// repository with a phantom unstaged deletion.
+#[test]
+fn test_clean_workspace_untracks_mixed_case_paths() {
+    let temp = tempdir().unwrap();
+    let base_path = temp.path();
+
+    let repo = gix::init(base_path).unwrap();
+
+    let gleon_dir = base_path.join(".gleon");
+    fs::create_dir_all(&gleon_dir).unwrap();
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "test/Goldens/**/*.png"
+    mode: pixel
+"#;
+    fs::write(gleon_dir.join("gleon.yaml"), config_yaml).unwrap();
+
+    let goldens_dir = base_path.join("test").join("Goldens");
+    fs::create_dir_all(&goldens_dir).unwrap();
+    let golden_file = goldens_dir.join("LoginScreen.png");
+    fs::write(&golden_file, VALID_PNG_BYTES).unwrap();
+
+    let index_path = base_path.join(".git").join("index");
+    let state = gix::index::State::new(gix::hash::Kind::Sha1);
+    let mut index = gix::index::File::from_state(state, index_path);
+    let rel_path_bstr = "test/Goldens/LoginScreen.png";
+    index.dangerously_push_entry(
+        gix::index::entry::Stat::default(),
+        gix::hash::ObjectId::empty_tree(gix::hash::Kind::Sha1),
+        gix::index::entry::Flags::empty(),
+        gix::index::entry::Mode::FILE,
+        rel_path_bstr.as_bytes().into(),
+    );
+    index.write(gix::index::write::Options::default()).unwrap();
+
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    let res = clean_workspace(&ctx, &CleanOptions::default()).unwrap();
+
+    assert_eq!(res.deleted_files.len(), 1, "file removed from disk");
+    assert_eq!(
+        res.untracked_files.len(),
+        1,
+        "mixed-case path must also be untracked from the Git index"
+    );
+
+    let index_after = repo.open_index().unwrap();
+    assert!(
+        index_after
+            .entry_index_by_path(rel_path_bstr.into())
+            .is_err(),
+        "entry must be gone from the index"
+    );
+}

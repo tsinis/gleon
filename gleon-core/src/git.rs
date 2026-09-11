@@ -419,7 +419,13 @@ impl GitResolver {
             };
 
             if let Ok(rel_to_repo) = abs_path.strip_prefix(&repo_root) {
-                let norm_str = crate::scanner::FileScanner::normalize_path_str(rel_to_repo);
+                // Git index keys are byte-exact: normalize separators only. Folding case here
+                // (as `normalize_path_str` does, since it also builds test identities) makes the
+                // lookup miss every path containing an uppercase character, leaving the file
+                // deleted on disk but still staged.
+                let norm_str =
+                    crate::naming::normalize_path_separators(&rel_to_repo.to_string_lossy())
+                        .into_owned();
                 if let Ok(entry_idx) = index.entry_index_by_path(norm_str.as_bytes().into())
                     && seen_indices.insert(entry_idx)
                 {

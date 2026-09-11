@@ -100,7 +100,10 @@ impl std::fmt::Display for ImgLinkFormatter<'_> {
             if let Some(signed_url) = self.resolver.and_then(|res_fn| res_fn(p)) {
                 return write!(f, "[Image]({signed_url})");
             }
-            if let Some(base) = self.base_url {
+            // `base_image_url` is the published root of *repository-relative* screenshots.
+            // An absolute path is a location on the machine that ran the tests, so joining it
+            // would both 404 and leak the local directory layout into a public PR comment.
+            if let Some(base) = self.base_url.filter(|_| p.is_relative()) {
                 let base = base.trim_end_matches('/');
                 return write!(f, "[Image]({}/{})", base, PosixPathFormatter(p));
             }
@@ -379,6 +382,61 @@ mod tests {
         assert!(comment.contains("`login_button`"));
         assert!(comment.contains("[Image](https://storage.cdn.com/run-1/goldens/login.png)"));
         assert!(comment.contains("12 px (fb)"));
+    }
+
+    #[test]
+    fn test_render_pr_comment_never_joins_base_url_onto_absolute_local_paths() {
+        // `base_image_url` describes where the *repository-relative* screenshots are published.
+        // Joining it with an absolute runner path produced links like
+        // `https://cdn/repo//Users/me/proj/.gleon/runs/latest/actual/x.png`, which 404 and leak
+        // the local directory layout into the PR comment.
+        let tc = TestCaseResult {
+            name: "login".to_string(),
+            result: TestImageResult::Mismatch {
+                relative_path: PathBuf::from("test/login.png"),
+                detail: MismatchDetail::Pixel { diff_count: 3 },
+                diff_path: PathBuf::from("/Users/me/proj/.gleon/runs/latest/diffs/login.png"),
+                baseline_path: PathBuf::from("/Users/me/proj/.gleon/blobs/sha256/abc"),
+                actual_path: PathBuf::from("/Users/me/proj/.gleon/runs/latest/actual/login.png"),
+            },
+        };
+        let options = MarkdownReportOptions {
+            base_image_url: Some("https://cdn.example.com/run-1"),
+            ..Default::default()
+        };
+
+        let comment = ReportGenerator::render_pr_comment(&[tc], &options);
+        assert!(
+            !comment.contains("/Users/me/proj"),
+            "absolute local path leaked into the comment: {comment}"
+        );
+        assert!(
+            comment.contains("N/A"),
+            "unpublishable images should render as N/A: {comment}"
+        );
+    }
+
+    #[test]
+    fn test_render_pr_comment_still_joins_base_url_onto_relative_paths() {
+        // Relative paths are exactly what `base_image_url` is for, so they must keep working.
+        let tc = TestCaseResult {
+            name: "login".to_string(),
+            result: TestImageResult::Mismatch {
+                relative_path: PathBuf::from("test/login.png"),
+                detail: MismatchDetail::Pixel { diff_count: 3 },
+                diff_path: PathBuf::from("diffs/login.png"),
+                baseline_path: PathBuf::from("goldens/login.png"),
+                actual_path: PathBuf::from("actual/login.png"),
+            },
+        };
+        let options = MarkdownReportOptions {
+            base_image_url: Some("https://cdn.example.com/run-1"),
+            ..Default::default()
+        };
+
+        let comment = ReportGenerator::render_pr_comment(&[tc], &options);
+        assert!(comment.contains("[Image](https://cdn.example.com/run-1/goldens/login.png)"));
+        assert!(comment.contains("[Image](https://cdn.example.com/run-1/actual/login.png)"));
     }
 
     #[test]

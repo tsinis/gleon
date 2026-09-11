@@ -2,11 +2,15 @@
 
 pub mod approve;
 pub mod clean;
+pub mod diff;
+pub mod init;
 pub mod lint;
 pub mod pull;
 pub mod push;
 pub mod report;
 pub mod resolve;
+pub mod stage;
+pub mod status;
 
 use crate::exit_code::ExitCode;
 

@@ -258,8 +258,8 @@ pub fn approve_workspace(
         // would silently disagree with the scanner the moment another input format is accepted,
         // filing approved baselines under a name `diff`/`status` never look up.
         let without_ext = rel_to_source.with_extension("");
-        let raw_test_name = crate::scanner::FileScanner::normalize_path_str(&without_ext);
-        let test_name = crate::naming::normalize_test_name(&raw_test_name).into_owned();
+        // `normalize_path_str` already folds case and separators into a canonical test name.
+        let test_name = crate::scanner::FileScanner::normalize_path_str(&without_ext).into_owned();
 
         let rel_to_source_buf = rel_to_source.to_path_buf();
         if let Some(existing_path) = resolved_tests.insert(test_name.clone(), file_path.clone()) {

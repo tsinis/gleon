@@ -276,7 +276,7 @@ impl super::ReportGenerator {
 mod tests {
     use super::*;
     use crate::report::ReportGenerator;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn test_generate_html_skips_on_success() {
@@ -311,6 +311,35 @@ mod tests {
             .expect("Expected HTML output");
         assert!(html.contains("..&#x2f;actual&#x2f;actual.png"));
         assert!(html.contains("Visual mismatch (5 pixels)"));
+    }
+
+    #[test]
+    fn test_generate_html_relativizes_absolute_paths_against_a_relative_report_dir() {
+        // `gleon report html --out report.html` yields a report_dir of "" (relative) while the
+        // recorded image paths are absolute. Returning the absolute path verbatim embeds
+        // `file:///Users/...` links that break the moment the artifact leaves the runner.
+        let tc = TestCaseResult {
+            name: "billing".to_string(),
+            result: TestImageResult::Mismatch {
+                relative_path: PathBuf::from("form.png"),
+                detail: MismatchDetail::Pixel { diff_count: 5 },
+                diff_path: std::env::current_dir().unwrap().join(".gleon/diffs/d.png"),
+                baseline_path: PathBuf::from("baseline.png"),
+                actual_path: std::env::current_dir().unwrap().join(".gleon/actual/a.png"),
+            },
+        };
+
+        let html = ReportGenerator::generate_html(&[tc], Some(Path::new("")))
+            .unwrap()
+            .unwrap();
+
+        let cwd = std::env::current_dir().unwrap();
+        let cwd_str = cwd.to_string_lossy().replace('/', "&#x2f;");
+        assert!(
+            !html.contains(&cwd_str),
+            "absolute paths must be relativized against the report dir"
+        );
+        assert!(html.contains(".gleon&#x2f;actual&#x2f;a.png"));
     }
 
     #[test]

@@ -107,11 +107,12 @@ pub fn find_workspace_root(
     start_dir: &Path,
     marker: impl Fn(&GleonPaths) -> bool,
 ) -> Option<GleonPaths> {
+    // Walk up in place: `PathBuf::pop` reuses the same allocation, so only the matching
+    // ancestor is ever turned into an owned `GleonPaths`.
     let mut current = start_dir.to_path_buf();
     loop {
-        let candidate = GleonPaths::new(current.clone());
-        if marker(&candidate) {
-            return Some(candidate);
+        if marker(&GleonPaths::new(current.as_path())) {
+            return Some(GleonPaths::new(current));
         }
         if !current.pop() {
             return None;

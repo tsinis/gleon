@@ -149,11 +149,26 @@ where
                 E::from(IoError::Io(e.error))
             })
         })
-        .and_then(|_| {
+        .map(|_persisted_file| {
             #[cfg(not(windows))]
             {
-                let dir = std::fs::File::open(parent).map_err(|e| E::from(IoError::Io(e)))?;
-                dir.sync_all().map_err(|e| E::from(IoError::Io(e)))?;
+                // Best-effort, like every other directory fsync in the codebase: the file itself
+                // is already durably persisted above. `fsync` on a *directory* descriptor is
+                // rejected with `EINVAL` on NFS/SMB/FUSE/9p (Docker volumes, WSL mounts), and
+                // failing the whole atomic save there would make gleon unusable on those mounts.
+                match std::fs::File::open(parent) {
+                    Ok(dir) => {
+                        if let Err(e) = dir.sync_all() {
+                            tracing::debug!(
+                                "Directory fsync not supported for {:?} ({e}); file contents are still durable",
+                                parent
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("Could not open {:?} to fsync directory entry: {e}", parent);
+                    }
+                }
             }
             #[cfg(windows)]
             {
@@ -161,7 +176,6 @@ where
                     let _ = dir.sync_all();
                 }
             }
-            Ok(())
         })
 }
 

@@ -63,6 +63,20 @@ pub fn local_blob_path(
     blobs_root.join(hash.scheme()).join(hash.value())
 }
 
+/// Recovers the [`crate::manifest::ImageHash`] a local blob path was built from by
+/// [`local_blob_path`], i.e. the trailing `<scheme>/<value>` pair.
+///
+/// Returns `None` if `path` doesn't have that shape or the pair fails hash validation, so a
+/// caller can't accidentally treat an arbitrary local file as a content-addressed blob.
+#[must_use]
+pub fn image_hash_from_local_blob_path(
+    path: &std::path::Path,
+) -> Option<crate::manifest::ImageHash> {
+    let value = path.file_name()?.to_str()?;
+    let scheme = path.parent()?.file_name()?.to_str()?;
+    crate::manifest::ImageHash::new(scheme, value).ok()
+}
+
 /// Returns `true` if `hash`'s blob exists under `blobs_root` and is usable.
 ///
 /// A convenience for callers that only need the yes/no answer, not the path itself (which

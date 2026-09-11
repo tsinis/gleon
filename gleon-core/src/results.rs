@@ -89,29 +89,21 @@ impl TestImageResult {
         }
     }
 
-    /// Returns the image paths worth pre-signing a remote storage URL for (e.g. to embed direct
-    /// links in a PR comment): baseline/actual/diff for a full comparison, whichever partial set
-    /// was actually produced otherwise, or the screenshot's own relative path when no comparison
-    /// images exist at all. Empty for [`Self::Success`] (nothing to link to).
+    /// Returns the baseline image's local blob path, if this result has one.
+    ///
+    /// Only baselines are content-addressed and uploaded to remote storage, so this is the
+    /// only image a report can link to remotely; `actual`/`diff` are produced per run on the
+    /// machine executing the tests and never leave it.
     #[must_use]
-    pub fn signable_paths(&self) -> Vec<&Path> {
+    pub fn baseline_path(&self) -> Option<&Path> {
         match self {
-            Self::Mismatch {
-                baseline_path,
-                actual_path,
-                diff_path,
-                ..
-            } => vec![baseline_path, actual_path, diff_path],
-            Self::DimensionMismatch {
-                baseline_path,
-                actual_path,
-                ..
-            } => vec![baseline_path, actual_path],
-            Self::EncodeError { actual_path, .. } => vec![actual_path],
-            Self::MissingBaseline { relative_path, .. }
-            | Self::DecodeError { relative_path, .. }
-            | Self::IoError { relative_path, .. } => vec![relative_path],
-            Self::Success { .. } => vec![],
+            Self::Mismatch { baseline_path, .. }
+            | Self::DimensionMismatch { baseline_path, .. } => Some(baseline_path),
+            Self::Success { .. }
+            | Self::DecodeError { .. }
+            | Self::IoError { .. }
+            | Self::EncodeError { .. }
+            | Self::MissingBaseline { .. } => None,
         }
     }
 }
@@ -147,7 +139,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_signable_paths_per_variant() {
+    fn test_baseline_path_only_for_results_that_have_one() {
         let mismatch = TestImageResult::Mismatch {
             relative_path: PathBuf::from("rel.png"),
             detail: MismatchDetail::Pixel { diff_count: 1 },
@@ -155,14 +147,7 @@ mod tests {
             baseline_path: PathBuf::from("base.png"),
             actual_path: PathBuf::from("actual.png"),
         };
-        assert_eq!(
-            mismatch.signable_paths(),
-            vec![
-                Path::new("base.png"),
-                Path::new("actual.png"),
-                Path::new("diff.png")
-            ]
-        );
+        assert_eq!(mismatch.baseline_path(), Some(Path::new("base.png")));
 
         let dim_mismatch = TestImageResult::DimensionMismatch {
             relative_path: PathBuf::from("rel.png"),
@@ -171,27 +156,32 @@ mod tests {
             baseline_path: PathBuf::from("base.png"),
             actual_path: PathBuf::from("actual.png"),
         };
-        assert_eq!(
-            dim_mismatch.signable_paths(),
-            vec![Path::new("base.png"), Path::new("actual.png")]
-        );
+        assert_eq!(dim_mismatch.baseline_path(), Some(Path::new("base.png")));
 
-        let encode_error = TestImageResult::EncodeError {
-            relative_path: PathBuf::from("rel.png"),
-            actual_path: PathBuf::from("actual.png"),
-            error: "bad".to_string(),
-        };
-        assert_eq!(encode_error.signable_paths(), vec![Path::new("actual.png")]);
-
-        let missing = TestImageResult::MissingBaseline {
-            relative_path: PathBuf::from("rel.png"),
-            reason: "none".to_string(),
-        };
-        assert_eq!(missing.signable_paths(), vec![Path::new("rel.png")]);
-
-        let success = TestImageResult::Success {
-            relative_path: PathBuf::from("rel.png"),
-        };
-        assert!(success.signable_paths().is_empty());
+        // No baseline was ever resolved for these, so there is nothing remote to link to.
+        for without_baseline in [
+            TestImageResult::EncodeError {
+                relative_path: PathBuf::from("rel.png"),
+                actual_path: PathBuf::from("actual.png"),
+                error: "bad".to_string(),
+            },
+            TestImageResult::MissingBaseline {
+                relative_path: PathBuf::from("rel.png"),
+                reason: "none".to_string(),
+            },
+            TestImageResult::DecodeError {
+                relative_path: PathBuf::from("rel.png"),
+                error: "bad".to_string(),
+            },
+            TestImageResult::IoError {
+                relative_path: PathBuf::from("rel.png"),
+                error: "bad".to_string(),
+            },
+            TestImageResult::Success {
+                relative_path: PathBuf::from("rel.png"),
+            },
+        ] {
+            assert_eq!(without_baseline.baseline_path(), None);
+        }
     }
 }
