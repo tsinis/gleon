@@ -181,10 +181,7 @@ impl WorkspaceIndex {
         let canonical_key = normalized.as_ref();
         let target_path = manifest_file_path(manifest_dir, canonical_key);
 
-        match manifest.save(&target_path) {
-            Ok(()) => {}
-            Err(e) => return Err(e),
-        }
+        manifest.save(&target_path)?;
 
         // Remove legacy-cased manifest file on disk if it differs from canonical path
         if let Some(old_source) = self

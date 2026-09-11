@@ -31,7 +31,10 @@ fn test_stage_uninitialized_fails() {
     let result = stage_workspace(&ctx, None);
 
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), StageError::NotInitialized));
+    assert!(matches!(
+        result.unwrap_err(),
+        StageError::Core(gleon_core::ops::common::CoreError::NotInitialized)
+    ));
 }
 
 #[test]

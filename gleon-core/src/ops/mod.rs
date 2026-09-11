@@ -1,5 +1,6 @@
 pub mod approve;
 pub mod clean;
+pub mod common;
 pub mod diff;
 pub mod init;
 pub mod lint;

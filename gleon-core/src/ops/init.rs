@@ -1,6 +1,7 @@
 //! Initialization operation for gleon workspace.
 
 use crate::config::GleonConfig;
+use crate::ops::common::{CoreError, append_missing_gitignore_lines, create_new_file_with_content};
 use crate::paths::GleonPaths;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -8,26 +9,13 @@ use thiserror::Error;
 /// Errors that can occur during workspace initialization.
 #[derive(Debug, Error)]
 pub enum InitError {
-    /// IO error during directory or file creation.
-    #[error("IO error during initialization: {0}")]
-    Io(#[from] std::io::Error),
-
     /// YAML serialization error when writing default config.
     #[error("YAML serialization error: {0}")]
     Yaml(#[from] serde_yaml::Error),
 
-    /// Manifest error during scaffolding.
-    #[error("Manifest error: {0}")]
-    Manifest(#[from] crate::manifest::ManifestError),
-}
-
-impl From<crate::io::IoError> for InitError {
-    fn from(err: crate::io::IoError) -> Self {
-        match err {
-            crate::io::IoError::Io(e) => Self::Io(e),
-            crate::io::IoError::JsonParse(e) => Self::Io(std::io::Error::other(e)),
-        }
-    }
+    /// Error shared across `ops::*` operations.
+    #[error(transparent)]
+    Core(#[from] CoreError),
 }
 
 /// Result summary of workspace initialization.
@@ -46,120 +34,53 @@ pub struct InitResult {
 /// Returns an error if the `.gleon` directory tree cannot be created, if the default
 /// `gleon.yaml` configuration fails to serialize, or if writing the `.gitignore`,
 /// `.env.template`, or `gleon.yaml` scaffold files fails.
-#[allow(clippy::too_many_lines)] // TODO(C3): extract shared helpers into ops/common.rs
 pub fn init_workspace(context: &crate::context::ResolvedContext) -> Result<InitResult, InitError> {
-    use std::io::Write;
-
     let paths = GleonPaths::new(&context.base_dir);
     let gleon_dir = paths.gleon_dir();
     let blobs_dir = paths.blob_scheme_dir("sha256");
     let runs_dir = paths.runs_latest();
 
-    std::fs::create_dir_all(&blobs_dir)?;
-    std::fs::create_dir_all(&runs_dir)?;
+    std::fs::create_dir_all(&blobs_dir).map_err(CoreError::Io)?;
+    std::fs::create_dir_all(&runs_dir).map_err(CoreError::Io)?;
 
     if let Ok(platform_key) = context.platform.to_key() {
-        std::fs::create_dir_all(paths.manifests_dir(&platform_key))?;
+        std::fs::create_dir_all(paths.manifests_dir(&platform_key)).map_err(CoreError::Io)?;
     } else {
-        std::fs::create_dir_all(paths.manifests_root())?;
+        std::fs::create_dir_all(paths.manifests_root()).map_err(CoreError::Io)?;
     }
 
     // Scaffold .gleon/.gitignore idempotently to prevent committing blobs/ or runs/ artifacts
-    let gitignore_path = paths.gitignore();
-    let existing_content = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
-    let mut to_append = String::new();
-
-    if !existing_content.lines().any(|l| l.trim() == "blobs/") {
-        to_append.push_str("blobs/\n");
-    }
-    if !existing_content.lines().any(|l| l.trim() == "runs/") {
-        to_append.push_str("runs/\n");
-    }
-    if !existing_content.lines().any(|l| l.trim() == ".env") {
-        to_append.push_str(".env\n");
-    }
-    if !existing_content.lines().any(|l| l.trim() == ".env.local") {
-        to_append.push_str(".env.local\n");
-    }
-    if !existing_content.lines().any(|l| l.trim() == "credentials") {
-        to_append.push_str("credentials\n");
-    }
-
-    if !to_append.is_empty() {
-        let prefix = if !existing_content.is_empty() && !existing_content.ends_with('\n') {
-            "\n"
-        } else {
-            ""
-        };
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&gitignore_path)?;
-        if !prefix.is_empty() {
-            file.write_all(prefix.as_bytes())?;
-        }
-        file.write_all(to_append.as_bytes())?;
-    }
+    append_missing_gitignore_lines(
+        &paths.gitignore(),
+        &[
+            "blobs/".to_string(),
+            "runs/".to_string(),
+            ".env".to_string(),
+            ".env.local".to_string(),
+            "credentials".to_string(),
+        ],
+    )?;
 
     // Scaffold .gleon/.env.template if it does not exist
-    let env_template_path = gleon_dir.join(".env.template");
-    let template_content = "# gleon Storage Configuration\n\
+    let env_template_content = "# gleon Storage Configuration\n\
         # Copy this file to .env.local and fill in your credentials\n\
         GLEON_STORAGE_URL=\n\
         AWS_ACCESS_KEY_ID=\n\
         AWS_SECRET_ACCESS_KEY=\n\
         # For Cloudflare R2:\n\
         # R2_ACCOUNT_ID=\n";
-    let env_create_res = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&env_template_path);
-    match env_create_res {
-        Ok(mut f) => {
-            if let Err(e) = f
-                .write_all(template_content.as_bytes())
-                .and_then(|()| f.sync_all())
-            {
-                let _ = std::fs::remove_file(&env_template_path);
-                return Err(InitError::Io(e));
-            }
-            #[cfg(not(windows))]
-            if let Ok(d) = std::fs::File::open(&gleon_dir) {
-                let _ = d.sync_all();
-            }
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(InitError::Io(e)),
-    }
+    create_new_file_with_content(
+        &gleon_dir.join(".env.template"),
+        env_template_content.as_bytes(),
+        &gleon_dir,
+    )?;
 
     let internal_config = paths.config_file();
-
-    let mut config_created = None;
     let default_config = GleonConfig::default();
     let yaml_content = serde_yaml::to_string(&default_config).map_err(InitError::Yaml)?;
-
-    let config_create_res = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&internal_config);
-    match config_create_res {
-        Ok(mut f) => {
-            if let Err(e) = f
-                .write_all(yaml_content.as_bytes())
-                .and_then(|()| f.sync_all())
-            {
-                let _ = std::fs::remove_file(&internal_config);
-                return Err(InitError::Io(e));
-            }
-            #[cfg(not(windows))]
-            if let Ok(d) = std::fs::File::open(&gleon_dir) {
-                let _ = d.sync_all();
-            }
-            config_created = Some(internal_config);
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(InitError::Io(e)),
-    }
+    let config_created =
+        create_new_file_with_content(&internal_config, yaml_content.as_bytes(), &gleon_dir)?
+            .then_some(internal_config);
 
     Ok(InitResult {
         gleon_dir,
@@ -180,18 +101,6 @@ pub fn init_workspace(context: &crate::context::ResolvedContext) -> Result<InitR
 mod tests {
     use super::*;
     use crate::context::ResolvedContext;
-
-    #[test]
-    fn test_init_error_from_io_error() {
-        let err1 = crate::io::IoError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "foo"));
-        let init_err1: InitError = err1.into();
-        assert!(matches!(init_err1, InitError::Io(_)));
-
-        let serde_err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
-        let err2 = crate::io::IoError::JsonParse(serde_err);
-        let init_err2: InitError = err2.into();
-        assert!(matches!(init_err2, InitError::Io(_)));
-    }
 
     #[test]
     fn test_init_workspace_creates_structure_and_config() {
@@ -283,7 +192,7 @@ mod tests {
         std::fs::set_permissions(&gleon_dir, perms).unwrap();
 
         if !can_write {
-            assert!(matches!(res, Err(InitError::Io(_))));
+            assert!(matches!(res, Err(InitError::Core(CoreError::Io(_)))));
         }
     }
 }

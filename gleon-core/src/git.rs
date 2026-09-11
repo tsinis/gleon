@@ -165,14 +165,11 @@ impl GitResolver {
         paths: &[P],
         base_dir: &Path,
     ) -> Result<bool, GitError> {
-        let repo = match gix::discover(base_dir) {
-            Ok(repo) => repo,
-            Err(e) => {
-                return Err(GitError::Discover(format!(
-                    "Not a git repository (or no git installed). verify_ignored requires a git repository. Underlying error: {e}"
-                )));
-            }
-        };
+        let repo = gix::discover(base_dir).map_err(|e| {
+            GitError::Discover(format!(
+                "Not a git repository (or no git installed). verify_ignored requires a git repository. Underlying error: {e}"
+            ))
+        })?;
 
         let repo_root = repo.workdir().ok_or_else(|| {
             GitError::Discover("Bare repository has no working directory".to_string())
@@ -288,10 +285,7 @@ impl GitResolver {
     /// read, or `GitError::MergeBaseFailed` if the target branch cannot be resolved
     /// or no common ancestor exists.
     pub fn resolve_merge_base(base_dir: &Path, target_branch: &str) -> Result<String, GitError> {
-        let repo = match gix::discover(base_dir) {
-            Ok(repo) => repo,
-            Err(e) => return Err(GitError::Discover(e.to_string())),
-        };
+        let repo = gix::discover(base_dir).map_err(|e| GitError::Discover(e.to_string()))?;
 
         // Check if the repository is a shallow clone by checking for the existence of .git/shallow
         if repo.shallow_file().exists() {
@@ -300,25 +294,20 @@ impl GitResolver {
             ));
         }
 
-        let head_commit = match repo.head_commit() {
-            Ok(commit) => commit,
-            Err(e) => return Err(GitError::HeadRead(e.to_string())),
-        };
+        let head_commit = repo
+            .head_commit()
+            .map_err(|e| GitError::HeadRead(e.to_string()))?;
         let head_id = head_commit.id;
 
-        let target_id = match repo.rev_parse_single(target_branch) {
-            Ok(id) => id,
-            Err(e) => {
-                return Err(GitError::MergeBaseFailed(format!(
-                    "Failed to resolve target branch '{target_branch}': {e}"
-                )));
-            }
-        };
+        let target_id = repo.rev_parse_single(target_branch).map_err(|e| {
+            GitError::MergeBaseFailed(format!(
+                "Failed to resolve target branch '{target_branch}': {e}"
+            ))
+        })?;
 
-        match repo.merge_base(head_id, target_id) {
-            Ok(base_id) => Ok(base_id.to_string()),
-            Err(e) => Err(GitError::MergeBaseFailed(e.to_string())),
-        }
+        repo.merge_base(head_id, target_id)
+            .map(|base_id| base_id.to_string())
+            .map_err(|e| GitError::MergeBaseFailed(e.to_string()))
     }
 
     /// Gets the author name and email of the given commit, defaulting to "unknown".
@@ -328,42 +317,24 @@ impl GitResolver {
     /// if `commit_sha` cannot be resolved to a commit, or `GitError::CommitDecode` if
     /// the commit object cannot be decoded.
     pub fn get_commit_author(base_dir: &Path, commit_sha: &str) -> Result<String, GitError> {
-        let repo = match gix::discover(base_dir) {
-            Ok(repo) => repo,
-            Err(e) => return Err(GitError::Discover(e.to_string())),
-        };
+        let repo = gix::discover(base_dir).map_err(|e| GitError::Discover(e.to_string()))?;
 
-        let id = match gix::ObjectId::from_hex(commit_sha.as_bytes())
+        let id = gix::ObjectId::from_hex(commit_sha.as_bytes())
             .or_else(|_| repo.rev_parse_single(commit_sha).map(gix::Id::detach))
-        {
-            Ok(id) => id,
-            Err(e) => {
-                return Err(GitError::CommitLookup {
-                    ref_or_sha: commit_sha.to_string(),
-                    reason: e.to_string(),
-                });
-            }
-        };
+            .map_err(|e| GitError::CommitLookup {
+                ref_or_sha: commit_sha.to_string(),
+                reason: e.to_string(),
+            })?;
 
-        let commit = match repo.find_commit(id) {
-            Ok(commit) => commit,
-            Err(e) => {
-                return Err(GitError::CommitLookup {
-                    ref_or_sha: id.to_string(),
-                    reason: e.to_string(),
-                });
-            }
-        };
+        let commit = repo.find_commit(id).map_err(|e| GitError::CommitLookup {
+            ref_or_sha: id.to_string(),
+            reason: e.to_string(),
+        })?;
 
-        let decoded = match commit.decode() {
-            Ok(decoded) => decoded,
-            Err(e) => {
-                return Err(GitError::CommitDecode {
-                    commit_sha: id.to_string(),
-                    reason: e.to_string(),
-                });
-            }
-        };
+        let decoded = commit.decode().map_err(|e| GitError::CommitDecode {
+            commit_sha: id.to_string(),
+            reason: e.to_string(),
+        })?;
 
         gix::actor::SignatureRef::from_bytes(decoded.author.as_ref()).map_or_else(
             |_| {
@@ -396,15 +367,11 @@ impl GitResolver {
     /// Returns `GitError::Discover` if no Git repository is found, or `GitError::HeadRead`
     /// if HEAD cannot be read.
     pub fn get_head_commit_sha(base_dir: &Path) -> Result<String, GitError> {
-        let repo = match gix::discover(base_dir) {
-            Ok(repo) => repo,
-            Err(e) => return Err(GitError::Discover(e.to_string())),
-        };
+        let repo = gix::discover(base_dir).map_err(|e| GitError::Discover(e.to_string()))?;
 
-        let head_commit = match repo.head_commit() {
-            Ok(commit) => commit,
-            Err(e) => return Err(GitError::HeadRead(e.to_string())),
-        };
+        let head_commit = repo
+            .head_commit()
+            .map_err(|e| GitError::HeadRead(e.to_string()))?;
 
         Ok(head_commit.id.to_string())
     }

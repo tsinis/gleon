@@ -4,44 +4,17 @@
 //! untracks them from the Git index (using `gix`), appends wildcard entries to
 //! `.gitignore`, and purges temporary `.gleon/runs/` and `.gleon/diffs/` directories.
 
-use crate::config::ConfigError;
-use crate::context::{ContextError, ResolvedContext};
-use crate::git::{GitError, GitResolver};
-use crate::scanner::{FileScanner, ScannerError};
-use std::fmt::Write as _;
+use crate::context::ResolvedContext;
+use crate::git::GitResolver;
+use crate::ops::common::{CoreError, append_missing_gitignore_lines, load_config_and_scan};
 use std::path::PathBuf;
 
 /// Error types that can occur during the clean operation.
 #[derive(Debug, thiserror::Error)]
 pub enum CleanError {
-    /// Context resolution error
-    #[error("Context error: {0}")]
-    Context(#[from] ContextError),
-
-    /// Configuration error
-    #[error("Config error: {0}")]
-    Config(#[from] ConfigError),
-
-    /// Scanner error
-    #[error("Scanner error: {0}")]
-    Scanner(#[from] ScannerError),
-
-    /// Git operation error
-    #[error("Git error: {0}")]
-    Git(#[from] GitError),
-
-    /// IO error
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-impl From<crate::io::IoError> for CleanError {
-    fn from(err: crate::io::IoError) -> Self {
-        match err {
-            crate::io::IoError::Io(e) => Self::Io(e),
-            crate::io::IoError::JsonParse(e) => Self::Io(std::io::Error::other(e.to_string())),
-        }
-    }
+    /// Error shared across `ops::*` operations.
+    #[error(transparent)]
+    Core(#[from] CoreError),
 }
 
 /// Options controlling the clean workspace operation.
@@ -76,7 +49,10 @@ pub struct CleanResult {
 /// exists but cannot be read (other than being missing) or cannot be written atomically, or if
 /// the `.gleon/runs`/`.gleon/diffs` cache directories exist but fail to be removed for a reason
 /// other than already being absent.
-#[allow(clippy::too_many_lines)] // TODO(C3): extract shared helpers into ops/common.rs
+// Genuinely long from four sequential, independent steps (delete+prune, git untrack,
+// .gitignore update, cache cleanup), not from duplicated logic — see ops/common.rs for the
+// helpers that already factor out what *is* shared with other operations.
+#[allow(clippy::too_many_lines)]
 pub fn clean_workspace(
     context: &ResolvedContext,
     options: &CleanOptions,
@@ -87,8 +63,7 @@ pub fn clean_workspace(
     let config = context.config.clone().unwrap_or_default();
 
     // 1. Scan for all screenshots matched by rules in gleon.yaml
-    let test_cases =
-        FileScanner::scan_workspace(&config, base_path).map_err(CleanError::Scanner)?;
+    let test_cases = load_config_and_scan(context)?;
     let mut discovered_paths: Vec<PathBuf> = test_cases
         .into_iter()
         .map(|case| case.image.relative_path)
@@ -183,7 +158,7 @@ pub fn clean_workspace(
         let existing = match std::fs::read_to_string(&gitignore_path) {
             Ok(text) => text,
             Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(e) => return Err(CleanError::Io(e)),
+            Err(e) => return Err(CoreError::Io(e).into()),
         };
 
         let existing_set: std::collections::HashSet<&str> =
@@ -218,19 +193,7 @@ pub fn clean_workspace(
         if !new_entries.is_empty() {
             result.gitignore_entries_added.clone_from(&new_entries);
             if !options.dry_run {
-                use std::io::Write as IoWrite;
-                let mut buffer = existing;
-                if !buffer.is_empty() && !buffer.ends_with('\n') {
-                    buffer.push('\n');
-                }
-                for entry in new_entries {
-                    // `String` implements `fmt::Write` infallibly; this can never return `Err`.
-                    #[allow(clippy::expect_used)]
-                    writeln!(buffer, "{entry}").expect("writing to String cannot fail");
-                }
-                crate::io::write_file_atomically(&gitignore_path, |writer| {
-                    writer.write_all(buffer.as_bytes()).map_err(CleanError::Io)
-                })?;
+                append_missing_gitignore_lines(&gitignore_path, &new_entries)?;
                 tracing::debug!(
                     "Added {} new rule(s) to .gitignore",
                     result.gitignore_entries_added.len()
@@ -249,12 +212,12 @@ pub fn clean_workspace(
             match std::fs::remove_dir_all(&runs_dir) {
                 Ok(()) => {}
                 Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(CleanError::Io(e)),
+                Err(e) => return Err(CoreError::Io(e).into()),
             }
             match std::fs::remove_dir_all(&diffs_dir) {
                 Ok(()) => {}
                 Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(CleanError::Io(e)),
+                Err(e) => return Err(CoreError::Io(e).into()),
             }
         }
         result.cache_cleaned = true;
@@ -276,6 +239,10 @@ pub fn clean_workspace(
 )]
 mod tests {
     use super::*;
+    use crate::config::ConfigError;
+    use crate::context::ContextError;
+    use crate::git::GitError;
+    use crate::scanner::ScannerError;
     use tempfile::tempdir;
 
     #[test]
@@ -444,37 +411,28 @@ screenshots:
 
         let opts = CleanOptions::default();
         let err = clean_workspace(&ctx, &opts).unwrap_err();
-        assert!(matches!(err, CleanError::Io(_)));
+        assert!(matches!(err, CleanError::Core(CoreError::Io(_))));
     }
 
     #[test]
     fn test_clean_error_display() {
-        let io_err = CleanError::Io(std::io::Error::other("disk full"));
+        let io_err: CleanError = CoreError::Io(std::io::Error::other("disk full")).into();
         assert!(io_err.to_string().contains("IO error: disk full"));
 
-        let git_err = CleanError::Git(GitError::DetachedHead);
-        assert!(git_err.to_string().contains("Git error:"));
+        let ctx_err: CleanError =
+            CoreError::Context(ContextError::Git(GitError::DetachedHead)).into();
+        assert!(ctx_err.to_string().contains("Context resolution error:"));
 
-        let ctx_err = CleanError::Context(ContextError::Git(GitError::DetachedHead));
-        assert!(ctx_err.to_string().contains("Context error:"));
-
-        let cfg_err = CleanError::Config(ConfigError::NotFound(PathBuf::from("foo")));
+        let cfg_err: CleanError =
+            CoreError::Config(ConfigError::NotFound(PathBuf::from("foo"))).into();
         assert!(cfg_err.to_string().contains("Config error:"));
 
-        let scan_err = CleanError::Scanner(ScannerError::InvalidTestName {
+        let scan_err: CleanError = CoreError::Scanner(ScannerError::InvalidTestName {
             name: "bad".to_string(),
             reason: "invalid".to_string(),
-        });
+        })
+        .into();
         assert!(scan_err.to_string().contains("Scanner error:"));
-
-        let io_from_json: CleanError =
-            crate::io::IoError::JsonParse(serde_json::from_str::<String>("bad json").unwrap_err())
-                .into();
-        assert!(matches!(io_from_json, CleanError::Io(_)));
-
-        let io_from_io: CleanError =
-            crate::io::IoError::Io(std::io::Error::other("disk crash")).into();
-        assert!(matches!(io_from_io, CleanError::Io(_)));
 
         let res = CleanResult::default();
         let cloned_res = res.clone();
@@ -658,7 +616,10 @@ screenshots:
         std::fs::set_permissions(&runs_dir, orig_perms).unwrap();
 
         assert!(res.is_err());
-        assert!(matches!(res.unwrap_err(), CleanError::Io(_)));
+        assert!(matches!(
+            res.unwrap_err(),
+            CleanError::Core(CoreError::Io(_))
+        ));
     }
 
     #[test]
@@ -708,7 +669,10 @@ screenshots:
         std::fs::set_permissions(&diffs_dir, orig_perms).unwrap();
 
         assert!(res.is_err());
-        assert!(matches!(res.unwrap_err(), CleanError::Io(_)));
+        assert!(matches!(
+            res.unwrap_err(),
+            CleanError::Core(CoreError::Io(_))
+        ));
     }
 
     #[test]

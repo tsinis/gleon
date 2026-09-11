@@ -1,13 +1,14 @@
 //! Diff operation for running visual comparison tests against baseline snapshots.
 
-use crate::config::ConfigError;
-use crate::context::{ContextError, ResolvedContext};
+use crate::context::ResolvedContext;
 use crate::engine::{ComparisonResult, compare_images};
-use crate::manifest::{ManifestError, WorkspaceIndex};
+use crate::manifest::WorkspaceIndex;
 use crate::masking::apply_masks;
+use crate::ops::common::{
+    CoreError, ensure_initialized, load_config_and_scan, load_index_with_fallback, platform_key,
+};
 use crate::report::{ReportError, ReportGenerator};
 use crate::results::{TestCaseResult, TestImageResult};
-use crate::scanner::{FileScanner, ScannerError};
 use sha2::Digest;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -15,26 +16,6 @@ use thiserror::Error;
 /// Errors that can occur during diff execution.
 #[derive(Debug, Error)]
 pub enum DiffOpError {
-    /// Workspace has not been initialized (`.gleon` missing).
-    #[error("gleon workspace is not initialized. Please run 'gleon init' first.")]
-    NotInitialized,
-
-    /// Error resolving context.
-    #[error("Context resolution error: {0}")]
-    Context(#[from] ContextError),
-
-    /// Error scanning files.
-    #[error("Scanner error: {0}")]
-    Scanner(#[from] ScannerError),
-
-    /// Error loading configuration.
-    #[error("Config error: {0}")]
-    Config(#[from] ConfigError),
-
-    /// Error loading manifest or manifest index.
-    #[error("Manifest error: {0}")]
-    Manifest(#[from] ManifestError),
-
     /// Error generating report files.
     #[error("Report error: {0}")]
     Report(#[from] ReportError),
@@ -43,9 +24,9 @@ pub enum DiffOpError {
     #[error("Image error: {0}")]
     Image(#[from] image::ImageError),
 
-    /// IO error.
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    /// Error shared across `ops::*` operations.
+    #[error(transparent)]
+    Core(#[from] CoreError),
 }
 
 /// Result summary of executing `gleon diff`.
@@ -61,7 +42,10 @@ pub struct DiffReportResult {
     pub runs_dir: PathBuf,
 }
 
-#[allow(clippy::too_many_lines)] // TODO(C3): extract shared helpers into ops/common.rs
+// Genuinely long from the sheer number of distinct byte-identical/missing-baseline/decode/mask/
+// compare branches, each returning a different `TestImageResult` variant with its own message —
+// not from duplicated logic.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn process_diff_case(
     case: &crate::scanner::TestCase,
     workspace_index: &WorkspaceIndex,
@@ -269,57 +253,39 @@ pub(crate) fn process_diff_case(
 pub fn run_diff(context: &ResolvedContext) -> Result<DiffReportResult, DiffOpError> {
     use rayon::prelude::*;
 
-    let base_dir = context.base_dir.as_path();
-    let paths = crate::paths::GleonPaths::new(base_dir);
-    if std::fs::metadata(paths.gleon_dir()).is_err() {
-        return Err(DiffOpError::NotInitialized);
-    }
+    let paths = ensure_initialized(&context.base_dir)?;
+    let platform_key = platform_key(context)?;
 
-    let platform_key = match context.platform.to_key() {
-        Ok(key) => key,
-        Err(e) => return Err(DiffOpError::Context(ContextError::Platform(e))),
-    };
+    let (mut workspace_index, fallback_index) = load_index_with_fallback(
+        &paths,
+        &platform_key,
+        context.fallback_platform_key.as_deref(),
+    )?;
 
-    let manifests_dir = paths.manifests_dir(&platform_key);
-    let mut workspace_index = match WorkspaceIndex::load(&manifests_dir) {
-        Ok(idx) => idx,
-        Err(e) => return Err(DiffOpError::Manifest(e)),
-    };
-
-    if let Some(fallback_key) = context
-        .fallback_platform_key
-        .as_deref()
-        .filter(|&k| k != platform_key)
+    if let Some(fb_index) = fallback_index
+        && !fb_index.is_empty()
     {
-        let fallback_dir = paths.manifests_dir(fallback_key);
-        let fb_index = WorkspaceIndex::load(&fallback_dir).map_err(DiffOpError::Manifest)?;
-        if !fb_index.is_empty() {
-            tracing::info!(
-                "Using fallback platform '{}' for missing manifests on platform '{}'.",
-                fallback_key,
-                platform_key
-            );
-            workspace_index.merge_fallback(fb_index);
-        }
+        tracing::info!(
+            "Using fallback platform '{}' for missing manifests on platform '{}'.",
+            context.fallback_platform_key.as_deref().unwrap_or_default(),
+            platform_key
+        );
+        workspace_index.merge_fallback(fb_index);
     }
 
     let runs_dir = paths.runs_latest();
     match std::fs::remove_dir_all(&runs_dir) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(DiffOpError::Io(e)),
+        Err(e) => return Err(CoreError::Io(e).into()),
     }
     let diffs_dir = paths.runs_latest_diffs();
     let actual_dir = paths.runs_actual();
-    std::fs::create_dir_all(&diffs_dir).map_err(DiffOpError::Io)?;
-    std::fs::create_dir_all(&actual_dir).map_err(DiffOpError::Io)?;
+    std::fs::create_dir_all(&diffs_dir).map_err(CoreError::Io)?;
+    std::fs::create_dir_all(&actual_dir).map_err(CoreError::Io)?;
     let blobs_root = paths.blobs_root();
 
-    let config = context.config.clone().unwrap_or_default();
-    let test_cases = match FileScanner::scan_workspace(&config, base_dir) {
-        Ok(tc) => tc,
-        Err(e) => return Err(DiffOpError::Scanner(e)),
-    };
+    let test_cases = load_config_and_scan(context)?;
 
     let progress_bar = crate::ui::create_progress_bar(test_cases.len() as u64);
 
@@ -374,30 +340,38 @@ pub fn run_diff(context: &ResolvedContext) -> Result<DiffReportResult, DiffOpErr
 )]
 mod tests {
     use super::*;
+    use crate::config::ConfigError;
+    use crate::context::ContextError;
+    use crate::manifest::ManifestError;
+    use crate::scanner::ScannerError;
 
     #[test]
     fn test_diff_error_display() {
-        let err1 = DiffOpError::NotInitialized;
+        let err1: DiffOpError = CoreError::NotInitialized.into();
         assert!(err1.to_string().contains("not initialized"));
 
-        let err2 = DiffOpError::Context(ContextError::Platform(
+        let err2: DiffOpError = CoreError::Context(ContextError::Platform(
             crate::platform::PlatformError::InvalidSegment("test".to_string()),
-        ));
+        ))
+        .into();
         assert!(err2.to_string().contains("Context resolution error"));
 
-        let err3 = DiffOpError::Scanner(ScannerError::InvalidTestName {
+        let err3: DiffOpError = CoreError::Scanner(ScannerError::InvalidTestName {
             name: "bad/name".to_string(),
             reason: "reason".to_string(),
-        });
+        })
+        .into();
         assert!(err3.to_string().contains("Scanner error"));
 
-        let err4 = DiffOpError::Config(ConfigError::Validation("bad config".to_string()));
+        let err4: DiffOpError =
+            CoreError::Config(ConfigError::Validation("bad config".to_string())).into();
         assert!(err4.to_string().contains("Config error"));
 
-        let err5 = DiffOpError::Manifest(ManifestError::Validation("bad manifest".to_string()));
+        let err5: DiffOpError =
+            CoreError::Manifest(ManifestError::Validation("bad manifest".to_string())).into();
         assert!(err5.to_string().contains("Manifest error"));
 
-        let err6 = DiffOpError::Io(std::io::Error::other("io test"));
+        let err6: DiffOpError = CoreError::Io(std::io::Error::other("io test")).into();
         assert!(err6.to_string().contains("IO error"));
     }
 
@@ -416,7 +390,7 @@ mod tests {
         let err = run_diff(&ctx).unwrap_err();
         assert!(matches!(
             err,
-            DiffOpError::Context(ContextError::Platform(_))
+            DiffOpError::Core(CoreError::Context(ContextError::Platform(_)))
         ));
     }
 
@@ -438,7 +412,10 @@ mod tests {
         std::fs::write(manifests_dir.join("test.json"), "invalid json").unwrap();
 
         let res = run_diff(&ctx);
-        assert!(matches!(res, Err(DiffOpError::Manifest(_))));
+        assert!(matches!(
+            res,
+            Err(DiffOpError::Core(CoreError::Manifest(_)))
+        ));
 
         // Clean up corrupt manifest
         std::fs::remove_file(manifests_dir.join("test.json")).unwrap();
@@ -449,7 +426,10 @@ mod tests {
         std::fs::write(bad_dir.join("test.png"), "fake png").unwrap();
 
         let res2 = run_diff(&ctx);
-        assert!(matches!(res2, Err(DiffOpError::Scanner(_))));
+        assert!(matches!(
+            res2,
+            Err(DiffOpError::Core(CoreError::Scanner(_)))
+        ));
     }
 
     #[test]

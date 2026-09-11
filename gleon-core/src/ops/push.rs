@@ -7,29 +7,14 @@ use thiserror::Error;
 use tracing::info;
 
 use crate::context::{ContextError, ResolvedContext};
-use crate::manifest::{ManifestError, WorkspaceIndex};
+use crate::manifest::WorkspaceIndex;
+use crate::ops::common::{CoreError, ensure_initialized};
 use crate::platform::validate_segment;
 use crate::storage::{ObjectStoreAdapter, StorageConfig, StorageError};
 
 /// Errors that can occur during a push operation.
 #[derive(Debug, Error)]
 pub enum PushError {
-    /// Workspace has not been initialized (`.gleon` missing).
-    #[error("gleon workspace is not initialized. Please run 'gleon init' first.")]
-    NotInitialized,
-
-    /// Error resolving context.
-    #[error("Context resolution error: {0}")]
-    Context(#[from] ContextError),
-
-    /// Error scanning or reading manifests.
-    #[error("Manifest error: {0}")]
-    Manifest(#[from] ManifestError),
-
-    /// Storage adapter error.
-    #[error("Storage error: {0}")]
-    Storage(#[from] StorageError),
-
     /// Missing local blob for a manifest hash.
     #[error(
         "Missing local blob for hash '{hash}' referenced in manifest at platform '{platform}'. Please run 'gleon stage' first."
@@ -41,9 +26,13 @@ pub enum PushError {
         platform: String,
     },
 
-    /// IO error.
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    /// Storage adapter error.
+    #[error("Storage error: {0}")]
+    Storage(#[from] StorageError),
+
+    /// Error shared across `ops::*` operations.
+    #[error(transparent)]
+    Core(#[from] CoreError),
 }
 
 /// Summary of push operation results.
@@ -109,15 +98,7 @@ pub async fn push_blobs(
     all_platforms: bool,
     platform_override: Option<&str>,
 ) -> Result<PushResult, PushError> {
-    let base_dir = context.base_dir.as_path();
-    let paths = crate::paths::GleonPaths::new(base_dir);
-    match std::fs::metadata(paths.gleon_dir()) {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(PushError::NotInitialized);
-        }
-        Err(e) => return Err(PushError::Io(e)),
-    }
+    let paths = ensure_initialized(&context.base_dir)?;
 
     let storage_cfg = match storage_config {
         Some(cfg) if !cfg.url.trim().is_empty() => cfg,
@@ -136,20 +117,14 @@ pub async fn push_blobs(
     let blobs_root = paths.blobs_root();
 
     let platform_dirs = if all_platforms {
-        match list_platform_dirs(&manifests_root) {
-            Ok(dirs) => dirs,
-            Err(e) => return Err(PushError::Io(e)),
-        }
+        list_platform_dirs(&manifests_root).map_err(CoreError::Io)?
     } else if let Some(p) = platform_override {
         let valid_key = validate_segment(p)
-            .map_err(|e| PushError::Context(ContextError::Platform(e)))?
+            .map_err(|e| CoreError::Context(ContextError::Platform(e)))?
             .into_owned();
         vec![(valid_key.clone(), manifests_root.join(valid_key))]
     } else {
-        let platform_key = match context.platform.to_key() {
-            Ok(key) => key,
-            Err(e) => return Err(PushError::Context(ContextError::Platform(e))),
-        };
+        let platform_key = crate::ops::common::platform_key(context)?;
         vec![(platform_key.clone(), manifests_root.join(platform_key))]
     };
 
@@ -160,12 +135,9 @@ pub async fn push_blobs(
         match std::fs::metadata(plat_dir) {
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(PushError::Io(e)),
+            Err(e) => return Err(CoreError::Io(e).into()),
         }
-        let index = match WorkspaceIndex::load(plat_dir) {
-            Ok(idx) => idx,
-            Err(e) => return Err(PushError::Manifest(e)),
-        };
+        let index = WorkspaceIndex::load(plat_dir).map_err(CoreError::Manifest)?;
         for manifest in index.entries().values() {
             let hash = &manifest.hash;
             hash_to_platform
@@ -278,7 +250,7 @@ mod tests {
 
     #[test]
     fn test_push_error_display() {
-        let err1 = PushError::NotInitialized;
+        let err1: PushError = CoreError::NotInitialized.into();
         assert!(err1.to_string().contains("not initialized"));
 
         let err2 = PushError::MissingLocalBlob {
@@ -288,12 +260,13 @@ mod tests {
         assert!(err2.to_string().contains("Missing local blob"));
         assert!(err2.to_string().contains("xyz"));
 
-        let err3 = PushError::Io(std::io::Error::other("io test"));
+        let err3: PushError = CoreError::Io(std::io::Error::other("io test")).into();
         assert!(err3.to_string().contains("IO error"));
 
-        let err4 = PushError::Context(ContextError::Platform(PlatformError::InvalidSegment(
-            "bad".to_string(),
-        )));
+        let err4: PushError = CoreError::Context(ContextError::Platform(
+            PlatformError::InvalidSegment("bad".to_string()),
+        ))
+        .into();
         assert!(err4.to_string().contains("Context resolution error"));
 
         let err5 = PushError::Storage(StorageError::BlobNotFound("hash".to_string()));
@@ -331,7 +304,9 @@ mod tests {
         let err = push_blobs(&ctx, Some(&cfg), false, Some("../invalid")).await;
         assert!(matches!(
             err,
-            Err(PushError::Context(ContextError::Platform(_)))
+            Err(PushError::Core(CoreError::Context(ContextError::Platform(
+                _
+            ))))
         ));
 
         // Empty manifest directory for valid platform override -> 0 blobs
@@ -388,7 +363,7 @@ mod tests {
         std::fs::set_permissions(&manifests, perms).unwrap();
 
         if !can_read {
-            assert!(matches!(res, Err(PushError::Io(_))));
+            assert!(matches!(res, Err(PushError::Core(CoreError::Io(_)))));
         }
     }
 
@@ -406,7 +381,9 @@ mod tests {
         let res = push_blobs(&ctx, Some(&cfg), false, None).await;
         assert!(matches!(
             res,
-            Err(PushError::Context(ContextError::Platform(_)))
+            Err(PushError::Core(CoreError::Context(ContextError::Platform(
+                _
+            ))))
         ));
     }
 
@@ -426,7 +403,7 @@ mod tests {
 
         let cfg = StorageConfig::new("memory://");
         let res = push_blobs(&ctx, Some(&cfg), false, None).await;
-        assert!(matches!(res, Err(PushError::Manifest(_))));
+        assert!(matches!(res, Err(PushError::Core(CoreError::Manifest(_)))));
     }
 
     #[tokio::test]
@@ -528,7 +505,7 @@ mod tests {
         let _ = std::fs::set_permissions(&manifests_dir, original_perms);
 
         if was_permission_denied {
-            assert!(matches!(res, Err(PushError::Io(_))));
+            assert!(matches!(res, Err(PushError::Core(CoreError::Io(_)))));
         } else {
             // Superuser/root runners bypass 000 directory permissions
             assert!(res.is_ok());

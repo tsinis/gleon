@@ -26,7 +26,10 @@ fn test_approve_uninitialized_fails() {
     let result = approve_workspace(&ctx, &[], None);
 
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), ApproveError::NotInitialized));
+    assert!(matches!(
+        result.unwrap_err(),
+        ApproveError::Core(gleon_core::ops::common::CoreError::NotInitialized)
+    ));
 }
 
 #[test]

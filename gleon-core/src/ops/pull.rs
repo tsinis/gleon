@@ -5,7 +5,8 @@ use thiserror::Error;
 use tracing::info;
 
 use crate::context::{ContextError, ResolvedContext};
-use crate::manifest::{ImageHash, ManifestError, WorkspaceIndex};
+use crate::manifest::{ImageHash, WorkspaceIndex};
+use crate::ops::common::{CoreError, ensure_initialized};
 use crate::ops::push::list_platform_dirs;
 use crate::platform::validate_segment;
 use crate::storage::{ObjectStoreAdapter, StorageConfig, StorageError};
@@ -13,22 +14,6 @@ use crate::storage::{ObjectStoreAdapter, StorageConfig, StorageError};
 /// Errors that can occur during a pull operation.
 #[derive(Debug, Error)]
 pub enum PullError {
-    /// Workspace has not been initialized (`.gleon` missing).
-    #[error("gleon workspace is not initialized. Please run 'gleon init' first.")]
-    NotInitialized,
-
-    /// Error resolving context.
-    #[error("Context resolution error: {0}")]
-    Context(#[from] ContextError),
-
-    /// Error scanning or reading manifests.
-    #[error("Manifest error: {0}")]
-    Manifest(#[from] ManifestError),
-
-    /// Storage adapter error.
-    #[error("Storage error: {0}")]
-    Storage(#[from] StorageError),
-
     /// Missing remote blob on Object Store.
     #[error(
         "Missing remote blob for hash '{hash}' referenced in manifest at platform '{platform}'. Blob was not found in remote storage."
@@ -40,9 +25,13 @@ pub enum PullError {
         platform: String,
     },
 
-    /// IO error.
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    /// Storage adapter error.
+    #[error("Storage error: {0}")]
+    Storage(#[from] StorageError),
+
+    /// Error shared across `ops::*` operations.
+    #[error(transparent)]
+    Core(#[from] CoreError),
 }
 
 /// Summary of pull operation results.
@@ -70,11 +59,7 @@ pub async fn pull_blobs(
     all_platforms: bool,
     platform_override: Option<&str>,
 ) -> Result<PullResult, PullError> {
-    let base_dir = context.base_dir.as_path();
-    let paths = crate::paths::GleonPaths::new(base_dir);
-    if std::fs::metadata(paths.gleon_dir()).is_err() {
-        return Err(PullError::NotInitialized);
-    }
+    let paths = ensure_initialized(&context.base_dir)?;
 
     let storage_cfg = match storage_config {
         Some(cfg) if !cfg.url.trim().is_empty() => cfg,
@@ -108,32 +93,26 @@ pub async fn pull_blobs(
     };
 
     if all_platforms {
-        let platform_dirs = match list_platform_dirs(&manifests_root) {
-            Ok(dirs) => dirs,
-            Err(e) => return Err(PullError::Io(e)),
-        };
+        let platform_dirs = list_platform_dirs(&manifests_root).map_err(CoreError::Io)?;
         for (target_platform_key, target_dir) in platform_dirs {
-            let index = WorkspaceIndex::load(&target_dir).map_err(PullError::Manifest)?;
+            let index = WorkspaceIndex::load(&target_dir).map_err(CoreError::Manifest)?;
             for manifest in index.entries().values() {
                 register_blob(&manifest.hash, &target_platform_key);
             }
         }
     } else if let Some(p) = platform_override {
         let valid_key = validate_segment(p)
-            .map_err(|e| PullError::Context(ContextError::Platform(e)))?
+            .map_err(|e| CoreError::Context(ContextError::Platform(e)))?
             .into_owned();
         let target_dir = manifests_root.join(&valid_key);
-        let index = WorkspaceIndex::load(&target_dir).map_err(PullError::Manifest)?;
+        let index = WorkspaceIndex::load(&target_dir).map_err(CoreError::Manifest)?;
         for manifest in index.entries().values() {
             register_blob(&manifest.hash, &valid_key);
         }
     } else {
-        let platform_key = match context.platform.to_key() {
-            Ok(key) => key,
-            Err(e) => return Err(PullError::Context(ContextError::Platform(e))),
-        };
+        let platform_key = crate::ops::common::platform_key(context)?;
         let plat_dir = manifests_root.join(&platform_key);
-        let plat_idx = WorkspaceIndex::load(&plat_dir).map_err(PullError::Manifest)?;
+        let plat_idx = WorkspaceIndex::load(&plat_dir).map_err(CoreError::Manifest)?;
 
         for manifest in plat_idx.entries().values() {
             register_blob(&manifest.hash, &platform_key);
@@ -145,7 +124,7 @@ pub async fn pull_blobs(
             .filter(|&k| k != platform_key)
         {
             let fb_dir = manifests_root.join(fallback_key);
-            let fb_idx = WorkspaceIndex::load(&fb_dir).map_err(PullError::Manifest)?;
+            let fb_idx = WorkspaceIndex::load(&fb_dir).map_err(CoreError::Manifest)?;
             if !fb_idx.is_empty() {
                 tracing::info!(
                     "Using fallback platform '{}' for missing blobs on platform '{}'.",
@@ -233,7 +212,7 @@ mod tests {
 
     #[test]
     fn test_pull_error_display() {
-        let err1 = PullError::NotInitialized;
+        let err1: PullError = CoreError::NotInitialized.into();
         assert!(err1.to_string().contains("not initialized"));
 
         let err2 = PullError::MissingRemoteBlob {
@@ -243,12 +222,13 @@ mod tests {
         assert!(err2.to_string().contains("Missing remote blob"));
         assert!(err2.to_string().contains("xyz"));
 
-        let err3 = PullError::Io(std::io::Error::other("io test"));
+        let err3: PullError = CoreError::Io(std::io::Error::other("io test")).into();
         assert!(err3.to_string().contains("IO error"));
 
-        let err4 = PullError::Context(ContextError::Platform(PlatformError::InvalidSegment(
-            "bad".to_string(),
-        )));
+        let err4: PullError = CoreError::Context(ContextError::Platform(
+            PlatformError::InvalidSegment("bad".to_string()),
+        ))
+        .into();
         assert!(err4.to_string().contains("Context resolution error"));
 
         let err5 = PullError::Storage(StorageError::BlobNotFound("hash".to_string()));
@@ -286,7 +266,9 @@ mod tests {
         let res = pull_blobs(&ctx, Some(&cfg), false, Some("../invalid")).await;
         assert!(matches!(
             res,
-            Err(PullError::Context(ContextError::Platform(_)))
+            Err(PullError::Core(CoreError::Context(ContextError::Platform(
+                _
+            ))))
         ));
 
         // Empty manifest directory for valid platform override -> 0 blobs
@@ -324,7 +306,7 @@ mod tests {
         perms.set_mode(0o755);
         let _ = std::fs::set_permissions(&manifests_dir, perms);
 
-        assert!(matches!(res, Err(PullError::Io(_))));
+        assert!(matches!(res, Err(PullError::Core(CoreError::Io(_)))));
     }
 
     #[tokio::test]
@@ -341,7 +323,9 @@ mod tests {
         let res = pull_blobs(&ctx, Some(&cfg), false, None).await;
         assert!(matches!(
             res,
-            Err(PullError::Context(ContextError::Platform(_)))
+            Err(PullError::Core(CoreError::Context(ContextError::Platform(
+                _
+            ))))
         ));
     }
 
@@ -570,7 +554,10 @@ mod tests {
         };
         let cfg = StorageConfig::new("memory://");
         let res = pull_blobs(&ctx, Some(&cfg), false, None).await;
-        assert!(matches!(res, Err(PullError::NotInitialized)));
+        assert!(matches!(
+            res,
+            Err(PullError::Core(CoreError::NotInitialized))
+        ));
     }
 
     #[tokio::test]

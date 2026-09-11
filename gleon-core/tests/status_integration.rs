@@ -24,7 +24,10 @@ fn test_status_uninitialized_fails() {
     let result = check_status(&ctx);
 
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), StatusError::NotInitialized));
+    assert!(matches!(
+        result.unwrap_err(),
+        StatusError::Core(gleon_core::ops::common::CoreError::NotInitialized)
+    ));
 }
 
 #[test]
@@ -382,6 +385,7 @@ screenshots:
 
     assert!(matches!(
         result,
-        Err(StatusError::Io(ref err)) if err.kind() == std::io::ErrorKind::InvalidData
+        Err(StatusError::Core(gleon_core::ops::common::CoreError::Io(ref err)))
+            if err.kind() == std::io::ErrorKind::InvalidData
     ));
 }

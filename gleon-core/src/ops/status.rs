@@ -1,9 +1,9 @@
 //! Status operation for categorizing workspace screenshots against baseline manifests.
 
-use crate::config::ConfigError;
-use crate::context::{ContextError, ResolvedContext};
-use crate::manifest::{ManifestError, WorkspaceIndex};
-use crate::scanner::{FileScanner, ScannerError};
+use crate::context::ResolvedContext;
+use crate::ops::common::{
+    CoreError, ensure_initialized, load_config_and_scan, load_index_with_fallback, platform_key,
+};
 use serde::Serialize;
 use sha2::Digest;
 
@@ -13,33 +13,13 @@ use thiserror::Error;
 /// Errors that can occur during status evaluation.
 #[derive(Debug, Error)]
 pub enum StatusError {
-    /// Workspace has not been initialized (`.gleon` missing).
-    #[error("gleon workspace is not initialized. Please run 'gleon init' first.")]
-    NotInitialized,
-
-    /// Error resolving context.
-    #[error("Context resolution error: {0}")]
-    Context(#[from] ContextError),
-
-    /// Error scanning files.
-    #[error("Scanner error: {0}")]
-    Scanner(#[from] ScannerError),
-
-    /// Error loading configuration.
-    #[error("Config error: {0}")]
-    Config(#[from] ConfigError),
-
-    /// Error loading manifest or manifest index.
-    #[error("Manifest error: {0}")]
-    Manifest(#[from] ManifestError),
-
     /// Image processing error.
     #[error("Image error: {0}")]
     Image(#[from] image::ImageError),
 
-    /// IO error.
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    /// Error shared across `ops::*` operations.
+    #[error(transparent)]
+    Core(#[from] CoreError),
 }
 
 /// Grouped result of evaluating status across the workspace.
@@ -118,47 +98,34 @@ impl StatusReport {
 /// Returns an error if the workspace is not initialized, if the platform key cannot be
 /// resolved, if manifests or workspace configuration fail to load, if screenshots cannot be
 /// scanned, or if reading/decoding actual or baseline images fails.
-#[allow(clippy::too_many_lines)] // TODO(C3): extract shared helpers into ops/common.rs
+#[allow(clippy::too_many_lines)]
 pub fn check_status(context: &ResolvedContext) -> Result<StatusReport, StatusError> {
     use rayon::prelude::*;
 
-    let base_dir = context.base_dir.as_path();
-    let paths = crate::paths::GleonPaths::new(base_dir);
-    if std::fs::metadata(paths.gleon_dir()).is_err() {
-        return Err(StatusError::NotInitialized);
-    }
+    let paths = ensure_initialized(&context.base_dir)?;
+    let platform_key = platform_key(context)?;
 
-    let platform_key = match context.platform.to_key() {
-        Ok(key) => key,
-        Err(e) => return Err(StatusError::Context(ContextError::Platform(e))),
-    };
+    let (mut workspace_index, fallback_index) = load_index_with_fallback(
+        &paths,
+        &platform_key,
+        context.fallback_platform_key.as_deref(),
+    )?;
 
-    let manifests_dir = paths.manifests_dir(&platform_key);
-    let mut workspace_index =
-        WorkspaceIndex::load(&manifests_dir).map_err(StatusError::Manifest)?;
-
-    if let Some(fallback_key) = context
-        .fallback_platform_key
-        .as_deref()
-        .filter(|&k| k != platform_key)
+    if let Some(fb_index) = fallback_index
+        && !fb_index.is_empty()
     {
-        let fallback_dir = paths.manifests_dir(fallback_key);
-        let fb_index = WorkspaceIndex::load(&fallback_dir).map_err(StatusError::Manifest)?;
-        if !fb_index.is_empty() {
-            tracing::info!(
-                "Using fallback platform '{}' for missing manifests on platform '{}'.",
-                fallback_key,
-                platform_key
-            );
-            workspace_index.merge_fallback(fb_index);
-        }
+        tracing::info!(
+            "Using fallback platform '{}' for missing manifests on platform '{}'.",
+            context.fallback_platform_key.as_deref().unwrap_or_default(),
+            platform_key
+        );
+        workspace_index.merge_fallback(fb_index);
     }
 
-    let config = context.config.clone().unwrap_or_default();
     let blobs_root = paths.blobs_root();
 
     // Scan workspace screenshots
-    let test_cases = FileScanner::scan_workspace(&config, base_dir)?;
+    let test_cases = load_config_and_scan(context)?;
 
     let (mut added, mut modified) = test_cases
         .par_iter()
@@ -171,7 +138,7 @@ pub fn check_status(context: &ResolvedContext) -> Result<StatusReport, StatusErr
                 match baseline_manifest {
                     None => Ok((Some(img.relative_path.clone()), None)),
                     Some(manifest) => {
-                        let raw_bytes = std::fs::read(&img.absolute_path)?;
+                        let raw_bytes = std::fs::read(&img.absolute_path).map_err(CoreError::Io)?;
                         let is_unchanged = if manifest.hash.scheme() == "sha256" {
                             let actual_sha256 = hex::encode(sha2::Sha256::digest(&raw_bytes));
                             if actual_sha256 == manifest.hash.value() {
@@ -187,11 +154,12 @@ pub fn check_status(context: &ResolvedContext) -> Result<StatusReport, StatusErr
                             match std::fs::read(&baseline_blob_path) {
                                 Ok(b_bytes) => raw_bytes == b_bytes,
                                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-                                Err(e) => return Err(StatusError::Io(e)),
+                                Err(e) => return Err(CoreError::Io(e).into()),
                             }
                         };
                         if is_unchanged {
-                            crate::manifest::SingleTestManifest::validate_image_bytes(&raw_bytes)?;
+                            crate::manifest::SingleTestManifest::validate_image_bytes(&raw_bytes)
+                                .map_err(CoreError::Manifest)?;
                             Ok((None, None))
                         } else {
                             let matched_zones = case.rule.matched_mask_zones(&img.relative_path);
@@ -205,7 +173,7 @@ pub fn check_status(context: &ResolvedContext) -> Result<StatusReport, StatusErr
                                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                                         return Ok((None, Some(img.relative_path.clone())));
                                     }
-                                    Err(e) => return Err(StatusError::Io(e)),
+                                    Err(e) => return Err(CoreError::Io(e).into()),
                                 };
 
                                 if let Err(e) =
@@ -213,10 +181,11 @@ pub fn check_status(context: &ResolvedContext) -> Result<StatusReport, StatusErr
                                         &b_bytes,
                                     )
                                 {
-                                    return Err(StatusError::Io(std::io::Error::new(
+                                    return Err(CoreError::Io(std::io::Error::new(
                                         std::io::ErrorKind::InvalidData,
                                         format!("Invalid baseline dimensions/format: {e}"),
-                                    )));
+                                    ))
+                                    .into());
                                 }
                                 let b_img = image::load_from_memory(&b_bytes)?;
 
@@ -225,10 +194,11 @@ pub fn check_status(context: &ResolvedContext) -> Result<StatusReport, StatusErr
                                         &raw_bytes,
                                     )
                                 {
-                                    return Err(StatusError::Io(std::io::Error::new(
+                                    return Err(CoreError::Io(std::io::Error::new(
                                         std::io::ErrorKind::InvalidData,
                                         format!("Invalid actual image dimensions/format: {e}"),
-                                    )));
+                                    ))
+                                    .into());
                                 }
                                 let a_img = image::load_from_memory(&raw_bytes)?;
 
@@ -309,30 +279,38 @@ pub fn check_status(context: &ResolvedContext) -> Result<StatusReport, StatusErr
 )]
 mod tests {
     use super::*;
+    use crate::config::ConfigError;
+    use crate::context::ContextError;
+    use crate::manifest::{ManifestError, WorkspaceIndex};
+    use crate::scanner::ScannerError;
 
     #[test]
     fn test_status_error_display() {
-        let err1 = StatusError::NotInitialized;
+        let err1: StatusError = CoreError::NotInitialized.into();
         assert!(err1.to_string().contains("not initialized"));
 
-        let err2 = StatusError::Context(ContextError::Platform(
+        let err2: StatusError = CoreError::Context(ContextError::Platform(
             crate::platform::PlatformError::InvalidSegment("test".to_string()),
-        ));
+        ))
+        .into();
         assert!(err2.to_string().contains("Context resolution error"));
 
-        let err3 = StatusError::Scanner(ScannerError::InvalidTestName {
+        let err3: StatusError = CoreError::Scanner(ScannerError::InvalidTestName {
             name: "bad/name".to_string(),
             reason: "reason".to_string(),
-        });
+        })
+        .into();
         assert!(err3.to_string().contains("Scanner error"));
 
-        let err4 = StatusError::Config(ConfigError::Validation("bad config".to_string()));
+        let err4: StatusError =
+            CoreError::Config(ConfigError::Validation("bad config".to_string())).into();
         assert!(err4.to_string().contains("Config error"));
 
-        let err5 = StatusError::Manifest(ManifestError::Validation("bad manifest".to_string()));
+        let err5: StatusError =
+            CoreError::Manifest(ManifestError::Validation("bad manifest".to_string())).into();
         assert!(err5.to_string().contains("Manifest error"));
 
-        let err6 = StatusError::Io(std::io::Error::other("io test"));
+        let err6: StatusError = CoreError::Io(std::io::Error::other("io test")).into();
         assert!(err6.to_string().contains("IO error"));
 
         let img_err = image::ImageError::Limits(image::error::LimitError::from_kind(
@@ -525,7 +503,7 @@ mod tests {
         std::fs::write(blob_dir.join(hash_val), "fake png data").unwrap();
 
         let res2 = check_status(&ctx);
-        assert!(matches!(res2, Err(StatusError::Io(_))));
+        assert!(matches!(res2, Err(StatusError::Core(CoreError::Io(_)))));
     }
 
     #[test]
@@ -547,7 +525,9 @@ mod tests {
         let res = check_status(&ctx);
         assert!(matches!(
             res,
-            Err(StatusError::Context(ContextError::Platform(_)))
+            Err(StatusError::Core(CoreError::Context(
+                ContextError::Platform(_)
+            )))
         ));
     }
 

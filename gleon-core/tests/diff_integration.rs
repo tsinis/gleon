@@ -30,7 +30,10 @@ fn test_diff_uninitialized_fails() {
     let result = run_diff(&ctx);
 
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), DiffOpError::NotInitialized));
+    assert!(matches!(
+        result.unwrap_err(),
+        DiffOpError::Core(gleon_core::ops::common::CoreError::NotInitialized)
+    ));
 }
 
 #[test]
