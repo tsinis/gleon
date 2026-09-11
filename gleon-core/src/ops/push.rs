@@ -1,15 +1,13 @@
 //! Push operation for uploading baseline blobs to remote storage.
 
-use futures::{StreamExt as _, TryStreamExt as _};
-use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
 use thiserror::Error;
-use tracing::info;
 
-use crate::context::{ContextError, ResolvedContext};
-use crate::manifest::WorkspaceIndex;
+use crate::context::ResolvedContext;
 use crate::ops::common::{CoreError, ensure_initialized};
-use crate::platform::validate_segment;
+use crate::ops::sync::{
+    active_storage_config, collect_referenced_hashes, resolve_platform_dirs, transfer_with_progress,
+};
 use crate::storage::{ObjectStoreAdapter, StorageConfig, StorageError};
 
 /// Errors that can occur during a push operation.
@@ -48,50 +46,11 @@ pub struct PushResult {
     pub local_mode: bool,
 }
 
-/// Helper function to discover valid platform directories under `.gleon/manifests/`.
-pub(crate) fn list_platform_dirs(
-    manifests_root: &Path,
-) -> Result<Vec<(String, PathBuf)>, std::io::Error> {
-    let entries = match std::fs::read_dir(manifests_root) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e),
-    };
-
-    let mut platforms = Vec::new();
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        let is_dir = path.is_dir();
-        let valid_name = entry
-            .file_name()
-            .to_str()
-            .filter(|_| is_dir)
-            .filter(|n| !n.starts_with('.'))
-            .and_then(|n| {
-                if n.chars().all(|c| {
-                    c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == ':'
-                }) {
-                    Some(n.to_string())
-                } else {
-                    None
-                }
-            });
-
-        if let Some(name) = valid_name {
-            platforms.push((name, path));
-        }
-    }
-    platforms.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(platforms)
-}
-
 /// Executes push pipeline, uploading baseline blobs to remote storage.
 ///
 /// # Errors
 /// Returns [`PushError`] if the workspace is not initialized, local blobs are missing,
 /// or remote storage operations fail.
-#[allow(clippy::too_many_lines)] // TODO(C4): extract transfer_blobs/SyncResult into ops/sync.rs
 pub async fn push_blobs(
     context: &ResolvedContext,
     storage_config: Option<&StorageConfig>,
@@ -100,51 +59,21 @@ pub async fn push_blobs(
 ) -> Result<PushResult, PushError> {
     let paths = ensure_initialized(&context.base_dir)?;
 
-    let storage_cfg = match storage_config {
-        Some(cfg) if !cfg.url.trim().is_empty() => cfg,
-        _ => {
-            info!("Operating in local mode. Cloud sync disabled. Please configure storage.");
-            return Ok(PushResult {
-                total_manifest_blobs: 0,
-                uploaded_blobs: 0,
-                skipped_blobs: 0,
-                local_mode: true,
-            });
-        }
+    let Some(storage_cfg) = active_storage_config(storage_config) else {
+        return Ok(PushResult {
+            local_mode: true,
+            ..PushResult::default()
+        });
     };
 
     let manifests_root = paths.manifests_root();
     let blobs_root = paths.blobs_root();
 
-    let platform_dirs = if all_platforms {
-        list_platform_dirs(&manifests_root).map_err(CoreError::Io)?
-    } else if let Some(p) = platform_override {
-        let valid_key = validate_segment(p)
-            .map_err(|e| CoreError::Context(ContextError::Platform(e)))?
-            .into_owned();
-        vec![(valid_key.clone(), manifests_root.join(valid_key))]
-    } else {
-        let platform_key = crate::ops::common::platform_key(context)?;
-        vec![(platform_key.clone(), manifests_root.join(platform_key))]
-    };
+    let platform_dirs =
+        resolve_platform_dirs(context, &manifests_root, all_platforms, platform_override)?;
 
     // Collect all referenced unique sha256 blob hashes and their platform (for error reporting)
-    let mut hash_to_platform = BTreeMap::new();
-
-    for (plat_key, plat_dir) in &platform_dirs {
-        match std::fs::metadata(plat_dir) {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(CoreError::Io(e).into()),
-        }
-        let index = WorkspaceIndex::load(plat_dir).map_err(CoreError::Manifest)?;
-        for manifest in index.entries().values() {
-            let hash = &manifest.hash;
-            hash_to_platform
-                .entry(hash.clone())
-                .or_insert_with(|| plat_key.clone());
-        }
-    }
+    let hash_to_platform = collect_referenced_hashes(&platform_dirs)?;
 
     let total_manifest_blobs = hash_to_platform.len();
     if total_manifest_blobs == 0 {
@@ -196,13 +125,11 @@ pub async fn push_blobs(
     }
 
     let missing_count = missing_blobs.len();
-    let progress_bar = crate::ui::create_progress_bar(missing_count as u64);
 
     // Upload missing blobs in parallel with Fail-Fast short-circuiting
-    let mut upload_stream = futures::stream::iter(missing_blobs.into_iter().map(|hash| {
+    transfer_with_progress(missing_blobs, adapter.concurrency(), |hash, pb| {
         let adapter = adapter.clone();
         let src_path = blobs_root.join(hash.scheme()).join(hash.value());
-        let pb = progress_bar.clone();
         async move {
             pb.set_message(format!(
                 "Uploading {}",
@@ -215,16 +142,8 @@ pub async fn push_blobs(
             pb.inc(1);
             res
         }
-    }))
-    .buffer_unordered(adapter.concurrency());
-
-    let upload_res = async {
-        while upload_stream.try_next().await? == Some(()) {}
-        Ok::<(), PushError>(())
-    }
-    .await;
-    progress_bar.finish_and_clear();
-    upload_res?;
+    })
+    .await?;
 
     Ok(PushResult {
         total_manifest_blobs,
@@ -246,6 +165,7 @@ pub async fn push_blobs(
 )]
 mod tests {
     use super::*;
+    use crate::context::ContextError;
     use crate::platform::PlatformError;
 
     #[test]
@@ -314,27 +234,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.total_manifest_blobs, 0);
-    }
-
-    #[test]
-    fn test_list_platform_dirs_filters_invalid_entries() {
-        let temp = tempfile::tempdir().unwrap();
-        let manifests = temp.path().join("manifests");
-        std::fs::create_dir_all(manifests.join("valid-platform")).unwrap();
-        std::fs::create_dir_all(manifests.join("invalid platform space")).unwrap();
-        std::fs::write(manifests.join("some_file.txt"), "hello").unwrap();
-
-        let res = list_platform_dirs(&manifests).unwrap();
-        assert_eq!(res.len(), 1);
-        assert_eq!(res[0].0, "valid-platform");
-    }
-
-    #[test]
-    fn test_list_platform_dirs_missing_root() {
-        let temp = tempfile::tempdir().unwrap();
-        let manifests = temp.path().join("does_not_exist");
-        let res = list_platform_dirs(&manifests).unwrap();
-        assert!(res.is_empty());
     }
 
     #[tokio::test]

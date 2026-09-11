@@ -9,6 +9,7 @@ pub mod push;
 pub mod resolve;
 pub mod stage;
 pub mod status;
+pub(crate) mod sync;
 
 pub use approve::{ApproveError, ApproveResult, approve_workspace};
 pub use clean::{CleanError, CleanOptions, CleanResult, clean_workspace};

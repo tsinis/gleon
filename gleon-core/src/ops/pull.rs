@@ -1,14 +1,13 @@
 //! Pull operation for downloading missing baseline blobs from remote storage.
 
-use futures::{StreamExt as _, TryStreamExt as _};
-use thiserror::Error;
-use tracing::info;
+use std::path::Path;
 
-use crate::context::{ContextError, ResolvedContext};
+use thiserror::Error;
+
+use crate::context::ResolvedContext;
 use crate::manifest::{ImageHash, WorkspaceIndex};
 use crate::ops::common::{CoreError, ensure_initialized};
-use crate::ops::push::list_platform_dirs;
-use crate::platform::validate_segment;
+use crate::ops::sync::{active_storage_config, resolve_platform_dirs, transfer_with_progress};
 use crate::storage::{ObjectStoreAdapter, StorageConfig, StorageError};
 
 /// Errors that can occur during a pull operation.
@@ -47,12 +46,51 @@ pub struct PullResult {
     pub local_mode: bool,
 }
 
+/// Registers blobs referenced by the current platform's manifest, then — if a fallback platform
+/// is configured and differs from it — registers blobs for fallback entries whose test name is
+/// absent from the current platform's index (sparse-platform support).
+fn register_current_platform_with_fallback(
+    context: &ResolvedContext,
+    manifests_root: &Path,
+    register_blob: &mut impl FnMut(&ImageHash, &str),
+) -> Result<(), CoreError> {
+    let platform_key = crate::ops::common::platform_key(context)?;
+    let plat_dir = manifests_root.join(&platform_key);
+    let plat_idx = WorkspaceIndex::load(&plat_dir).map_err(CoreError::Manifest)?;
+
+    for manifest in plat_idx.entries().values() {
+        register_blob(&manifest.hash, &platform_key);
+    }
+
+    if let Some(ref fallback_key) = context
+        .fallback_platform_key
+        .as_deref()
+        .filter(|&k| k != platform_key)
+    {
+        let fb_dir = manifests_root.join(fallback_key);
+        let fb_idx = WorkspaceIndex::load(&fb_dir).map_err(CoreError::Manifest)?;
+        if !fb_idx.is_empty() {
+            tracing::info!(
+                "Using fallback platform '{}' for missing blobs on platform '{}'.",
+                fallback_key,
+                platform_key
+            );
+            for (test_name, manifest) in fb_idx.entries() {
+                if !plat_idx.entries().contains_key(test_name) {
+                    register_blob(&manifest.hash, fallback_key);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Executes pull pipeline, downloading missing baseline blobs from remote storage.
 ///
 /// # Errors
 /// Returns [`PullError`] if the workspace is not initialized, remote blobs are missing,
 /// or remote storage operations fail.
-#[allow(clippy::too_many_lines)] // TODO(C4): extract transfer_blobs/SyncResult into ops/sync.rs
 pub async fn pull_blobs(
     context: &ResolvedContext,
     storage_config: Option<&StorageConfig>,
@@ -61,17 +99,11 @@ pub async fn pull_blobs(
 ) -> Result<PullResult, PullError> {
     let paths = ensure_initialized(&context.base_dir)?;
 
-    let storage_cfg = match storage_config {
-        Some(cfg) if !cfg.url.trim().is_empty() => cfg,
-        _ => {
-            info!("Operating in local mode. Cloud sync disabled. Please configure storage.");
-            return Ok(PullResult {
-                total_manifest_blobs: 0,
-                downloaded_blobs: 0,
-                skipped_blobs: 0,
-                local_mode: true,
-            });
-        }
+    let Some(storage_cfg) = active_storage_config(storage_config) else {
+        return Ok(PullResult {
+            local_mode: true,
+            ..PullResult::default()
+        });
     };
 
     let manifests_root = paths.manifests_root();
@@ -92,52 +124,17 @@ pub async fn pull_blobs(
         }
     };
 
-    if all_platforms {
-        let platform_dirs = list_platform_dirs(&manifests_root).map_err(CoreError::Io)?;
+    if all_platforms || platform_override.is_some() {
+        let platform_dirs =
+            resolve_platform_dirs(context, &manifests_root, all_platforms, platform_override)?;
         for (target_platform_key, target_dir) in platform_dirs {
             let index = WorkspaceIndex::load(&target_dir).map_err(CoreError::Manifest)?;
             for manifest in index.entries().values() {
                 register_blob(&manifest.hash, &target_platform_key);
             }
         }
-    } else if let Some(p) = platform_override {
-        let valid_key = validate_segment(p)
-            .map_err(|e| CoreError::Context(ContextError::Platform(e)))?
-            .into_owned();
-        let target_dir = manifests_root.join(&valid_key);
-        let index = WorkspaceIndex::load(&target_dir).map_err(CoreError::Manifest)?;
-        for manifest in index.entries().values() {
-            register_blob(&manifest.hash, &valid_key);
-        }
     } else {
-        let platform_key = crate::ops::common::platform_key(context)?;
-        let plat_dir = manifests_root.join(&platform_key);
-        let plat_idx = WorkspaceIndex::load(&plat_dir).map_err(CoreError::Manifest)?;
-
-        for manifest in plat_idx.entries().values() {
-            register_blob(&manifest.hash, &platform_key);
-        }
-
-        if let Some(ref fallback_key) = context
-            .fallback_platform_key
-            .as_deref()
-            .filter(|&k| k != platform_key)
-        {
-            let fb_dir = manifests_root.join(fallback_key);
-            let fb_idx = WorkspaceIndex::load(&fb_dir).map_err(CoreError::Manifest)?;
-            if !fb_idx.is_empty() {
-                tracing::info!(
-                    "Using fallback platform '{}' for missing blobs on platform '{}'.",
-                    fallback_key,
-                    platform_key
-                );
-                for (test_name, manifest) in fb_idx.entries() {
-                    if !plat_idx.entries().contains_key(test_name) {
-                        register_blob(&manifest.hash, fallback_key);
-                    }
-                }
-            }
-        }
+        register_current_platform_with_fallback(context, &manifests_root, &mut register_blob)?;
     }
 
     let total_manifest_blobs = referenced_hashes.len();
@@ -154,13 +151,13 @@ pub async fn pull_blobs(
     let adapter = ObjectStoreAdapter::from_config(storage_cfg)?;
 
     let missing_count = missing_blobs.len();
-    let progress_bar = crate::ui::create_progress_bar(missing_count as u64);
 
-    let mut download_stream =
-        futures::stream::iter(missing_blobs.into_iter().map(|(hash, origin_platform)| {
+    transfer_with_progress(
+        missing_blobs,
+        adapter.concurrency(),
+        |(hash, origin_platform), pb| {
             let adapter = adapter.clone();
             let dest_path = blobs_root.join(hash.scheme()).join(hash.value());
-            let pb = progress_bar.clone();
             async move {
                 pb.set_message(format!(
                     "Downloading {}",
@@ -177,16 +174,9 @@ pub async fn pull_blobs(
                 pb.inc(1);
                 res
             }
-        }))
-        .buffer_unordered(adapter.concurrency());
-
-    let download_res = async {
-        while download_stream.try_next().await? == Some(()) {}
-        Ok::<(), PullError>(())
-    }
-    .await;
-    progress_bar.finish_and_clear();
-    download_res?;
+        },
+    )
+    .await?;
 
     Ok(PullResult {
         total_manifest_blobs,
@@ -208,6 +198,7 @@ pub async fn pull_blobs(
 )]
 mod tests {
     use super::*;
+    use crate::context::ContextError;
     use crate::platform::PlatformError;
 
     #[test]
