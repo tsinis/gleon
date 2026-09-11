@@ -21,7 +21,7 @@ pub async fn run_pull(
 
     let res = match pull_blobs(ctx, storage_cfg, all_platforms, platform_override).await {
         Ok(res) => res,
-        Err(e) => return report_failure("Error pulling baseline blobs", e),
+        Err(e) => return report_failure("Error pulling baseline blobs", &e),
     };
 
     if res.local_mode {

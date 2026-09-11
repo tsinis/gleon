@@ -21,7 +21,7 @@ pub async fn run_push(
 
     let res = match push_blobs(ctx, storage_cfg, all_platforms, platform_override).await {
         Ok(res) => res,
-        Err(e) => return report_failure("Error pushing baseline blobs", e),
+        Err(e) => return report_failure("Error pushing baseline blobs", &e),
     };
 
     if res.local_mode {

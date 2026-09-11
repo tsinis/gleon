@@ -201,6 +201,20 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn test_short_hash_truncates_without_panicking_on_short_values() {
+        let sha = ImageHash::new("sha256", "a".repeat(64)).unwrap();
+        assert_eq!(short_hash(&sha), "aaaaaaaa");
+
+        // Non-sha256 schemes accept any non-empty alphanumeric value, including ones
+        // shorter than the 8-byte truncation window — slicing must clamp, not panic.
+        for value in ["abc", "a", "12345678", "123456789"] {
+            let hash = ImageHash::new("dhash", value).unwrap();
+            let expected = &value[..8.min(value.len())];
+            assert_eq!(short_hash(&hash), expected, "value {value:?}");
+        }
+    }
+
+    #[test]
     fn test_list_platform_dirs_filters_invalid_entries() {
         let temp = tempdir().unwrap();
         let manifests = temp.path().join("manifests");

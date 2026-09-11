@@ -16,7 +16,7 @@ pub fn run_lint(ctx: &ResolvedContext, platform_filter: Option<&str>) -> ExitCod
 
     let report = match lint_workspace_manifests(ctx, platform_filter) {
         Ok(rep) => rep,
-        Err(e) => return report_failure("Error during manifest linting", e),
+        Err(e) => return report_failure("Error during manifest linting", &e),
     };
 
     info!(

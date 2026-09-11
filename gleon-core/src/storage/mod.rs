@@ -80,3 +80,63 @@ pub fn has_usable_local_blob(
 pub fn is_usable_blob(path: &std::path::Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|meta| !meta.is_symlink() && meta.is_file())
 }
+
+#[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
+mod tests {
+    use super::*;
+    use crate::manifest::ImageHash;
+
+    fn sha256(value: &str) -> ImageHash {
+        ImageHash::new("sha256", value).unwrap()
+    }
+
+    #[test]
+    fn test_has_usable_local_blob_requires_a_real_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let hash = sha256(&"a".repeat(64));
+
+        assert!(
+            !has_usable_local_blob(root, &hash),
+            "missing blob must not be reported as usable"
+        );
+
+        let path = local_blob_path(root, &hash);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"png bytes").unwrap();
+        assert!(has_usable_local_blob(root, &hash));
+
+        // A directory sitting where the blob should be is not a usable blob either.
+        let dir_hash = sha256(&"b".repeat(64));
+        std::fs::create_dir_all(local_blob_path(root, &dir_hash)).unwrap();
+        assert!(!has_usable_local_blob(root, &dir_hash));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_has_usable_local_blob_rejects_symlinks() {
+        // Symlinked blobs are refused on purpose: a crafted manifest must not be able to make
+        // gleon upload an arbitrary file from outside the blob store.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let hash = sha256(&"c".repeat(64));
+
+        let target = temp.path().join("outside-secret.txt");
+        std::fs::write(&target, b"secret").unwrap();
+        let link = local_blob_path(root, &hash);
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert!(link.exists(), "symlink target resolves");
+        assert!(!has_usable_local_blob(root, &hash));
+    }
+}

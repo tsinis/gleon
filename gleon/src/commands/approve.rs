@@ -11,7 +11,7 @@ use crate::exit_code::ExitCode;
 pub fn run_approve(ctx: &ResolvedContext, paths: &[PathBuf], from: Option<&PathBuf>) -> ExitCode {
     let res = match gleon_core::ops::approve_workspace(ctx, paths, from.map(PathBuf::as_path)) {
         Ok(res) => res,
-        Err(e) => return report_failure("Error approving screenshots", e),
+        Err(e) => return report_failure("Error approving screenshots", &e),
     };
 
     if res.total_approved == 0 {

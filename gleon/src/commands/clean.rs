@@ -22,7 +22,7 @@ pub fn run_clean(
 
     let res = match clean_workspace(ctx, &options) {
         Ok(r) => r,
-        Err(e) => return report_failure("Error cleaning workspace", e),
+        Err(e) => return report_failure("Error cleaning workspace", &e),
     };
 
     if dry_run {

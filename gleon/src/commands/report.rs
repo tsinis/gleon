@@ -21,7 +21,7 @@ pub async fn run_report(
 ) -> ExitCode {
     match run_report_inner(env, storage_cfg, format, report_path, pr_number, out).await {
         Ok(()) => ExitCode::Success,
-        Err(e) => report_failure("Error generating report", format_args!("{e:#}")),
+        Err(e) => report_failure("Error generating report", &*e),
     }
 }
 

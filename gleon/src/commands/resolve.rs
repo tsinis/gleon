@@ -40,7 +40,7 @@ pub async fn run_resolve_with_tty(
 
     let mut conflicts = match scan_conflicts(&ctx.base_dir, None) {
         Ok(c) => c,
-        Err(e) => return report_failure("Error scanning for conflicts", e),
+        Err(e) => return report_failure("Error scanning for conflicts", &e),
     };
 
     if let Some(filter) = test_path_filter {
@@ -92,7 +92,7 @@ pub async fn run_resolve_with_tty(
         .await
         {
             Ok(count) => count,
-            Err(e) => return report_failure("Error resolving manifest conflicts", e),
+            Err(e) => return report_failure("Error resolving manifest conflicts", &*e),
         };
 
     info!(

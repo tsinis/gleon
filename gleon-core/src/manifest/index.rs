@@ -261,6 +261,32 @@ fn remove_file_ignore_missing(path: &Path) -> Result<(), ManifestError> {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_remove_file_ignore_missing_is_idempotent() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("manifest.json");
+        fs::write(&path, b"{}").unwrap();
+
+        // First call removes it, second is a no-op rather than an error.
+        remove_file_ignore_missing(&path).unwrap();
+        assert!(!path.exists());
+        remove_file_ignore_missing(&path).unwrap();
+    }
+
+    #[test]
+    fn test_remove_file_ignore_missing_surfaces_other_errors() {
+        // A directory is not a file: removal must fail loudly instead of being swallowed.
+        let temp = tempdir().unwrap();
+        let dir = temp.path().join("not-a-file");
+        fs::create_dir(&dir).unwrap();
+
+        assert!(matches!(
+            remove_file_ignore_missing(&dir),
+            Err(ManifestError::StdIo(_))
+        ));
+        assert!(dir.exists());
+    }
     use crate::manifest::ImageHash;
     use tempfile::tempdir;
 

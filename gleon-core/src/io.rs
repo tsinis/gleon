@@ -110,15 +110,22 @@ where
     #[cfg(all(unix, not(miri)))]
     let perms_result = {
         use std::os::unix::fs::PermissionsExt;
+        // An existing target keeps its own mode (a deliberately locked-down file stays that
+        // way). A brand-new one must NOT inherit `tempfile`'s 0600 default: these files
+        // (manifests, reports, `.gitignore`) are committed to Git and read back by other
+        // users/containers in CI, so they get the same 0644 a plain `File::create` would
+        // produce under the conventional 022 umask.
+        const DEFAULT_FILE_MODE: u32 = 0o644;
         temp_file
             .as_file()
             .metadata()
             .map_err(IoError::Io)
             .and_then(|metadata| {
                 let mut perms = metadata.permissions();
-                if let Ok(existing) = std::fs::metadata(path) {
-                    perms.set_mode(existing.permissions().mode());
-                }
+                perms.set_mode(
+                    std::fs::metadata(path)
+                        .map_or(DEFAULT_FILE_MODE, |existing| existing.permissions().mode()),
+                );
                 temp_file
                     .as_file()
                     .set_permissions(perms)
@@ -196,6 +203,41 @@ pub fn save_json_atomically<T: serde::Serialize + ?Sized, P: AsRef<Path>>(
 mod tests {
     use super::*;
     use serde::Serialize;
+
+    #[test]
+    #[cfg(all(unix, not(miri)))]
+    fn test_write_file_atomically_new_file_is_group_world_readable() {
+        // A freshly created file must land with the usual 0644-style mode, not the 0600 that
+        // `tempfile` defaults to: manifests written this way are committed to Git and read back
+        // by other users/containers in CI.
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("fresh.json");
+        save_file_atomically(&path, b"{}").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "expected 0644 for a new file, got {mode:o}");
+    }
+
+    #[test]
+    #[cfg(all(unix, not(miri)))]
+    fn test_write_file_atomically_preserves_existing_mode() {
+        // When the target already exists its mode wins, so a deliberately locked-down file
+        // stays locked down across rewrites.
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("existing.json");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        save_file_atomically(&path, b"new").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "existing mode must be preserved, got {mode:o}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    }
 
     #[derive(Serialize)]
     struct Dummy {

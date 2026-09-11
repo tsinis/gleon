@@ -249,7 +249,13 @@ pub fn append_missing_gitignore_lines(
     path: &Path,
     entries: &[String],
 ) -> Result<Vec<String>, CoreError> {
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    // Read strictly: this rewrites the file wholesale below, so treating an unreadable or
+    // non-UTF-8 existing file as "empty" would silently destroy the user's own ignore rules.
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(CoreError::Io(e)),
+    };
     let existing_lines: std::collections::HashSet<&str> = existing.lines().map(str::trim).collect();
 
     let mut added = Vec::new();
@@ -378,6 +384,76 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_platform_filter_dir_accepts_single_valid_segment() {
+        let root = Path::new("/w/.gleon/manifests");
+
+        assert_eq!(
+            resolve_platform_filter_dir(root, None).unwrap(),
+            root.to_path_buf(),
+            "no filter means the whole manifests root"
+        );
+        assert_eq!(
+            resolve_platform_filter_dir(root, Some("macos-aarch64")).unwrap(),
+            root.join("macos-aarch64")
+        );
+    }
+
+    #[test]
+    fn test_resolve_platform_filter_dir_rejects_traversal_and_nesting() {
+        let root = Path::new("/w/.gleon/manifests");
+
+        // Multi-segment, parent traversal and absolute paths must never escape the root.
+        for bad in ["macos/aarch64", "../etc", "/etc", ".", ""] {
+            assert_eq!(
+                resolve_platform_filter_dir(root, Some(bad)),
+                Err(bad),
+                "filter {bad:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_sha256_hex_matches_only_for_matching_sha256() {
+        let bytes = b"hello gleon";
+        let digest = hex::encode(Sha256::digest(bytes));
+
+        let sha = ImageHash::new("sha256", &digest).unwrap();
+        assert!(sha256_hex_matches(&sha, bytes));
+        assert!(!sha256_hex_matches(&sha, b"different bytes"));
+
+        // A non-sha256 scheme never claims a match, even for the identical digest text.
+        let dhash = ImageHash::new("dhash", "0123456789abcdef").unwrap();
+        assert!(!sha256_hex_matches(&dhash, bytes));
+    }
+
+    #[test]
+    fn test_index_keys_missing_from_reports_only_absent_keys() {
+        let temp = tempdir().unwrap();
+        let manifest_dir = temp.path();
+        let mut index = WorkspaceIndex::new();
+        let manifest = SingleTestManifest::new(
+            ImageHash::new("sha256", "a".repeat(64)).unwrap(),
+            ImageHash::new("dhash", "0000000000000000").unwrap(),
+            1,
+            1,
+        )
+        .unwrap();
+        for name in ["kept", "gone"] {
+            index.save_test(manifest_dir, name, &manifest).unwrap();
+        }
+
+        let present: std::collections::HashSet<&str> = ["kept"].into_iter().collect();
+        let missing: Vec<&str> = index_keys_missing_from(&index, &present).collect();
+        assert_eq!(missing, vec!["gone"]);
+
+        let all_present: std::collections::HashSet<&str> = ["kept", "gone"].into_iter().collect();
+        assert_eq!(index_keys_missing_from(&index, &all_present).count(), 0);
+
+        let none_present = std::collections::HashSet::new();
+        assert_eq!(index_keys_missing_from(&index, &none_present).count(), 2);
+    }
+
+    #[test]
     fn test_hash_and_measure_and_build_manifest_roundtrip() {
         let png_bytes = include_bytes!("../../tests/fixtures/baseline_100x100.png");
         let (sha256_hex, phash_str, width, height) = hash_and_measure(png_bytes).unwrap();
@@ -414,6 +490,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!(added_again, vec!["credentials".to_string()]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_append_missing_gitignore_lines_preserves_unreadable_file() {
+        // A `.gitignore` that exists but cannot be decoded as UTF-8 must NOT be silently
+        // truncated — the caller's rules are user data, so the read error has to propagate.
+        let temp = tempdir().unwrap();
+        let path = temp.path().join(".gitignore");
+        let original: &[u8] = b"my-secret-blobs/\nlocal-caf\xe9/\n*.key\n";
+        std::fs::write(&path, original).unwrap();
+
+        let res = append_missing_gitignore_lines(&path, &["blobs/".to_string()]);
+
+        assert!(
+            matches!(res, Err(CoreError::Io(_))),
+            "non-UTF-8 existing file must surface as an IO error, got {res:?}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "existing .gitignore content must be left untouched"
+        );
     }
 
     #[test]
