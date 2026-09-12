@@ -1,16 +1,40 @@
+//! Implementation of the `gleon report` subcommand.
+
 use anyhow::{Context, Result, anyhow};
 use gleon_core::io::load_json;
 use gleon_core::report::{MarkdownReportOptions, ReportGenerator};
-use gleon_core::scanner::TestCaseResult;
+use gleon_core::results::TestCaseResult;
 
+use crate::commands::report_failure;
+use crate::exit_code::ExitCode;
+
+/// Runs the `gleon report` subcommand.
+///
+/// Returns [`ExitCode::Success`] once the report has been generated (and written or printed), or
+/// [`ExitCode::Failure`] for any error along the way (bad arguments, malformed input report,
+/// template rendering, or I/O) — every subcommand reports failures the same way.
 pub async fn run_report(
-    env: &dyn gleon_core::git::EnvProvider,
+    env: &dyn gleon_core::env::EnvProvider,
     storage_cfg: Option<gleon_core::storage::StorageConfig>,
     format: &str,
     report_path: &std::path::Path,
     pr_number: Option<u64>,
     out: Option<&std::path::Path>,
-) -> Result<i32> {
+) -> ExitCode {
+    match run_report_inner(env, storage_cfg, format, report_path, pr_number, out).await {
+        Ok(()) => ExitCode::Success,
+        Err(e) => report_failure("Error generating report", &*e),
+    }
+}
+
+async fn run_report_inner(
+    env: &dyn gleon_core::env::EnvProvider,
+    storage_cfg: Option<gleon_core::storage::StorageConfig>,
+    format: &str,
+    report_path: &std::path::Path,
+    pr_number: Option<u64>,
+    out: Option<&std::path::Path>,
+) -> Result<()> {
     if let Some(pr) = pr_number {
         if pr == 0 {
             return Err(anyhow!("PR number must be greater than 0"));
@@ -36,83 +60,9 @@ pub async fn run_report(
         }
 
         if let Ok(adapter) = gleon_core::storage::ObjectStoreAdapter::from_config(cfg) {
-            let expires_in = std::time::Duration::from_secs(7 * 24 * 3600);
-
-            let failed_tests: Vec<_> = report_data.iter().filter(|tc| !tc.passed()).collect();
-            let limit = ReportGenerator::MAX_MARKDOWN_DIFF_ROWS;
-            let to_sign: Vec<_> = failed_tests.into_iter().take(limit).collect();
-
-            let mut join_set = tokio::task::JoinSet::new();
-            let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(adapter.concurrency()));
-
-            let mut unique_paths = std::collections::HashSet::new();
-            for tc in to_sign {
-                let paths: Vec<&std::path::Path> = match &tc.result {
-                    gleon_core::scanner::TestImageResult::Mismatch {
-                        baseline_path,
-                        actual_path,
-                        diff_path,
-                        ..
-                    } => {
-                        vec![
-                            baseline_path.as_path(),
-                            actual_path.as_path(),
-                            diff_path.as_path(),
-                        ]
-                    }
-                    gleon_core::scanner::TestImageResult::DimensionMismatch {
-                        baseline_path,
-                        actual_path,
-                        ..
-                    } => {
-                        vec![baseline_path.as_path(), actual_path.as_path()]
-                    }
-                    gleon_core::scanner::TestImageResult::EncodeError { actual_path, .. } => {
-                        vec![actual_path.as_path()]
-                    }
-                    gleon_core::scanner::TestImageResult::MissingBaseline {
-                        relative_path, ..
-                    }
-                    | gleon_core::scanner::TestImageResult::DecodeError { relative_path, .. }
-                    | gleon_core::scanner::TestImageResult::IoError { relative_path, .. } => {
-                        vec![relative_path.as_path()]
-                    }
-                    _ => vec![],
-                };
-
-                for p in paths {
-                    unique_paths.insert(p);
-                }
-            }
-
-            for p in unique_paths {
-                let normalized_key =
-                    gleon_core::scanner::FileScanner::normalize_path_str(p).to_string();
-                let path_buf = p.to_path_buf();
-                let adapter = adapter.clone();
-                let sem = semaphore.clone();
-                join_set.spawn(async move {
-                    let _permit = sem.acquire_owned().await.expect("Semaphore closed");
-                    adapter
-                        .sign_blob_url(&normalized_key, expires_in)
-                        .await
-                        .map(|signed| (path_buf, signed))
-                });
-            }
-
-            while let Some(res) = join_set.join_next().await {
-                match res {
-                    Ok(Some((p, signed))) => {
-                        let _ = signed_urls.insert(p, signed);
-                    }
-                    Ok(None) => {
-                        tracing::warn!("Failed to generate pre-signed URL for blob path");
-                    }
-                    Err(e) => {
-                        tracing::warn!("URL signing task panicked or was cancelled: {}", e);
-                    }
-                }
-            }
+            let expires_in = std::time::Duration::from_hours(168);
+            signed_urls =
+                ReportGenerator::sign_image_urls(&adapter, &report_data, expires_in).await;
         }
     }
 
@@ -121,9 +71,9 @@ pub async fn run_report(
 
     let is_ci = env.get_var("GITHUB_ACTIONS").is_some() || pr_number.is_some();
     let context = if is_ci {
-        gleon_core::report::ExecutionContext::GitHubActions
+        gleon_core::report::RenderTarget::GitHubActions
     } else {
-        gleon_core::report::ExecutionContext::LocalTerminal
+        gleon_core::report::RenderTarget::LocalTerminal
     };
 
     let has_signed_urls = !signed_urls.is_empty();
@@ -159,7 +109,7 @@ pub async fn run_report(
             serde_json::to_string_pretty(&report_data)
                 .with_context(|| "Failed to serialize report to JSON")?
         } else {
-            return Err(anyhow!("Unsupported report format: '{}'", format));
+            return Err(anyhow!("Unsupported report format: '{format}'"));
         };
 
     if let Some(out_path) = out {
@@ -176,13 +126,22 @@ pub async fn run_report(
             .with_context(|| format!("Failed to write output to '{}'", out_path.display()))?;
         tracing::info!("Generated {} report at {}", format, out_path.display());
     } else {
-        println!("{}", report_content);
+        println!("{report_content}");
     }
 
-    Ok(0)
+    Ok(())
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
 
@@ -195,7 +154,7 @@ mod tests {
         let nested_out = temp.path().join("nested").join("sub").join("output.md");
 
         struct DummyEnv;
-        impl gleon_core::git::EnvProvider for DummyEnv {
+        impl gleon_core::env::EnvProvider for DummyEnv {
             fn get_var(&self, _key: &str) -> Option<String> {
                 None
             }
@@ -211,7 +170,7 @@ mod tests {
         )
         .await;
 
-        assert!(res.is_ok());
+        assert_eq!(res, ExitCode::Success);
         assert!(nested_out.is_file());
     }
 
@@ -221,7 +180,7 @@ mod tests {
         let report_json_path = temp.path().join("report.json");
         let tc = TestCaseResult {
             name: "test_enc".to_string(),
-            result: gleon_core::scanner::TestImageResult::EncodeError {
+            result: gleon_core::results::TestImageResult::EncodeError {
                 relative_path: std::path::PathBuf::from("enc.png"),
                 actual_path: std::path::PathBuf::from("actual_enc.png"),
                 error: "Encode failure".to_string(),
@@ -232,7 +191,7 @@ mod tests {
         let out_path = temp.path().join("output.md");
 
         struct DummyEnv;
-        impl gleon_core::git::EnvProvider for DummyEnv {
+        impl gleon_core::env::EnvProvider for DummyEnv {
             fn get_var(&self, _key: &str) -> Option<String> {
                 None
             }
@@ -249,7 +208,7 @@ mod tests {
         )
         .await;
 
-        assert!(res.is_ok());
+        assert_eq!(res, ExitCode::Success);
         let md = std::fs::read_to_string(&out_path).unwrap();
         assert!(md.contains("Encode Error"));
         assert!(md.contains("actual_enc.png"));
@@ -261,7 +220,7 @@ mod tests {
         let report_json_path = temp.path().join("report.json");
         let tc = TestCaseResult {
             name: "test_fmt".to_string(),
-            result: gleon_core::scanner::TestImageResult::EncodeError {
+            result: gleon_core::results::TestImageResult::EncodeError {
                 relative_path: std::path::PathBuf::from("enc.png"),
                 actual_path: std::path::PathBuf::from("actual_enc.png"),
                 error: "Encode failure".to_string(),
@@ -270,7 +229,7 @@ mod tests {
         gleon_core::io::save_json_atomically(&report_json_path, &vec![tc]).unwrap();
 
         struct DummyEnv;
-        impl gleon_core::git::EnvProvider for DummyEnv {
+        impl gleon_core::env::EnvProvider for DummyEnv {
             fn get_var(&self, _key: &str) -> Option<String> {
                 None
             }
@@ -287,7 +246,7 @@ mod tests {
             Some(&junit_out),
         )
         .await;
-        assert!(res_junit.is_ok());
+        assert_eq!(res_junit, ExitCode::Success);
         let xml = std::fs::read_to_string(&junit_out).unwrap();
         assert!(xml.contains("<testsuites") || xml.contains("<testsuite"));
 
@@ -302,7 +261,7 @@ mod tests {
             Some(&html_out),
         )
         .await;
-        assert!(res_html.is_ok());
+        assert_eq!(res_html, ExitCode::Success);
         let html = std::fs::read_to_string(&html_out).unwrap();
         assert!(html.contains("<!DOCTYPE html>") || html.contains("<html"));
 
@@ -316,7 +275,7 @@ mod tests {
             None,
         )
         .await;
-        assert!(res_unsupported.is_err());
+        assert_eq!(res_unsupported, ExitCode::Failure);
     }
 
     #[tokio::test]
@@ -326,7 +285,7 @@ mod tests {
         std::fs::write(&corrupt_report_path, "not json data").unwrap();
 
         struct DummyEnv;
-        impl gleon_core::git::EnvProvider for DummyEnv {
+        impl gleon_core::env::EnvProvider for DummyEnv {
             fn get_var(&self, _key: &str) -> Option<String> {
                 None
             }
@@ -342,13 +301,13 @@ mod tests {
             None,
         )
         .await;
-        assert!(res_err.is_err());
+        assert_eq!(res_err, ExitCode::Failure);
 
         // Test HTML format written to custom nested directory
         let valid_report = temp.path().join("valid.json");
         let tc = TestCaseResult {
             name: "test_html_dir".to_string(),
-            result: gleon_core::scanner::TestImageResult::MissingBaseline {
+            result: gleon_core::results::TestImageResult::MissingBaseline {
                 relative_path: std::path::PathBuf::from("sub/missing.png"),
                 reason: "no baseline".to_string(),
             },
@@ -365,7 +324,7 @@ mod tests {
             Some(&nested_html_out),
         )
         .await;
-        assert!(res_html.is_ok());
+        assert_eq!(res_html, ExitCode::Success);
         assert!(nested_html_out.exists());
     }
 }

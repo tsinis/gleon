@@ -18,7 +18,7 @@ pub struct Cli {
     #[arg(long = "os", global = true)]
     pub os: Option<String>,
 
-    /// Override the CPU architecture component of the platform context (e.g. aarch64, x86_64)
+    /// Override the CPU architecture component of the platform context (e.g. aarch64, `x86_64`)
     #[arg(long = "arch", global = true)]
     pub arch: Option<String>,
 
@@ -69,29 +69,24 @@ pub struct Cli {
     pub command: Commands,
 }
 
-impl Cli {
-    /// Constructs a `Cli` instance populated with default test values for the given command.
-    pub fn for_test(command: Commands) -> Self {
+impl From<&Cli> for gleon_core::context::ContextOptions {
+    fn from(cli: &Cli) -> Self {
         Self {
-            branch: Some("main".to_string()),
-            os: None,
-            arch: None,
-            renderer: None,
-            labels: vec![],
-            platform: None,
-            verbose: false,
-            quiet: false,
-            config: None,
-            strict: false,
-            target_branch: "main".to_string(),
-            command,
+            config_path: cli.config.clone(),
+            os: cli.os.clone(),
+            arch: cli.arch.clone(),
+            renderer: cli.renderer.clone(),
+            labels: cli.labels.clone(),
+            platform: cli.platform.clone(),
+            branch: cli.branch.clone(),
+            target_branch: cli.target_branch.clone(),
         }
     }
 }
 
-pub(crate) fn parse_label(s: &str) -> Result<(String, String), String> {
+fn parse_label(s: &str) -> Result<(String, String), String> {
     s.split_once('=')
-        .ok_or_else(|| format!("invalid label: no '=' found in '{}'", s))
+        .ok_or_else(|| format!("invalid label: no '=' found in '{s}'"))
         .and_then(|(key, val)| {
             let key = key.trim().to_string();
             let val = val.trim().to_string();
@@ -189,7 +184,10 @@ pub enum Commands {
         #[arg(value_name = "FORMAT", value_parser = ["markdown", "html", "junit", "junit.xml", "xml", "json"])]
         format: String,
         /// Path to the JSON report file
-        #[arg(long)]
+        ///
+        /// Defaults to where `gleon diff` just wrote it, so `gleon report <format>` works out of
+        /// the box right after a run without repeating the path back.
+        #[arg(long, default_value = ".gleon/runs/latest/gleon-report.json")]
         report: std::path::PathBuf,
         /// Pull Request number
         #[arg(long)]
@@ -211,6 +209,15 @@ pub enum Commands {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
 
@@ -233,6 +240,37 @@ mod tests {
         let cli = Cli::try_parse_from(args)?;
         assert_eq!(cli.branch, Some("feature-test".to_string()));
         assert_eq!(cli.command, Commands::Status { json: false });
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_report_defaults_report_path_to_the_diff_output() -> Result<(), clap::Error> {
+        // `gleon diff` always writes its JSON report to this exact path; requiring users/CI to
+        // repeat it back via `--report` on every `gleon report` call is a footgun.
+        let args = ["gleon", "report", "markdown"];
+        let cli = Cli::try_parse_from(args)?;
+        assert_eq!(
+            cli.command,
+            Commands::Report {
+                format: "markdown".to_string(),
+                report: std::path::PathBuf::from(".gleon/runs/latest/gleon-report.json"),
+                pr_number: None,
+                out: None,
+            }
+        );
+
+        // Still overridable.
+        let args_override = ["gleon", "report", "html", "--report", "custom/report.json"];
+        let cli_override = Cli::try_parse_from(args_override)?;
+        assert_eq!(
+            cli_override.command,
+            Commands::Report {
+                format: "html".to_string(),
+                report: std::path::PathBuf::from("custom/report.json"),
+                pr_number: None,
+                out: None,
+            }
+        );
         Ok(())
     }
 

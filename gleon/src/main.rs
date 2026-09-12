@@ -1,8 +1,12 @@
 //! gleon CLI wrapper binary.
 
 use clap::Parser;
-use gleon_core::cli::{Cli, Commands};
-use tracing::info;
+use cli::{Cli, Commands};
+use exit_code::ExitCode;
+use tracing::{error, info};
+
+mod cli;
+mod exit_code;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -26,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
     info!("gleon CLI starting up...");
 
     let current_dir = std::env::current_dir()
-        .map_err(|e| anyhow::anyhow!("Failed to determine current directory: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to determine current directory: {e}"))?;
 
     // Load environment configuration from .gleon/.env and .gleon/.env.local
     let dotenv = gleon_core::env::load_dotenv(&current_dir);
@@ -40,13 +44,25 @@ async fn main() -> anyhow::Result<()> {
 
     // Run License/Compliance Check
     let license_status = gleon_core::license::LicenseGate::verify(&env);
-    if let gleon_core::license::EnforcementAction::Block =
-        gleon_core::license::enforce_policy(license_status, cli.strict, &env)
-    {
+    let decision = gleon_core::license::enforce_policy(license_status, cli.strict, &env);
+    for line in &decision.message {
+        eprintln!("{line}");
+    }
+    if let Some(annotation) = &decision.gha_annotation {
+        eprintln!("{annotation}");
+    }
+    if decision.action == gleon_core::license::EnforcementAction::Block {
         std::process::exit(42);
     }
 
-    let exit_code = run(&cli, &current_dir, &env).await?;
+    // Any error still bubbling here means a command couldn't even start (e.g. context
+    // resolution failed) — every command that *did* start reports its own failures via
+    // `commands::report_failure`, so this is the one remaining spot that needs to log+exit
+    // consistently with those.
+    let exit_code = match run(&cli, &current_dir, &env).await {
+        Ok(code) => code,
+        Err(e) => i32::from(commands::report_failure("Context resolution failed", &*e)),
+    };
     if exit_code != 0 {
         std::process::exit(exit_code);
     }
@@ -59,7 +75,7 @@ struct MergedEnv {
     dotenv: std::collections::HashMap<String, String>,
 }
 
-impl gleon_core::git::EnvProvider for MergedEnv {
+impl gleon_core::env::EnvProvider for MergedEnv {
     fn get_var(&self, key: &str) -> Option<String> {
         std::env::var(key)
             .ok()
@@ -68,143 +84,86 @@ impl gleon_core::git::EnvProvider for MergedEnv {
 }
 
 fn get_storage_config(
-    env: &dyn gleon_core::git::EnvProvider,
+    env: &dyn gleon_core::env::EnvProvider,
 ) -> Option<gleon_core::storage::StorageConfig> {
     gleon_core::storage::StorageConfig::from_env(env)
 }
 
 mod commands;
 
+/// Resolves the active [`gleon_core::context::ResolvedContext`] for the current invocation —
+/// every subcommand needing workspace/platform/branch context builds it the same way, so this
+/// is the one place that does.
+fn resolve_context(
+    cli: &Cli,
+    current_dir: &std::path::Path,
+    env: &dyn gleon_core::env::EnvProvider,
+) -> anyhow::Result<gleon_core::context::ResolvedContext> {
+    gleon_core::context::ResolvedContext::resolve(
+        &gleon_core::context::ContextOptions::from(cli),
+        current_dir,
+        env,
+    )
+    .map_err(|e| anyhow::anyhow!(e))
+}
+
 async fn run(
     cli: &Cli,
     current_dir: &std::path::Path,
-    env: &dyn gleon_core::git::EnvProvider,
+    env: &dyn gleon_core::env::EnvProvider,
 ) -> anyhow::Result<i32> {
-    match &cli.command {
-        Commands::Init => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
-            let res = gleon_core::ops::init_workspace(&ctx, &ctx.base_dir)
-                .map_err(|e| anyhow::anyhow!(e))?;
-            info!("Initialized gleon workspace at {}", res.gleon_dir.display());
-            if let Some(ref config_path) = res.config_created {
-                info!(
-                    "Created default configuration file at {}",
-                    config_path.display()
-                );
-            }
-        }
+    let code = match &cli.command {
+        Commands::Init => commands::init::run_init(&resolve_context(cli, current_dir, env)?),
         Commands::Status { json } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
-            let report = gleon_core::ops::check_status(&ctx, &ctx.base_dir)
-                .map_err(|e| anyhow::anyhow!(e))?;
-            if *json {
-                println!("{}", report.format_json().map_err(|e| anyhow::anyhow!(e))?);
-            } else {
-                print!("{}", report.format_text());
-            }
+            commands::status::run_status(&resolve_context(cli, current_dir, env)?, *json)
         }
         Commands::Stage { paths } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
-            let filter = if paths.is_empty() {
-                None
-            } else {
-                Some(paths.as_slice())
-            };
-            let res = gleon_core::ops::stage_workspace(&ctx, &ctx.base_dir, filter)
-                .map_err(|e| anyhow::anyhow!(e))?;
-            if res.total_screenshots_staged == 0 {
-                info!("Already up to date.");
-            } else {
-                info!(
-                    "Staged {} screenshot(s) across {} test case(s).",
-                    res.total_screenshots_staged,
-                    res.staged_test_cases.len()
-                );
-            }
+            commands::stage::run_stage(&resolve_context(cli, current_dir, env)?, paths)
         }
         Commands::Diff {
-            auto_pull: _,
-            resolve,
+            auto_pull,
+            resolve: resolve_conflicts,
         } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
-
-            if *resolve {
-                let storage_cfg = get_storage_config(env);
-                return commands::resolve::run_resolve(&ctx, None, false, storage_cfg).await;
-            }
-
-            let report =
-                gleon_core::ops::run_diff(&ctx, &ctx.base_dir).map_err(|e| anyhow::anyhow!(e))?;
-            info!(
-                "Ran {} test(s). Passed: {}, Failed: {}.",
-                report.total_tests,
-                report.total_tests.saturating_sub(report.failed_tests),
-                report.failed_tests
-            );
-            info!("Report generated at {}", report.runs_dir.display());
-            if !report.passed {
-                return Ok(1);
-            }
+            let ctx = resolve_context(cli, current_dir, env)?;
+            commands::diff::run_diff(
+                &ctx,
+                *auto_pull,
+                *resolve_conflicts,
+                get_storage_config(env),
+            )
+            .await
         }
         Commands::LintManifests { platform } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
-            return commands::lint::run_lint(&ctx, platform.as_deref());
+            let ctx = resolve_context(cli, current_dir, env)?;
+            commands::lint::run_lint(&ctx, platform.as_deref())
         }
         Commands::Resolve { test_path, fetch } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
-            let storage_cfg = get_storage_config(env);
-            return commands::resolve::run_resolve(&ctx, test_path.as_deref(), *fetch, storage_cfg)
-                .await;
-        }
-        Commands::Test => {
-            info!("Subcommand test is not fully implemented yet");
+            let ctx = resolve_context(cli, current_dir, env)?;
+            commands::resolve::run_resolve(
+                &ctx,
+                test_path.as_deref(),
+                *fetch,
+                get_storage_config(env),
+            )
+            .await
         }
         Commands::Pull {
             all_platforms,
             platform,
         } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
-            let storage_cfg = get_storage_config(env);
-            return commands::pull::run_pull(
-                &ctx,
-                storage_cfg.as_ref(),
-                *all_platforms,
-                platform.as_deref(),
-            )
-            .await;
+            let ctx = resolve_context(cli, current_dir, env)?;
+            let storage = get_storage_config(env);
+            commands::pull::run_pull(&ctx, storage.as_ref(), *all_platforms, platform.as_deref())
+                .await
         }
         Commands::Push {
             all_platforms,
             platform,
         } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
-            let storage_cfg = get_storage_config(env);
-            return commands::push::run_push(
-                &ctx,
-                storage_cfg.as_ref(),
-                *all_platforms,
-                platform.as_deref(),
-            )
-            .await;
-        }
-        Commands::Gc => {
-            info!("Subcommand gc is not fully implemented yet");
+            let ctx = resolve_context(cli, current_dir, env)?;
+            let storage = get_storage_config(env);
+            commands::push::run_push(&ctx, storage.as_ref(), *all_platforms, platform.as_deref())
+                .await
         }
         Commands::Report {
             format,
@@ -212,33 +171,37 @@ async fn run(
             pr_number,
             out,
         } => {
-            let storage_cfg = get_storage_config(env);
-            return commands::report::run_report(
-                env,
-                storage_cfg,
-                format,
-                report,
-                *pr_number,
-                out.as_deref(),
-            )
-            .await;
+            let storage = get_storage_config(env);
+            commands::report::run_report(env, storage, format, report, *pr_number, out.as_deref())
+                .await
         }
         Commands::Approve { paths, from } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
-            return commands::approve::run_approve(&ctx, paths, from.as_ref());
+            let ctx = resolve_context(cli, current_dir, env)?;
+            commands::approve::run_approve(&ctx, paths, from.as_ref())
         }
         Commands::Clean {
             dry_run,
             skip_gitignore,
             keep_runs,
         } => {
-            let ctx =
-                gleon_core::context::ResolvedContext::from_cli_with_env(cli, current_dir, env)
-                    .map_err(|e| anyhow::anyhow!(e))?;
-            return commands::clean::run_clean(&ctx, *dry_run, *skip_gitignore, *keep_runs);
+            let ctx = resolve_context(cli, current_dir, env)?;
+            commands::clean::run_clean(&ctx, *dry_run, *skip_gitignore, *keep_runs)
         }
-    }
-    Ok(0)
+        // Reporting success for a subcommand that did nothing would turn a CI visual-regression
+        // gate green without ever running it.
+        Commands::Test => {
+            error!(
+                "Subcommand 'test' is not implemented yet; run your test command, then 'gleon diff'."
+            );
+            ExitCode::Failure
+        }
+        Commands::Gc => {
+            error!(
+                "Subcommand 'gc' is not implemented yet; unreferenced blobs must be pruned manually for now."
+            );
+            ExitCode::Failure
+        }
+    };
+
+    Ok(code.into())
 }

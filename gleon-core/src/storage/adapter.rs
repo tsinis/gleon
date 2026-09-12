@@ -63,13 +63,15 @@ impl StorageConfig {
     /// `GLEON_*` prefixed variables override standard `AWS_*` / `R2_*` variables.
     /// Returns `None` if `GLEON_STORAGE_URL` is missing or empty.
     #[must_use]
-    pub fn from_env(env: &dyn crate::git::EnvProvider) -> Option<Self> {
+    pub fn from_env(env: &dyn crate::env::EnvProvider) -> Option<Self> {
         let url_val = env.get_var("GLEON_STORAGE_URL")?;
         let url = url_val.trim();
         if url.is_empty() {
             return None;
         }
 
+        // Not `env::get_trimmed_var`: credentials are returned verbatim (untrimmed) on a
+        // non-blank match, with a fallback key, unlike that helper's trim-and-return semantics.
         let get_var = |gleon_key: &str, std_key: &str| -> Option<String> {
             env.get_var(gleon_key)
                 .filter(|v| !v.trim().is_empty())
@@ -99,15 +101,15 @@ impl StorageConfig {
 
 impl fmt::Debug for StorageConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let masked_url = match url::Url::parse(&self.url) {
-            Ok(mut parsed) => {
+        let masked_url = url::Url::parse(&self.url).map_or_else(
+            |_| self.url.clone(),
+            |mut parsed| {
                 if parsed.password().is_some() {
                     let _ = parsed.set_password(Some("[REDACTED]"));
                 }
                 parsed.to_string()
-            }
-            Err(_) => self.url.clone(),
-        };
+            },
+        );
 
         f.debug_struct("StorageConfig")
             .field("url", &masked_url)
@@ -147,19 +149,18 @@ impl ObjectStoreAdapter {
     /// Returns [`StorageError::InvalidUrl`] if the URL or parameters cannot be parsed by `object_store`.
     #[instrument(skip(config), level = "debug")]
     pub fn from_config(config: &StorageConfig) -> Result<Self, StorageError> {
-        let parsed_url = url::Url::parse(&config.url).map_err(|e| StorageError::InvalidUrl {
+        let invalid_url = |e: &dyn fmt::Display| StorageError::InvalidUrl {
             url: config.url.clone(),
             reason: e.to_string(),
-        })?;
+        };
+
+        let parsed_url = url::Url::parse(&config.url).map_err(|e| invalid_url(&e))?;
 
         let url_path = parsed_url.path().trim_start_matches('/');
         let prefix = if url_path.is_empty() {
             object_store::path::Path::default()
         } else {
-            object_store::path::Path::parse(url_path).map_err(|e| StorageError::InvalidUrl {
-                url: config.url.clone(),
-                reason: e.to_string(),
-            })?
+            object_store::path::Path::parse(url_path).map_err(|e| invalid_url(&e))?
         };
 
         let (store, signer): (
@@ -193,10 +194,7 @@ impl ObjectStoreAdapter {
                     builder = builder.with_endpoint(r2_endpoint);
                 }
 
-                let s3 = builder.build().map_err(|e| StorageError::InvalidUrl {
-                    url: config.url.clone(),
-                    reason: e.to_string(),
-                })?;
+                let s3 = builder.build().map_err(|e| invalid_url(&e))?;
                 let s3_arc = Arc::new(s3);
                 (s3_arc.clone(), Some(s3_arc))
             }
@@ -206,10 +204,7 @@ impl ObjectStoreAdapter {
                 if let Some(sec) = &config.gcp_service_account_key {
                     builder = builder.with_service_account_key(sec);
                 }
-                let gcs = builder.build().map_err(|e| StorageError::InvalidUrl {
-                    url: config.url.clone(),
-                    reason: e.to_string(),
-                })?;
+                let gcs = builder.build().map_err(|e| invalid_url(&e))?;
                 let gcs_arc = Arc::new(gcs);
                 (gcs_arc.clone(), Some(gcs_arc))
             }
@@ -229,10 +224,7 @@ impl ObjectStoreAdapter {
                 }
 
                 let (raw_store, path) =
-                    parse_url_opts(&parsed_url, opts).map_err(|e| StorageError::InvalidUrl {
-                        url: config.url.clone(),
-                        reason: e.to_string(),
-                    })?;
+                    parse_url_opts(&parsed_url, opts).map_err(|e| invalid_url(&e))?;
 
                 let store: Arc<dyn ObjectStore> = if path.as_ref().is_empty() {
                     Arc::from(raw_store)
@@ -268,10 +260,11 @@ impl ObjectStoreAdapter {
         expires_in: std::time::Duration,
     ) -> Option<String> {
         if let Some(signer) = &self.signer {
-            let mut path_str = relative_path.to_string();
-            if !self.prefix.as_ref().is_empty() {
-                path_str = format!("{}/{}", self.prefix.as_ref(), relative_path);
-            }
+            let path_str = if self.prefix.as_ref().is_empty() {
+                relative_path.to_string()
+            } else {
+                format!("{}/{}", self.prefix.as_ref(), relative_path)
+            };
             let path = object_store::path::Path::from(path_str);
             match signer
                 .signed_url(http::Method::GET, &path, expires_in)
@@ -324,16 +317,12 @@ impl ObjectStoreAdapter {
             options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
         }
 
-        let std_file = options
-            .open(src_path)
-            .map_err(|source| StorageError::Io { source })?;
+        let std_file = options.open(src_path)?;
 
         // On Windows, opening a reparse point with FILE_FLAG_OPEN_REPARSE_POINT succeeds.
         // We must inspect the metadata of the opened handle to reject symlinks.
         // On Unix, O_NOFOLLOW fails to open symlinks with ELOOP, but this check is a harmless safety net.
-        let metadata = std_file
-            .metadata()
-            .map_err(|source| StorageError::Io { source })?;
+        let metadata = std_file.metadata()?;
 
         #[cfg(windows)]
         let is_symlink_or_reparse = {
@@ -368,10 +357,11 @@ impl ObjectStoreAdapter {
         }
 
         let mut file = tokio::fs::File::from_std(std_file);
+        // `len` was validated above to be <= MAX_BLOB_SIZE (100 MiB), which fits comfortably
+        // in `usize` on all supported platforms (including 32-bit targets).
+        #[allow(clippy::cast_possible_truncation)]
         let mut bytes = Vec::with_capacity(len as usize);
-        tokio::io::AsyncReadExt::read_to_end(&mut file, &mut bytes)
-            .await
-            .map_err(|source| StorageError::Io { source })?;
+        tokio::io::AsyncReadExt::read_to_end(&mut file, &mut bytes).await?;
         self.store
             .put(&key, object_store::PutPayload::from(bytes))
             .await
@@ -381,6 +371,10 @@ impl ObjectStoreAdapter {
     }
 
     /// Checks if a blob exists on remote storage without downloading it.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if the remote existence check fails for a reason other than
+    /// the object simply not being found.
     pub async fn blob_exists(
         &self,
         hash: &crate::manifest::ImageHash,
@@ -424,17 +418,11 @@ impl ObjectStoreAdapter {
         tokio::task::spawn_blocking(move || -> Result<(), StorageError> {
             let parent_dir = dest_path_buf.parent().unwrap_or_else(|| Path::new("."));
 
-            std::fs::create_dir_all(parent_dir).map_err(|source| StorageError::Io { source })?;
+            std::fs::create_dir_all(parent_dir)?;
 
-            let mut temp_file =
-                NamedTempFile::new_in(parent_dir).map_err(|source| StorageError::Io { source })?;
-            temp_file
-                .write_all(&bytes)
-                .map_err(|source| StorageError::Io { source })?;
-            temp_file
-                .as_file()
-                .sync_all()
-                .map_err(|source| StorageError::Io { source })?;
+            let mut temp_file = NamedTempFile::new_in(parent_dir)?;
+            temp_file.write_all(&bytes)?;
+            temp_file.as_file().sync_all()?;
             temp_file
                 .persist(&dest_path_buf)
                 .map_err(|e| StorageError::PersistFailed {
@@ -478,12 +466,21 @@ impl ObjectStoreAdapter {
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
 
     struct MapEnv(HashMap<String, String>);
-    impl crate::git::EnvProvider for MapEnv {
+    impl crate::env::EnvProvider for MapEnv {
         fn get_var(&self, key: &str) -> Option<String> {
             self.0.get(key).cloned()
         }
@@ -564,7 +561,7 @@ mod tests {
         let cfg = StorageConfig::new("memory://");
         let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
         let res = adapter
-            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_secs(60))
+            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_mins(1))
             .await;
         assert!(res.is_none());
     }
@@ -580,7 +577,7 @@ mod tests {
         cfg.aws_region = Some("us-east-1".to_string());
         let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
         let url = adapter
-            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_secs(60))
+            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_mins(1))
             .await
             .expect("Expected Some URL for S3 signing");
         assert!(url.contains("mybucket"));
@@ -597,7 +594,7 @@ mod tests {
         cfg.aws_region = Some("us-east-1".to_string());
         let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
         let url = adapter
-            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_secs(60))
+            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_mins(1))
             .await
             .expect("Expected Some URL for S3 signing");
         assert!(url.contains("mybucket"));
@@ -612,7 +609,7 @@ mod tests {
             .unwrap_or_else(|| StorageConfig::new("gs://mybucket"));
         let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
         let res = adapter
-            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_secs(60))
+            .sign_blob_url("blobs/sha256/1234", std::time::Duration::from_mins(1))
             .await;
         // Unauthenticated / metadata-less GCS safely falls back to None instead of failing
         assert!(res.is_none());

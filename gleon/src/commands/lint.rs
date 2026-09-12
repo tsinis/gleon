@@ -4,19 +4,19 @@ use gleon_core::context::ResolvedContext;
 use gleon_core::ops::lint_workspace_manifests;
 use tracing::{error, info};
 
+use crate::commands::report_failure;
+use crate::exit_code::ExitCode;
+
 /// Runs manifest linting across the workspace.
 ///
-/// Returns exit code `0` if all manifests are valid and unconflicted,
-/// or `1` if any file contains conflict markers or schema corruption.
-pub fn run_lint(ctx: &ResolvedContext, platform_filter: Option<&str>) -> anyhow::Result<i32> {
+/// Returns [`ExitCode::Success`] if all manifests are valid and unconflicted, or
+/// [`ExitCode::Failure`] if any file contains conflict markers or schema corruption.
+pub fn run_lint(ctx: &ResolvedContext, platform_filter: Option<&str>) -> ExitCode {
     info!("Running manifest linting...");
 
-    let report = match lint_workspace_manifests(ctx, &ctx.base_dir, platform_filter) {
+    let report = match lint_workspace_manifests(ctx, platform_filter) {
         Ok(rep) => rep,
-        Err(e) => {
-            error!("Error during manifest linting: {e}");
-            return Ok(1);
-        }
+        Err(e) => return report_failure("Error during manifest linting", &e),
     };
 
     info!(
@@ -40,37 +40,43 @@ pub fn run_lint(ctx: &ResolvedContext, platform_filter: Option<&str>) -> anyhow:
 
     if report.passed {
         info!("All manifest files passed linting.");
-        Ok(0)
-    } else {
-        if !report.conflicted_files.is_empty() {
-            error!(
-                "Lint check failed due to Git conflicts! Run 'gleon resolve' to resolve conflicts."
-            );
-        } else {
-            error!(
-                "Lint check failed due to schema/JSON errors! Please repair reported manifest files."
-            );
-        }
-        Ok(1)
+        return ExitCode::Success;
     }
+
+    if report.conflicted_files.is_empty() {
+        error!(
+            "Lint check failed due to schema/JSON errors! Please repair reported manifest files."
+        );
+    } else {
+        error!("Lint check failed due to Git conflicts! Run 'gleon resolve' to resolve conflicts.");
+    }
+    ExitCode::Failure
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
-    use gleon_core::cli::{Cli, Commands};
+    use gleon_core::context::ContextOptions;
     use tempfile::tempdir;
 
     #[test]
     fn test_run_lint_branches() {
         let temp = tempdir().unwrap();
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), temp.path()).unwrap();
 
-        // 1. Missing directory -> Err -> Ok(1)
-        assert_eq!(run_lint(&ctx, None).unwrap(), 1);
+        // 1. Missing directory -> Err -> Failure
+        assert_eq!(run_lint(&ctx, None), ExitCode::Failure);
 
-        // 2. Clean manifest -> Ok(0)
+        // 2. Clean manifest -> Success
         let manifests_dir = temp
             .path()
             .join(".gleon")
@@ -79,17 +85,17 @@ mod tests {
         std::fs::create_dir_all(&manifests_dir).unwrap();
         let valid_json = include_str!("../../../gleon-core/tests/fixtures/valid_manifest.json");
         std::fs::write(manifests_dir.join("valid.json"), valid_json).unwrap();
-        assert_eq!(run_lint(&ctx, None).unwrap(), 0);
+        assert_eq!(run_lint(&ctx, None), ExitCode::Success);
 
-        // 3. Conflicted manifest -> Ok(1) with conflict advice
+        // 3. Conflicted manifest -> Failure with conflict advice
         let conflicted_json = include_str!("../../../gleon-core/tests/fixtures/conflict_2way.json");
         std::fs::write(manifests_dir.join("conflict.json"), conflicted_json).unwrap();
-        assert_eq!(run_lint(&ctx, None).unwrap(), 1);
+        assert_eq!(run_lint(&ctx, None), ExitCode::Failure);
 
-        // 4. Corrupted manifest -> Ok(1) with schema advice
+        // 4. Corrupted manifest -> Failure with schema advice
         std::fs::remove_file(manifests_dir.join("conflict.json")).unwrap();
         let corrupt_json = include_str!("../../../gleon-core/tests/fixtures/corrupt_manifest.json");
         std::fs::write(manifests_dir.join("corrupt.json"), corrupt_json).unwrap();
-        assert_eq!(run_lint(&ctx, None).unwrap(), 1);
+        assert_eq!(run_lint(&ctx, None), ExitCode::Failure);
     }
 }

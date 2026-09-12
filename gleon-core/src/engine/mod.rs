@@ -60,45 +60,38 @@ fn execute_pixel_comparison(
     threshold: f64,
     is_fallback: bool,
 ) -> ComparisonResult {
-    let total_pixels = (baseline.width() as u64) * (baseline.height() as u64);
+    let total_pixels = u64::from(baseline.width()) * u64::from(baseline.height());
     if total_pixels == 0 {
         return ComparisonResult::Match;
     }
 
-    if threshold == 0.0 {
-        // Fast-path: count mismatches without allocating a diff image buffer first.
-        let diff_count = pixel::count_mismatched_pixels(baseline, actual);
-        if diff_count == 0 {
-            ComparisonResult::Match
-        } else {
-            let (_, diff_image) = compare_pixels(baseline, actual); // diff_count is already known
-            ComparisonResult::Mismatch {
-                detail: if is_fallback {
-                    MismatchDetail::SsimFallback { diff_count }
-                } else {
-                    MismatchDetail::Pixel { diff_count }
-                },
-                diff_image,
-            }
-        }
+    // Count mismatched pixels first without allocating a diff image buffer, so the common
+    // "images match" case avoids the allocation entirely, regardless of threshold mode.
+    let diff_count = pixel::count_mismatched_pixels(baseline, actual);
+
+    let is_match = if threshold == 0.0 {
+        diff_count == 0
     } else {
-        // First, count mismatched pixels without allocating a diff image to save memory.
-        let diff_count = pixel::count_mismatched_pixels(baseline, actual);
+        // Pixel counts here are always far below 2^52, so converting to `f64` is exact for
+        // any realistic image size; the ratio itself is just a heuristic threshold comparison.
+        #[allow(clippy::cast_precision_loss)]
         let mismatch_ratio = diff_count as f64 / total_pixels as f64;
-        if mismatch_ratio <= threshold {
-            ComparisonResult::Match
+        mismatch_ratio <= threshold
+    };
+
+    if is_match {
+        return ComparisonResult::Match;
+    }
+
+    // Only generate the diff image once we know there's actually a mismatch to report.
+    let (_, diff_image) = compare_pixels(baseline, actual);
+    ComparisonResult::Mismatch {
+        detail: if is_fallback {
+            MismatchDetail::SsimFallback { diff_count }
         } else {
-            // Only generate the diff image if there's actually a mismatch.
-            let (_, diff_image) = compare_pixels(baseline, actual);
-            ComparisonResult::Mismatch {
-                detail: if is_fallback {
-                    MismatchDetail::SsimFallback { diff_count }
-                } else {
-                    MismatchDetail::Pixel { diff_count }
-                },
-                diff_image,
-            }
-        }
+            MismatchDetail::Pixel { diff_count }
+        },
+        diff_image,
     }
 }
 
@@ -148,6 +141,15 @@ pub fn compare_images(
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use crate::config::DiffConfig;

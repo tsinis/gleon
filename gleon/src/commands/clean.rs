@@ -4,22 +4,25 @@ use gleon_core::context::ResolvedContext;
 use gleon_core::ops::clean::{CleanOptions, clean_workspace};
 use tracing::info;
 
+use crate::commands::report_failure;
+use crate::exit_code::ExitCode;
+
 /// Runs the `clean` command.
 pub fn run_clean(
     ctx: &ResolvedContext,
     dry_run: bool,
     skip_gitignore: bool,
     keep_runs: bool,
-) -> anyhow::Result<i32> {
+) -> ExitCode {
     let options = CleanOptions {
         dry_run,
         skip_gitignore,
         keep_runs,
     };
 
-    let res = match clean_workspace(ctx, &ctx.base_dir, &options) {
+    let res = match clean_workspace(ctx, &options) {
         Ok(r) => r,
-        Err(e) => return Err(anyhow::Error::from(e)),
+        Err(e) => return report_failure("Error cleaning workspace", &e),
     };
 
     if dry_run {
@@ -56,13 +59,22 @@ pub fn run_clean(
         }
     }
 
-    Ok(0)
+    ExitCode::Success
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
-    use gleon_core::cli::{Cli, Commands};
+    use gleon_core::context::ContextOptions;
     use tempfile::tempdir;
 
     #[test]
@@ -87,21 +99,16 @@ screenshots:
         std::fs::create_dir_all(&test_dir).unwrap();
         std::fs::write(test_dir.join("login.png"), b"image").unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: true,
-            skip_gitignore: false,
-            keep_runs: false,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
         // 1. Dry run
-        let exit_code = run_clean(&ctx, true, false, false).unwrap();
-        assert_eq!(exit_code, 0);
+        let exit_code = run_clean(&ctx, true, false, false);
+        assert_eq!(exit_code, ExitCode::Success);
         assert!(test_dir.join("login.png").exists());
 
         // 2. Real run
-        let exit_code = run_clean(&ctx, false, false, false).unwrap();
-        assert_eq!(exit_code, 0);
+        let exit_code = run_clean(&ctx, false, false, false);
+        assert_eq!(exit_code, ExitCode::Success);
         assert!(!test_dir.join("login.png").exists());
         assert!(base_path.join(".gitignore").exists());
         assert!(!gleon_dir.join("runs").exists());
@@ -131,21 +138,16 @@ screenshots:
         let runs_dir = gleon_dir.join("runs");
         std::fs::create_dir_all(&runs_dir).unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: true,
-            keep_runs: true,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
         // 1. Dry run with keep_runs=true and skip_gitignore=true
-        let exit_code = run_clean(&ctx, true, true, true).unwrap();
-        assert_eq!(exit_code, 0);
+        let exit_code = run_clean(&ctx, true, true, true);
+        assert_eq!(exit_code, ExitCode::Success);
         assert!(test_dir.join("login.png").exists());
 
         // 2. Real run with keep_runs=true and skip_gitignore=true
-        let exit_code = run_clean(&ctx, false, true, true).unwrap();
-        assert_eq!(exit_code, 0);
+        let exit_code = run_clean(&ctx, false, true, true);
+        assert_eq!(exit_code, ExitCode::Success);
         assert!(!test_dir.join("login.png").exists());
         assert!(!base_path.join(".gitignore").exists());
         assert!(runs_dir.exists());
@@ -171,14 +173,9 @@ screenshots:
         // Create .gitignore as directory to force CleanError::Io
         std::fs::create_dir_all(base_path.join(".gitignore")).unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: false,
-            keep_runs: false,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
-        let err = run_clean(&ctx, false, false, false).unwrap_err();
-        assert!(err.to_string().contains("IO error"));
+        let exit_code = run_clean(&ctx, false, false, false);
+        assert_eq!(exit_code, ExitCode::Failure);
     }
 }

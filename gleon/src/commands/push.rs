@@ -3,77 +3,77 @@
 use gleon_core::context::ResolvedContext;
 use gleon_core::ops::push_blobs;
 use gleon_core::storage::StorageConfig;
-use tracing::{error, info};
+use tracing::info;
+
+use crate::commands::report_failure;
+use crate::exit_code::ExitCode;
 
 /// Runs the `gleon push` subcommand.
 ///
-/// Returns exit code `0` on success or local mode, or `1` on error.
+/// Returns [`ExitCode::Success`] on success or local mode, or [`ExitCode::Failure`] on error.
 pub async fn run_push(
     ctx: &ResolvedContext,
     storage_cfg: Option<&StorageConfig>,
     all_platforms: bool,
     platform_override: Option<&str>,
-) -> anyhow::Result<i32> {
+) -> ExitCode {
     info!("Running blob push...");
 
-    match push_blobs(
-        ctx,
-        &ctx.base_dir,
-        storage_cfg,
-        all_platforms,
-        platform_override,
-    )
-    .await
-    {
-        Ok(res) => {
-            if res.local_mode {
-                info!("Operating in local mode. Cloud sync disabled. Please configure storage.");
-            } else if res.total_manifest_blobs == 0 {
-                info!("No baseline blobs found to push.");
-            } else if res.uploaded_blobs == 0 {
-                info!(
-                    "All {} baseline blob(s) are already present in remote storage.",
-                    res.total_manifest_blobs
-                );
-            } else {
-                info!(
-                    "Uploaded {} missing baseline blob(s) to storage ({} skipped, total: {}).",
-                    res.uploaded_blobs, res.skipped_blobs, res.total_manifest_blobs
-                );
-            }
-            Ok(0)
-        }
-        Err(e) => {
-            error!("Error pushing baseline blobs: {e}");
-            Ok(1)
-        }
+    let res = match push_blobs(ctx, storage_cfg, all_platforms, platform_override).await {
+        Ok(res) => res,
+        Err(e) => return report_failure("Error pushing baseline blobs", &e),
+    };
+
+    if res.local_mode {
+        info!("Operating in local mode. Cloud sync disabled. Please configure storage.");
+    } else if res.total_manifest_blobs == 0 {
+        info!("No baseline blobs found to push.");
+    } else if res.uploaded_blobs == 0 {
+        info!(
+            "All {} baseline blob(s) are already present in remote storage.",
+            res.total_manifest_blobs
+        );
+    } else {
+        info!(
+            "Uploaded {} missing baseline blob(s) to storage ({} skipped, total: {}).",
+            res.uploaded_blobs, res.skipped_blobs, res.total_manifest_blobs
+        );
     }
+    ExitCode::Success
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
-    use gleon_core::cli::{Cli, Commands};
+    use gleon_core::context::ContextOptions;
     use tempfile::tempdir;
 
     #[tokio::test]
     async fn test_run_push_uninitialized_and_local_mode() {
         let temp = tempdir().unwrap();
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), temp.path()).unwrap();
 
-        // 1. Uninitialized -> exit code 1
-        let exit_code_uninit = run_push(&ctx, None, false, None).await.unwrap();
-        assert_eq!(exit_code_uninit, 1);
+        // 1. Uninitialized -> Failure
+        let exit_code_uninit = run_push(&ctx, None, false, None).await;
+        assert_eq!(exit_code_uninit, ExitCode::Failure);
 
-        // 2. Initialized + Local Mode -> exit code 0
-        gleon_core::ops::init_workspace(&ctx, temp.path()).unwrap();
-        let exit_code_local = run_push(&ctx, None, false, None).await.unwrap();
-        assert_eq!(exit_code_local, 0);
+        // 2. Initialized + Local Mode -> Success
+        gleon_core::ops::init_workspace(&ctx).unwrap();
+        let exit_code_local = run_push(&ctx, None, false, None).await;
+        assert_eq!(exit_code_local, ExitCode::Success);
 
-        // 3. Initialized + Storage Configured + 0 manifest blobs -> exit code 0
+        // 3. Initialized + Storage Configured + 0 manifest blobs -> Success
         let cfg = StorageConfig::new("memory://");
-        let exit_code_zero_blobs = run_push(&ctx, Some(&cfg), false, None).await.unwrap();
-        assert_eq!(exit_code_zero_blobs, 0);
+        let exit_code_zero_blobs = run_push(&ctx, Some(&cfg), false, None).await;
+        assert_eq!(exit_code_zero_blobs, ExitCode::Success);
     }
 }

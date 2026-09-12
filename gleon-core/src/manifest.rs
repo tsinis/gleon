@@ -5,7 +5,7 @@ pub mod index;
 pub mod single;
 
 pub use conflict::{ConflictManifest, ConflictParseError, parse_conflict_manifest};
-pub use index::{WorkspaceIndex, normalize_test_name, validate_test_path};
+pub use index::{WorkspaceIndex, validate_test_path};
 pub use single::{SUPPORTED_SINGLE_MANIFEST_SCHEMA_VERSION, SingleTestManifest};
 
 use crate::io::IoError;
@@ -66,19 +66,23 @@ fn validate_hash_parts(scheme: &str, value: &str) -> Result<(), String> {
         if !value.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err("sha256 hash must contain only ASCII hexadecimal characters".to_string());
         }
-    } else {
-        if !value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        {
-            return Err("Hash value contains invalid characters".to_string());
-        }
+    } else if !value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err("Hash value contains invalid characters".to_string());
     }
     Ok(())
 }
 
 impl ImageHash {
-    /// Constructs a new ImageHash, returning a validation error if invalid.
+    /// Constructs a new `ImageHash`, returning a validation error if invalid.
+    ///
+    /// # Errors
+    /// Returns [`ManifestError::Validation`] if `scheme` is empty or contains characters
+    /// other than ASCII alphanumeric characters, `_`, or `-`; if `value` is empty or contains invalid
+    /// characters for the given scheme; or if `scheme` is `sha256` and `value` is not exactly
+    /// 64 ASCII hex characters.
     pub fn new(scheme: impl Into<String>, value: impl Into<String>) -> Result<Self, ManifestError> {
         let mut scheme_str = scheme.into();
         if scheme_str.chars().any(|c| c.is_ascii_uppercase()) {
@@ -90,18 +94,20 @@ impl ImageHash {
         }
         validate_hash_parts(&scheme_str, &value_str)
             .map_err(ManifestError::Validation)
-            .map(|_| Self {
+            .map(|()| Self {
                 scheme: scheme_str,
                 value: value_str,
             })
     }
 
     /// Gets the hashing scheme.
+    #[must_use]
     pub fn scheme(&self) -> &str {
         &self.scheme
     }
 
     /// Gets the hash value.
+    #[must_use]
     pub fn value(&self) -> &str {
         &self.value
     }
@@ -129,7 +135,7 @@ impl std::str::FromStr for ImageHash {
 
         validate_hash_parts(&scheme_cow, &value_cow)
             .map_err(ManifestError::Validation)
-            .map(|()| ImageHash {
+            .map(|()| Self {
                 scheme: scheme_cow.into_owned(),
                 value: value_cow.into_owned(),
             })
@@ -142,7 +148,7 @@ impl<'de> Deserialize<'de> for ImageHash {
         D: Deserializer<'de>,
     {
         let s = std::borrow::Cow::<'de, str>::deserialize(deserializer)?;
-        s.parse::<ImageHash>().map_err(serde::de::Error::custom)
+        s.parse::<Self>().map_err(serde::de::Error::custom)
     }
 }
 
@@ -162,6 +168,15 @@ impl std::fmt::Display for ImageHash {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
 

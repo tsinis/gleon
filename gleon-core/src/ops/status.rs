@@ -1,67 +1,57 @@
 //! Status operation for categorizing workspace screenshots against baseline manifests.
 
-use crate::config::ConfigError;
-use crate::context::{ContextError, ResolvedContext};
-use crate::manifest::{ManifestError, WorkspaceIndex};
-use crate::scanner::{FileScanner, ScannerError};
+use crate::context::ResolvedContext;
+use crate::ops::common::{
+    CoreError, ensure_initialized, index_keys_missing_from, load_config_and_scan,
+    load_merged_index_with_fallback, platform_key, sha256_hex_matches,
+};
 use serde::Serialize;
-use sha2::Digest;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use thiserror::Error;
 
 /// Errors that can occur during status evaluation.
 #[derive(Debug, Error)]
 pub enum StatusError {
-    /// Workspace has not been initialized (`.gleon` missing).
-    #[error("gleon workspace is not initialized. Please run 'gleon init' first.")]
-    NotInitialized,
-
-    /// Error resolving context.
-    #[error("Context resolution error: {0}")]
-    Context(#[from] ContextError),
-
-    /// Error scanning files.
-    #[error("Scanner error: {0}")]
-    Scanner(#[from] ScannerError),
-
-    /// Error loading configuration.
-    #[error("Config error: {0}")]
-    Config(#[from] ConfigError),
-
-    /// Error loading manifest or manifest index.
-    #[error("Manifest error: {0}")]
-    Manifest(#[from] ManifestError),
-
     /// Image processing error.
     #[error("Image error: {0}")]
     Image(#[from] image::ImageError),
 
-    /// IO error.
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    /// Error shared across `ops::*` operations.
+    #[error(transparent)]
+    Core(#[from] CoreError),
 }
 
 /// Grouped result of evaluating status across the workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct StatusReport {
+    /// Screenshots present on disk but not yet tracked in the manifest.
     pub added: Vec<PathBuf>,
+    /// Tracked screenshots whose content differs from the manifest.
     pub modified: Vec<PathBuf>,
+    /// Manifest entries whose screenshot is missing on disk.
     pub deleted: Vec<PathBuf>,
 }
 
 impl StatusReport {
     /// Returns true if there are no added, modified, or deleted screenshots.
-    pub fn is_clean(&self) -> bool {
+    #[must_use]
+    pub const fn is_clean(&self) -> bool {
         self.added.is_empty() && self.modified.is_empty() && self.deleted.is_empty()
     }
 
     /// Formats the report as pretty-printed JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the report fails to serialize to JSON (not expected in practice,
+    /// since all fields are simple serializable types).
     pub fn format_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
 
     /// Formats the report as human-readable text.
+    #[must_use]
     pub fn format_text(&self) -> String {
         use std::fmt::Write;
         let mut out = String::new();
@@ -101,144 +91,115 @@ impl StatusReport {
     }
 }
 
-/// Evaluates status for the workspace at `base_dir`.
-pub fn check_status(
-    context: &ResolvedContext,
-    base_dir: &Path,
-) -> Result<StatusReport, StatusError> {
-    let gleon_dir = base_dir.join(".gleon");
-    if std::fs::metadata(&gleon_dir).is_err() {
-        return Err(StatusError::NotInitialized);
-    }
+/// Classifies one scanned test case against `workspace_index`: `(Some(path), None)` if it's
+/// untracked (added), `(None, Some(path))` if its content differs from the baseline once masks
+/// are applied (modified), or `(None, None)` if unchanged.
+///
+/// Pulled out of [`check_status`]'s parallel scan so the per-case comparison logic (hash/blob
+/// lookup, mask-aware image diffing) reads as its own unit rather than an ~80-line closure body.
+fn classify_test_case(
+    case: &crate::scanner::TestCase,
+    workspace_index: &crate::manifest::WorkspaceIndex,
+    blobs_root: &std::path::Path,
+) -> Result<(Option<PathBuf>, Option<PathBuf>), StatusError> {
+    let img = &case.image;
 
-    let platform_key = match context.platform.to_key() {
-        Ok(key) => key,
-        Err(e) => return Err(StatusError::Context(ContextError::Platform(e))),
+    let Some(manifest) = workspace_index.get(&case.name) else {
+        return Ok((Some(img.relative_path.clone()), None));
     };
 
-    let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
-    let mut workspace_index =
-        WorkspaceIndex::load(&manifests_dir).map_err(StatusError::Manifest)?;
-
-    if let Some(fallback_key) = context
-        .fallback_platform_key
-        .as_deref()
-        .filter(|&k| k != platform_key)
-    {
-        let fallback_dir = gleon_dir.join("manifests").join(fallback_key);
-        let fb_index = WorkspaceIndex::load(&fallback_dir).map_err(StatusError::Manifest)?;
-        if !fb_index.is_empty() {
-            tracing::info!(
-                "Using fallback platform '{}' for missing manifests on platform '{}'.",
-                fallback_key,
-                platform_key
-            );
-            workspace_index.merge_fallback(fb_index);
+    let raw_bytes = std::fs::read(&img.absolute_path).map_err(CoreError::Io)?;
+    let is_unchanged = if manifest.hash.scheme() == "sha256" {
+        if sha256_hex_matches(&manifest.hash, &raw_bytes) {
+            crate::storage::has_usable_local_blob(blobs_root, &manifest.hash)
+        } else {
+            false
         }
+    } else {
+        let baseline_blob_path = crate::storage::local_blob_path(blobs_root, &manifest.hash);
+        match std::fs::read(&baseline_blob_path) {
+            Ok(b_bytes) => raw_bytes == b_bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(CoreError::Io(e).into()),
+        }
+    };
+
+    if is_unchanged {
+        crate::manifest::SingleTestManifest::validate_image_bytes(&raw_bytes)
+            .map_err(CoreError::Manifest)?;
+        return Ok((None, None));
     }
 
-    let config = context.config.as_ref().cloned().unwrap_or_default();
+    let matched_zones = case.rule.matched_mask_zones(&img.relative_path);
+    if matched_zones.is_empty() {
+        return Ok((None, Some(img.relative_path.clone())));
+    }
+
+    let baseline_blob_path = crate::storage::local_blob_path(blobs_root, &manifest.hash);
+    let b_bytes = match std::fs::read(&baseline_blob_path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((None, Some(img.relative_path.clone())));
+        }
+        Err(e) => return Err(CoreError::Io(e).into()),
+    };
+
+    if let Err(e) = crate::manifest::SingleTestManifest::validate_image_bytes(&b_bytes) {
+        return Err(CoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Invalid baseline dimensions/format: {e}"),
+        ))
+        .into());
+    }
+    let b_img = image::load_from_memory(&b_bytes)?;
+
+    if let Err(e) = crate::manifest::SingleTestManifest::validate_image_bytes(&raw_bytes) {
+        return Err(CoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Invalid actual image dimensions/format: {e}"),
+        ))
+        .into());
+    }
+    let a_img = image::load_from_memory(&raw_bytes)?;
+
+    let mut b_rgba = b_img.to_rgba8();
+    let mut a_rgba = a_img.to_rgba8();
+    crate::masking::apply_masks(&mut b_rgba, &matched_zones);
+    crate::masking::apply_masks(&mut a_rgba, &matched_zones);
+    if b_rgba == a_rgba {
+        return Ok((None, None));
+    }
+
+    Ok((None, Some(img.relative_path.clone())))
+}
+
+/// Evaluates status for the workspace at `base_dir`.
+///
+/// # Errors
+///
+/// Returns an error if the workspace is not initialized, if the platform key cannot be
+/// resolved, if manifests or workspace configuration fail to load, if screenshots cannot be
+/// scanned, or if reading/decoding actual or baseline images fails.
+pub fn check_status(context: &ResolvedContext) -> Result<StatusReport, StatusError> {
+    use rayon::prelude::*;
+
+    let paths = ensure_initialized(&context.base_dir)?;
+    let platform_key = platform_key(context)?;
+
+    let workspace_index = load_merged_index_with_fallback(
+        &paths,
+        &platform_key,
+        context.fallback_platform_key.as_deref(),
+    )?;
+
+    let blobs_root = paths.blobs_root();
 
     // Scan workspace screenshots
-    let test_cases = FileScanner::scan_workspace(&config, base_dir)?;
-
-    use rayon::prelude::*;
+    let test_cases = load_config_and_scan(context)?;
 
     let (mut added, mut modified) = test_cases
         .par_iter()
-        .map(
-            |case| -> Result<(Option<PathBuf>, Option<PathBuf>), StatusError> {
-                let baseline_manifest = workspace_index.get(&case.name);
-
-                let img = &case.image;
-
-                match baseline_manifest {
-                    None => Ok((Some(img.relative_path.clone()), None)),
-                    Some(manifest) => {
-                        let raw_bytes = std::fs::read(&img.absolute_path)?;
-                        let is_unchanged = match manifest.hash.scheme() {
-                            "sha256" => {
-                                let actual_sha256 = hex::encode(sha2::Sha256::digest(&raw_bytes));
-                                if actual_sha256 == manifest.hash.value() {
-                                    let baseline_blob_path = crate::storage::local_blob_path(
-                                        &gleon_dir.join("blobs"),
-                                        &manifest.hash,
-                                    );
-                                    crate::storage::is_usable_blob(&baseline_blob_path)
-                                } else {
-                                    false
-                                }
-                            }
-                            _ => {
-                                let baseline_blob_path = crate::storage::local_blob_path(
-                                    &gleon_dir.join("blobs"),
-                                    &manifest.hash,
-                                );
-                                match std::fs::read(&baseline_blob_path) {
-                                    Ok(b_bytes) => raw_bytes == b_bytes,
-                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-                                    Err(e) => return Err(StatusError::Io(e)),
-                                }
-                            }
-                        };
-                        if is_unchanged {
-                            crate::manifest::SingleTestManifest::validate_image_bytes(&raw_bytes)?;
-                            Ok((None, None))
-                        } else {
-                            let matched_zones = case.rule.matched_mask_zones(&img.relative_path);
-                            if !matched_zones.is_empty() {
-                                let baseline_blob_path = crate::storage::local_blob_path(
-                                    &gleon_dir.join("blobs"),
-                                    &manifest.hash,
-                                );
-
-                                let b_bytes_res = std::fs::read(&baseline_blob_path);
-                                let b_bytes = match b_bytes_res {
-                                    Ok(b) => b,
-                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                                        return Ok((None, Some(img.relative_path.clone())));
-                                    }
-                                    Err(e) => return Err(StatusError::Io(e)),
-                                };
-
-                                if let Err(e) =
-                                    crate::manifest::SingleTestManifest::validate_image_bytes(
-                                        &b_bytes,
-                                    )
-                                {
-                                    return Err(StatusError::Io(std::io::Error::new(
-                                        std::io::ErrorKind::InvalidData,
-                                        format!("Invalid baseline dimensions/format: {}", e),
-                                    )));
-                                }
-                                let b_img = image::load_from_memory(&b_bytes)?;
-
-                                if let Err(e) =
-                                    crate::manifest::SingleTestManifest::validate_image_bytes(
-                                        &raw_bytes,
-                                    )
-                                {
-                                    return Err(StatusError::Io(std::io::Error::new(
-                                        std::io::ErrorKind::InvalidData,
-                                        format!("Invalid actual image dimensions/format: {}", e),
-                                    )));
-                                }
-                                let a_img = image::load_from_memory(&raw_bytes)?;
-
-                                let mut b_rgba = b_img.to_rgba8();
-                                let mut a_rgba = a_img.to_rgba8();
-                                crate::masking::apply_masks(&mut b_rgba, &matched_zones);
-                                crate::masking::apply_masks(&mut a_rgba, &matched_zones);
-                                if b_rgba == a_rgba {
-                                    return Ok((None, None));
-                                }
-                            }
-                            Ok((None, Some(img.relative_path.clone())))
-                        }
-                    }
-                }
-            },
-        )
+        .map(|case| classify_test_case(case, &workspace_index, &blobs_root))
         .try_fold(
             || (Vec::new(), Vec::new()),
             |mut acc, item| -> Result<_, StatusError> {
@@ -270,13 +231,11 @@ pub fn check_status(
     let mut deleted = Vec::new();
 
     // Identify deleted test cases (staged in index but no longer present on disk)
-    for staged_name in workspace_index.entries().keys() {
-        if !seen_test_cases.contains(staged_name.as_str()) {
-            let mut p = String::with_capacity(staged_name.len() + 4);
-            p.push_str(staged_name);
-            p.push_str(".png");
-            deleted.push(PathBuf::from(p));
-        }
+    for staged_name in index_keys_missing_from(&workspace_index, &seen_test_cases) {
+        let mut p = String::with_capacity(staged_name.len() + 4);
+        p.push_str(staged_name);
+        p.push_str(".png");
+        deleted.push(PathBuf::from(p));
     }
 
     added.sort();
@@ -291,32 +250,50 @@ pub fn check_status(
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
+    use crate::config::ConfigError;
+    use crate::context::ContextError;
+    use crate::manifest::{ManifestError, WorkspaceIndex};
+    use crate::scanner::ScannerError;
+    use sha2::Digest;
 
     #[test]
     fn test_status_error_display() {
-        let err1 = StatusError::NotInitialized;
+        let err1: StatusError = CoreError::NotInitialized.into();
         assert!(err1.to_string().contains("not initialized"));
 
-        let err2 = StatusError::Context(ContextError::Platform(
+        let err2: StatusError = CoreError::Context(ContextError::Platform(
             crate::platform::PlatformError::InvalidSegment("test".to_string()),
-        ));
+        ))
+        .into();
         assert!(err2.to_string().contains("Context resolution error"));
 
-        let err3 = StatusError::Scanner(ScannerError::InvalidTestName {
+        let err3: StatusError = CoreError::Scanner(ScannerError::InvalidTestName {
             name: "bad/name".to_string(),
             reason: "reason".to_string(),
-        });
+        })
+        .into();
         assert!(err3.to_string().contains("Scanner error"));
 
-        let err4 = StatusError::Config(ConfigError::Validation("bad config".to_string()));
+        let err4: StatusError =
+            CoreError::Config(ConfigError::Validation("bad config".to_string())).into();
         assert!(err4.to_string().contains("Config error"));
 
-        let err5 = StatusError::Manifest(ManifestError::Validation("bad manifest".to_string()));
+        let err5: StatusError =
+            CoreError::Manifest(ManifestError::Validation("bad manifest".to_string())).into();
         assert!(err5.to_string().contains("Manifest error"));
 
-        let err6 = StatusError::Io(std::io::Error::other("io test"));
+        let err6: StatusError = CoreError::Io(std::io::Error::other("io test")).into();
         assert!(err6.to_string().contains("IO error"));
 
         let img_err = image::ImageError::Limits(image::error::LimitError::from_kind(
@@ -366,7 +343,10 @@ mod tests {
     fn test_status_detects_deleted_dotted_test_case() {
         let temp = tempfile::tempdir().unwrap();
         let gleon_dir = temp.path().join(".gleon");
-        let ctx = ResolvedContext::default();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
         let plat_key = ctx.platform.to_key().unwrap();
         let manifests_dir = gleon_dir.join("manifests").join(&plat_key);
         std::fs::create_dir_all(&manifests_dir).unwrap();
@@ -382,7 +362,7 @@ mod tests {
             .save(manifests_dir.join("auth").join("user.v2.json"))
             .unwrap();
 
-        let report = check_status(&ctx, temp.path()).unwrap();
+        let report = check_status(&ctx).unwrap();
         assert_eq!(report.deleted, vec![PathBuf::from("auth/user.v2.png")]);
     }
 
@@ -417,7 +397,7 @@ mod tests {
             .save(manifests_dir.join("screenshots").join("login.json"))
             .unwrap();
 
-        let report = check_status(&ctx, temp.path()).unwrap();
+        let report = check_status(&ctx).unwrap();
         assert_eq!(
             report.modified,
             vec![PathBuf::from("screenshots/login.png")]
@@ -439,7 +419,7 @@ mod tests {
             ..Default::default()
         };
 
-        let report = check_status(&ctx, temp.path()).unwrap();
+        let report = check_status(&ctx).unwrap();
         assert!(report.is_clean());
     }
 
@@ -474,6 +454,7 @@ mod tests {
 
         // Define a mask so status.rs attempts to read the baseline blob
         let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
             config: Some(crate::config::GleonConfig {
                 screenshots: vec![crate::config::ScreenshotRule {
                     include: vec![crate::config::GlobPattern::new("**/*.png").unwrap()],
@@ -495,7 +476,7 @@ mod tests {
         };
 
         // Blob doesn't exist, so we expect Modified (NotFound branch lines 175-178)
-        let res = check_status(&ctx, temp.path());
+        let res = check_status(&ctx);
         let res_unwrapped = res.unwrap();
         assert_eq!(res_unwrapped.modified.len(), 1);
 
@@ -504,8 +485,8 @@ mod tests {
         std::fs::create_dir_all(&blob_dir).unwrap();
         std::fs::write(blob_dir.join(hash_val), "fake png data").unwrap();
 
-        let res2 = check_status(&ctx, temp.path());
-        assert!(matches!(res2, Err(StatusError::Io(_))));
+        let res2 = check_status(&ctx);
+        assert!(matches!(res2, Err(StatusError::Core(CoreError::Io(_)))));
     }
 
     #[test]
@@ -515,6 +496,7 @@ mod tests {
 
         // Construct an invalid platform info that fails to_key() (e.g. empty os and version)
         let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
             platform: crate::platform::PlatformInfo {
                 os: String::new(),
                 arch: None,
@@ -523,10 +505,12 @@ mod tests {
             },
             ..Default::default()
         };
-        let res = check_status(&ctx, temp.path());
+        let res = check_status(&ctx);
         assert!(matches!(
             res,
-            Err(StatusError::Context(ContextError::Platform(_)))
+            Err(StatusError::Core(CoreError::Context(
+                ContextError::Platform(_)
+            )))
         ));
     }
 
@@ -534,7 +518,10 @@ mod tests {
     fn test_status_non_sha256_manifest() {
         let temp = tempfile::tempdir().unwrap();
         let gleon_dir = temp.path().join(".gleon");
-        let ctx = ResolvedContext::default();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
 
         let platform_key = ctx.platform.to_key().unwrap();
         let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
@@ -549,7 +536,6 @@ mod tests {
         .unwrap();
         std::fs::write(temp.path().join("test.png"), &img_bytes).unwrap();
 
-        use sha2::Digest;
         let hash_val = hex::encode(sha2::Sha512::digest(&img_bytes));
 
         let mut index = WorkspaceIndex::new();
@@ -571,7 +557,7 @@ mod tests {
         std::fs::create_dir_all(&blob_dir).unwrap();
         std::fs::write(blob_dir.join(&hash_val), &img_bytes).unwrap();
 
-        let res = check_status(&ctx, temp.path()).unwrap();
+        let res = check_status(&ctx).unwrap();
         assert!(res.is_clean());
     }
 
@@ -579,7 +565,10 @@ mod tests {
     fn test_status_sha256_missing_blob() {
         let temp = tempfile::tempdir().unwrap();
         let gleon_dir = temp.path().join(".gleon");
-        let ctx = ResolvedContext::default();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..ResolvedContext::default()
+        };
 
         let platform_key = ctx.platform.to_key().unwrap();
         let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
@@ -594,7 +583,6 @@ mod tests {
         .unwrap();
         std::fs::write(temp.path().join("test.png"), &img_bytes).unwrap();
 
-        use sha2::Digest;
         let hash_val = hex::encode(sha2::Sha256::digest(&img_bytes));
 
         let mut index = WorkspaceIndex::new();
@@ -615,7 +603,7 @@ mod tests {
         // Deliberately do NOT create the blob file.
         // Even though the actual image matches the sha256 in the manifest,
         // status should return modified because the baseline blob is unusable.
-        let res = check_status(&ctx, temp.path()).unwrap();
+        let res = check_status(&ctx).unwrap();
         assert!(!res.is_clean());
         assert_eq!(res.modified.len(), 1);
         assert_eq!(res.modified[0].to_string_lossy(), "test.png");
@@ -632,6 +620,7 @@ mod tests {
         let macos_key = "5:macos-7:aarch64";
 
         let mut ctx = ResolvedContext {
+            base_dir: base_path.to_path_buf(),
             platform: crate::platform::PlatformInfo {
                 os: "linux".to_string(),
                 arch: Some("x86_64".to_string()),
@@ -717,9 +706,104 @@ screenshots:
         .unwrap();
         l_t1.save(linux_manifests.join("t1.json")).unwrap();
 
-        let status = check_status(&ctx, base_path).unwrap();
+        let status = check_status(&ctx).unwrap();
         assert_eq!(status.added, vec![PathBuf::from("t3.png")]);
         assert!(status.modified.is_empty());
         assert_eq!(status.deleted, vec![PathBuf::from("t4.png")]);
+    }
+
+    #[test]
+    fn test_status_with_masks_matching_and_differing() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        let ctx_temp = ResolvedContext::default();
+
+        let platform_key = ctx_temp.platform.to_key().unwrap();
+        let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
+        let blobs_dir = gleon_dir.join("blobs").join("sha256");
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+        std::fs::create_dir_all(&blobs_dir).unwrap();
+
+        // Create a 10x10 white image for baseline
+        let mut baseline_img = image::RgbaImage::new(10, 10);
+        for pixel in baseline_img.pixels_mut() {
+            *pixel = image::Rgba([255, 255, 255, 255]);
+        }
+        let baseline_path = temp.path().join("baseline.png");
+        baseline_img.save(&baseline_path).unwrap();
+        let baseline_bytes = std::fs::read(&baseline_path).unwrap();
+        let (baseline_hash, ..) = crate::ops::common::hash_and_measure(&baseline_bytes).unwrap();
+
+        // Save blob in blobs_dir
+        std::fs::write(blobs_dir.join(&baseline_hash), &baseline_bytes).unwrap();
+
+        let mut index = WorkspaceIndex::new();
+        index
+            .save_test(
+                &manifests_dir,
+                "test1",
+                &crate::manifest::SingleTestManifest {
+                    schema_version: 1,
+                    hash: crate::manifest::ImageHash::new("sha256", &baseline_hash).unwrap(),
+                    phash: crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap(),
+                    width: 10,
+                    height: 10,
+                },
+            )
+            .unwrap();
+
+        index
+            .save_test(
+                &manifests_dir,
+                "test2",
+                &crate::manifest::SingleTestManifest {
+                    schema_version: 1,
+                    hash: crate::manifest::ImageHash::new("sha256", &baseline_hash).unwrap(),
+                    phash: crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap(),
+                    width: 10,
+                    height: 10,
+                },
+            )
+            .unwrap();
+
+        // Actual test1: 10x10 white image, but pixel (0, 0) is black.
+        // With mask at (0, 0, 1, 1), they become equal after mask!
+        let mut actual_img1 = baseline_img.clone();
+        actual_img1.put_pixel(0, 0, image::Rgba([0, 0, 0, 255]));
+        actual_img1.save(temp.path().join("test1.png")).unwrap();
+
+        // Actual test2: 10x10 white image, but pixel (9, 9) is black.
+        // With mask at (0, 0, 1, 1), they STILL DIFFER after mask!
+        let mut actual_img2 = baseline_img;
+        actual_img2.put_pixel(9, 9, image::Rgba([0, 0, 0, 255]));
+        actual_img2.save(temp.path().join("test2.png")).unwrap();
+
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            config: Some(crate::config::GleonConfig {
+                screenshots: vec![crate::config::ScreenshotRule {
+                    include: vec![crate::config::GlobPattern::new("**/*.png").unwrap()],
+                    mode: crate::config::Mode::Pixel,
+                    diff: crate::config::DiffConfig::default(),
+                    masks: vec![crate::config::MaskRule {
+                        path: crate::config::GlobPattern::new("**/*.png").unwrap(),
+                        zones: vec![crate::config::Zone {
+                            x: 0,
+                            y: 0,
+                            width: crate::config::Dimension::Pixels(1),
+                            height: crate::config::Dimension::Pixels(1),
+                        }],
+                    }],
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let report = check_status(&ctx).unwrap();
+        // test1 is masked so unchanged
+        assert!(!report.modified.contains(&PathBuf::from("test1.png")));
+        // test2 still differs so modified
+        assert!(report.modified.contains(&PathBuf::from("test2.png")));
     }
 }

@@ -1,44 +1,71 @@
-use crate::cli::Cli;
 use crate::config::{ConfigError, GleonConfig};
-use crate::platform::{PlatformEnv, PlatformError, PlatformInfo, PlatformResolver};
+use crate::platform::{
+    PlatformEnv, PlatformError, PlatformInfo, PlatformOverrides, PlatformResolver,
+};
 
+/// Errors that can occur while resolving a `ResolvedContext` from CLI arguments.
 #[derive(Debug, thiserror::Error)]
 pub enum ContextError {
+    /// Loading or parsing the `gleon.yaml` configuration file failed.
     #[error("Configuration error: {0}")]
     Config(#[from] ConfigError),
+    /// Resolving the platform identity failed.
     #[error("Platform error: {0}")]
     Platform(#[from] PlatformError),
+    /// Resolving the current Git branch failed with a non-recoverable error.
     #[error("Git error: {0}")]
     Git(#[from] crate::git::GitError),
 }
 
-/// Traverses parent directories starting from `start_dir` to find `gleon.yaml`.
-/// Mutates the path in-place using `pop()` to avoid heap allocations.
+/// Traverses parent directories starting from `start_dir` to find `.gleon/gleon.yaml`.
+///
 /// Returns `Some((config_path, root_dir))` if found, or `None` if not found.
+#[must_use]
 pub fn find_config_and_root(
     start_dir: &std::path::Path,
 ) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
-    let mut current = start_dir.to_path_buf();
-    loop {
-        let candidate = current.join(".gleon").join("gleon.yaml");
-        if candidate.is_file() {
-            return Some((candidate, current));
-        }
-        if !current.pop() {
-            break;
-        }
-    }
-    None
+    let paths = crate::paths::find_workspace_root(start_dir, |p| p.config_file().is_file())?;
+    Some((paths.config_file(), paths.base_dir().to_path_buf()))
 }
 
-#[derive(Debug)]
+/// Platform/branch/config overrides used to resolve a [`ResolvedContext`], independent of any
+/// CLI argument-parsing library.
+#[derive(Debug, Clone, Default)]
+pub struct ContextOptions {
+    /// Explicit path to a `gleon.yaml` configuration file, bypassing directory discovery.
+    pub config_path: Option<std::path::PathBuf>,
+    /// OS platform override.
+    pub os: Option<String>,
+    /// CPU architecture platform override.
+    pub arch: Option<String>,
+    /// Renderer platform override.
+    pub renderer: Option<String>,
+    /// Additional platform isolation labels.
+    pub labels: Vec<(String, String)>,
+    /// Opaque platform override string.
+    pub platform: Option<String>,
+    /// Branch name override.
+    pub branch: Option<String>,
+    /// Target branch to compare against; empty/whitespace-only is treated as `"main"`.
+    pub target_branch: String,
+}
+
+/// Fully resolved runtime context for a `gleon` command invocation,
+/// combining CLI arguments, discovered configuration, platform identity, and Git state.
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ResolvedContext {
+    /// The loaded `gleon.yaml` configuration, or `None` if none was found.
     pub config: Option<GleonConfig>,
+    /// The resolved platform identity used for baseline isolation.
     pub platform: PlatformInfo,
+    /// The resolved fallback platform key, if a fallback platform was configured.
     pub fallback_platform_key: Option<String>,
+    /// The resolved current branch name.
     pub branch: String,
+    /// The resolved target branch name to compare against.
     pub target_branch: String,
+    /// The resolved repository/configuration root directory.
     pub base_dir: std::path::PathBuf,
 }
 
@@ -61,35 +88,51 @@ impl Default for ResolvedContext {
 }
 
 impl ResolvedContext {
-    pub fn from_cli(cli: &Cli, base_dir: &std::path::Path) -> Result<Self, ContextError> {
-        let env = PlatformEnv::from_env();
-        Self::from_cli_impl(cli, base_dir, &crate::git::OsEnv, &env)
+    /// Builds a `ResolvedContext` from resolved options, reading configuration from disk
+    /// and platform/environment variables from the real OS process environment.
+    ///
+    /// # Errors
+    /// Returns `ContextError::Config` if the `gleon.yaml` configuration fails to load
+    /// or parse, `ContextError::Platform` if the platform identity cannot be resolved,
+    /// or `ContextError::Git` if the current branch name is invalid.
+    pub fn from_options(
+        options: &ContextOptions,
+        base_dir: &std::path::Path,
+    ) -> Result<Self, ContextError> {
+        Self::resolve(options, base_dir, &crate::env::OsEnv)
     }
 
-    pub fn from_cli_with_env(
-        cli: &Cli,
+    /// Builds a `ResolvedContext` from resolved options using an injectable `EnvProvider`,
+    /// allowing environment variables to be mocked in tests.
+    ///
+    /// # Errors
+    /// Returns `ContextError::Config` if the `gleon.yaml` configuration fails to load
+    /// or parse, `ContextError::Platform` if the platform identity or fallback platform
+    /// cannot be resolved, or `ContextError::Git` if the current branch name is invalid.
+    pub fn resolve(
+        options: &ContextOptions,
         base_dir: &std::path::Path,
-        env: &dyn crate::git::EnvProvider,
+        env_provider: &dyn crate::env::EnvProvider,
     ) -> Result<Self, ContextError> {
-        let platform_env = PlatformEnv::from_provider(env);
-        Self::from_cli_impl(cli, base_dir, env, &platform_env)
-    }
+        let platform_env = PlatformEnv::from_provider(env_provider);
 
-    pub fn from_cli_impl(
-        cli: &Cli,
-        base_dir: &std::path::Path,
-        env_provider: &dyn crate::git::EnvProvider,
-        platform_env: &PlatformEnv,
-    ) -> Result<Self, ContextError> {
-        let (config, resolved_base_dir) = if let Some(ref path) = cli.config {
+        let (config, resolved_base_dir) = if let Some(ref path) = options.config_path {
             tracing::debug!(
                 "Loading configuration from explicitly provided path: {:?}",
                 path
             );
-            let cfg = GleonConfig::load_from_file(path)?;
-            let root = find_config_and_root(base_dir)
-                .map(|(_, r)| r)
-                .unwrap_or_else(|| base_dir.to_path_buf());
+            let resolved_path = if path.is_absolute() {
+                path.clone()
+            } else {
+                base_dir.join(path)
+            };
+            let cfg = GleonConfig::load_from_file(&resolved_path)?;
+            let config_dir = resolved_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."));
+            let root = crate::paths::find_workspace_root(config_dir, |p| p.gleon_dir().is_dir())
+                .or_else(|| crate::paths::find_workspace_root(base_dir, |p| p.gleon_dir().is_dir()))
+                .map_or_else(|| base_dir.to_path_buf(), |p| p.base_dir().to_path_buf());
             (Some(cfg), root)
         } else if let Some((config_path, root_dir)) = find_config_and_root(base_dir) {
             tracing::debug!(
@@ -103,23 +146,24 @@ impl ResolvedContext {
             (None, base_dir.to_path_buf())
         };
 
+        let overrides = PlatformOverrides {
+            os: options.os.as_deref(),
+            arch: options.arch.as_deref(),
+            renderer: options.renderer.as_deref(),
+            labels: &options.labels,
+            platform: options.platform.as_deref(),
+        };
         let platform = PlatformResolver::resolve(
-            cli.os.as_deref(),
-            cli.arch.as_deref(),
-            cli.renderer.as_deref(),
-            &cli.labels,
-            cli.platform.as_deref(),
-            platform_env,
+            &overrides,
+            &platform_env,
             config.as_ref().and_then(|c| c.platform.as_ref()),
         )?;
 
         let fallback_platform_key = if let Some(ref fb_env) = platform_env.fallback_platform {
-            let plat_cfg =
-                if let Ok(fields) = crate::platform::PlatformFields::parse_key_value(fb_env) {
-                    crate::platform::PlatformConfig::Structured(fields)
-                } else {
-                    crate::platform::PlatformConfig::Opaque(fb_env.clone())
-                };
+            let plat_cfg = crate::platform::PlatformFields::parse_key_value(fb_env).map_or_else(
+                |_| crate::platform::PlatformConfig::Opaque(fb_env.clone()),
+                crate::platform::PlatformConfig::Structured,
+            );
             Some(plat_cfg.to_key().map_err(ContextError::Platform)?)
         } else if let Some(ref cfg) = config {
             cfg.fallback_platform
@@ -131,7 +175,7 @@ impl ResolvedContext {
         };
 
         let branch = match crate::git::GitResolver::resolve_branch_impl(
-            cli.branch.as_deref(),
+            options.branch.as_deref(),
             &resolved_base_dir,
             env_provider,
         ) {
@@ -148,10 +192,10 @@ impl ResolvedContext {
             }
         };
 
-        let target_branch = if cli.target_branch.trim().is_empty() {
+        let target_branch = if options.target_branch.trim().is_empty() {
             "main".to_string()
         } else {
-            cli.target_branch.clone()
+            options.target_branch.clone()
         };
 
         Ok(Self {
@@ -166,17 +210,33 @@ impl ResolvedContext {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
-    use crate::cli::Commands;
     use std::fs::File;
     use std::io::Write;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     struct EmptyEnv;
-    impl crate::git::EnvProvider for EmptyEnv {
+    impl crate::env::EnvProvider for EmptyEnv {
         fn get_var(&self, _key: &str) -> Option<String> {
             None
+        }
+    }
+
+    struct MapEnv(std::collections::HashMap<&'static str, &'static str>);
+    impl crate::env::EnvProvider for MapEnv {
+        fn get_var(&self, key: &str) -> Option<String> {
+            self.0.get(key).map(|v| (*v).to_string())
         }
     }
 
@@ -200,51 +260,79 @@ mod tests {
         )
         .unwrap();
 
-        let cli = Cli {
-            branch: None,
+        let options = ContextOptions {
             target_branch: "develop".to_string(),
-            os: None,
-            arch: None,
-            renderer: None,
-            labels: vec![],
-            platform: None,
-            verbose: false,
-            quiet: false,
-            config: Some(config_path),
-            strict: false,
-            command: Commands::Status { json: false },
+            config_path: Some(config_path),
+            ..Default::default()
         };
 
-        let context =
-            ResolvedContext::from_cli_impl(&cli, dir.path(), &EmptyEnv, &PlatformEnv::default())
-                .unwrap();
+        let context = ResolvedContext::resolve(&options, dir.path(), &EmptyEnv).unwrap();
         assert!(context.config.is_some());
         assert_eq!(context.branch, "main");
         assert_eq!(context.target_branch, "develop");
     }
 
     #[test]
+    fn test_from_cli_with_relative_config_path() {
+        let dir = tempdir().unwrap();
+        create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
+        let sub_dir = dir.path().join("configs");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        let config_file = sub_dir.join("custom.yaml");
+        let mut file = File::create(&config_file).unwrap();
+        writeln!(
+            file,
+            "required_version: \">=0.1.0\"\nscreenshots:\n  - include: \"*.png\""
+        )
+        .unwrap();
+
+        let relative_path = PathBuf::from("configs/custom.yaml");
+        let options = ContextOptions {
+            config_path: Some(relative_path),
+            ..Default::default()
+        };
+
+        let context = ResolvedContext::resolve(&options, dir.path(), &EmptyEnv).unwrap();
+        assert!(context.config.is_some());
+    }
+
+    #[test]
+    fn test_resolve_derives_base_dir_from_explicit_config_path() {
+        let external_dir = tempdir().unwrap();
+        let unrelated_dir = tempdir().unwrap();
+        create_mock_git_repo(external_dir.path(), "ref: refs/heads/feature\n");
+
+        let gleon_dir = external_dir.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+        let config_path = gleon_dir.join("gleon.yaml");
+        let mut file = File::create(&config_path).unwrap();
+        writeln!(
+            file,
+            "required_version: \">=0.1.0\"\nscreenshots:\n  - include: \"*.png\""
+        )
+        .unwrap();
+
+        let options = ContextOptions {
+            config_path: Some(config_path),
+            ..Default::default()
+        };
+
+        // Pass unrelated_dir as the base_dir argument; resolve must derive base_dir from config_path's root.
+        let context = ResolvedContext::resolve(&options, unrelated_dir.path(), &EmptyEnv).unwrap();
+        assert_eq!(context.base_dir, external_dir.path());
+        assert_eq!(context.branch, "feature");
+    }
+
+    #[test]
     fn test_from_cli_no_config_no_default_file() {
         let dir = tempdir().unwrap();
         create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
-        let cli = Cli {
-            branch: None,
+        let options = ContextOptions {
             target_branch: "develop".to_string(),
-            os: None,
-            arch: None,
-            renderer: None,
-            labels: vec![],
-            platform: None,
-            verbose: false,
-            quiet: false,
-            config: None,
-            strict: false,
-            command: Commands::Status { json: false },
+            ..Default::default()
         };
 
-        let context =
-            ResolvedContext::from_cli_impl(&cli, dir.path(), &EmptyEnv, &PlatformEnv::default())
-                .unwrap();
+        let context = ResolvedContext::resolve(&options, dir.path(), &EmptyEnv).unwrap();
         assert!(context.config.is_none());
         assert_eq!(context.branch, "main");
         assert_eq!(context.target_branch, "develop");
@@ -264,24 +352,12 @@ mod tests {
         )
         .unwrap();
 
-        let cli = Cli {
-            branch: None,
+        let options = ContextOptions {
             target_branch: "develop".to_string(),
-            os: None,
-            arch: None,
-            renderer: None,
-            labels: vec![],
-            platform: None,
-            verbose: false,
-            quiet: false,
-            config: None,
-            strict: false,
-            command: Commands::Status { json: false },
+            ..Default::default()
         };
 
-        let context =
-            ResolvedContext::from_cli_impl(&cli, dir.path(), &EmptyEnv, &PlatformEnv::default())
-                .unwrap();
+        let context = ResolvedContext::resolve(&options, dir.path(), &EmptyEnv).unwrap();
         assert!(context.config.is_some());
         assert_eq!(context.branch, "main");
         assert_eq!(context.target_branch, "develop");
@@ -291,21 +367,14 @@ mod tests {
     fn test_from_cli_production_wrapper() {
         let dir = tempdir().unwrap();
         create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
-        let cli = Cli {
+        let options = ContextOptions {
             branch: Some("main".to_string()),
             target_branch: "develop".to_string(),
             os: Some("linux".to_string()),
             arch: Some("x86_64".to_string()),
-            renderer: None,
-            labels: vec![],
-            platform: None,
-            verbose: false,
-            quiet: false,
-            config: None,
-            strict: false,
-            command: Commands::Status { json: false },
+            ..Default::default()
         };
-        let context = ResolvedContext::from_cli(&cli, dir.path()).unwrap();
+        let context = ResolvedContext::from_options(&options, dir.path()).unwrap();
         assert_eq!(context.branch, "main");
     }
 
@@ -314,53 +383,23 @@ mod tests {
         let dir = tempdir().unwrap();
 
         // 1. Platform resolver error
-        let cli_platform_err = Cli {
+        let options_platform_err = ContextOptions {
             branch: Some("main".to_string()),
             target_branch: "develop".to_string(),
-            os: None,
-            arch: None,
-            renderer: None,
-            labels: vec![],
             platform: Some("custom-opaque".to_string()),
-            verbose: false,
-            quiet: false,
-            config: None,
-            strict: false,
-            command: Commands::Status { json: false },
-        };
-        let platform_env_conflict = PlatformEnv {
-            os: Some("linux".to_string()),
             ..Default::default()
         };
-        let result = ResolvedContext::from_cli_impl(
-            &cli_platform_err,
-            dir.path(),
-            &EmptyEnv,
-            &platform_env_conflict,
-        );
+        let env_conflict = MapEnv(std::collections::HashMap::from([("GLEON_OS", "linux")]));
+        let result = ResolvedContext::resolve(&options_platform_err, dir.path(), &env_conflict);
         assert!(result.is_err());
 
         // 2. Git resolver error propagation (invalid branch name is returned as Err)
-        let cli_git_err = Cli {
+        let options_git_err = ContextOptions {
             branch: Some("invalid branch name space".to_string()),
             target_branch: "develop".to_string(),
-            os: None,
-            arch: None,
-            renderer: None,
-            labels: vec![],
-            platform: None,
-            verbose: false,
-            quiet: false,
-            config: None,
-            strict: false,
-            command: Commands::Status { json: false },
+            ..Default::default()
         };
-        let result = ResolvedContext::from_cli_impl(
-            &cli_git_err,
-            dir.path(),
-            &EmptyEnv,
-            &PlatformEnv::default(),
-        );
+        let result = ResolvedContext::resolve(&options_git_err, dir.path(), &EmptyEnv);
         assert!(matches!(
             result,
             Err(ContextError::Git(crate::git::GitError::InvalidBranchName(
@@ -382,25 +421,10 @@ mod tests {
         let yaml_content = "required_version: \">=0.1.0\"\nscreenshots:\n  - include: \"*.png\"";
         std::fs::write(&config_path, yaml_content).unwrap();
 
-        let cli = Cli {
-            branch: None,
-            target_branch: "main".to_string(),
-            os: None,
-            arch: None,
-            renderer: None,
-            labels: vec![],
-            platform: None,
-            verbose: false,
-            quiet: false,
-            config: None,
-            strict: false,
-            command: Commands::Status { json: false },
-        };
+        let options = ContextOptions::default();
 
         // Call from nested_dir
-        let ctx =
-            ResolvedContext::from_cli_impl(&cli, &nested_dir, &EmptyEnv, &PlatformEnv::default())
-                .unwrap();
+        let ctx = ResolvedContext::resolve(&options, &nested_dir, &EmptyEnv).unwrap();
 
         assert!(ctx.config.is_some());
         assert_eq!(ctx.base_dir, root_dir);
@@ -415,23 +439,9 @@ mod tests {
         let config_path = gleon_dir.join("gleon.yaml");
         std::fs::write(&config_path, "invalid_yaml: : : [bad syntax]").unwrap();
 
-        let cli = Cli {
-            branch: None,
-            target_branch: "main".to_string(),
-            os: None,
-            arch: None,
-            renderer: None,
-            labels: vec![],
-            platform: None,
-            verbose: false,
-            quiet: false,
-            config: None,
-            strict: false,
-            command: Commands::Status { json: false },
-        };
+        let options = ContextOptions::default();
 
-        let result =
-            ResolvedContext::from_cli_impl(&cli, root_dir, &EmptyEnv, &PlatformEnv::default());
+        let result = ResolvedContext::resolve(&options, root_dir, &EmptyEnv);
 
         assert!(result.is_err());
         assert!(matches!(result, Err(ContextError::Config(_))));
@@ -447,36 +457,21 @@ mod tests {
         let yaml_content = "required_version: \">=0.1.0\"\nfallback_platform:\n  os: linux\n  arch: x86_64\nscreenshots:\n  - include: \"*.png\"";
         std::fs::write(&config_path, yaml_content).unwrap();
 
-        let cli = Cli {
-            branch: None,
-            target_branch: "main".to_string(),
-            os: None,
-            arch: None,
-            renderer: None,
-            labels: vec![],
-            platform: None,
-            verbose: false,
-            quiet: false,
-            config: None,
-            strict: false,
-            command: Commands::Status { json: false },
-        };
+        let options = ContextOptions::default();
 
         // 1. Resolve from config
-        let ctx =
-            ResolvedContext::from_cli_impl(&cli, root_dir, &EmptyEnv, &PlatformEnv::default())
-                .unwrap();
+        let ctx = ResolvedContext::resolve(&options, root_dir, &EmptyEnv).unwrap();
         assert_eq!(
             ctx.fallback_platform_key.as_deref(),
             Some("5:linux-6:x86_64")
         );
 
         // 2. Resolve from env (overrides config)
-        let env = PlatformEnv {
-            fallback_platform: Some("macos-aarch64".to_string()),
-            ..Default::default()
-        };
-        let ctx_env = ResolvedContext::from_cli_impl(&cli, root_dir, &EmptyEnv, &env).unwrap();
+        let env = MapEnv(std::collections::HashMap::from([(
+            "GLEON_FALLBACK_PLATFORM",
+            "macos-aarch64",
+        )]));
+        let ctx_env = ResolvedContext::resolve(&options, root_dir, &env).unwrap();
         assert_eq!(
             ctx_env.fallback_platform_key.as_deref(),
             Some("5:macos-7:aarch64")
@@ -497,28 +492,14 @@ mod tests {
         let temp = tempdir().unwrap();
         let root_dir = temp.path();
 
-        let cli = Cli {
-            os: None,
-            arch: None,
-            renderer: None,
-            labels: vec![],
-            platform: None,
-            branch: None,
-            target_branch: "main".to_string(),
-            verbose: false,
-            quiet: false,
-            config: None,
-            strict: false,
-            command: Commands::Status { json: false },
-        };
+        let options = ContextOptions::default();
 
         // Invalid fallback in env
-        let env_invalid = PlatformEnv {
-            fallback_platform: Some("INVALID/OS".to_string()),
-            ..Default::default()
-        };
-        let err =
-            ResolvedContext::from_cli_impl(&cli, root_dir, &EmptyEnv, &env_invalid).unwrap_err();
+        let env_invalid = MapEnv(std::collections::HashMap::from([(
+            "GLEON_FALLBACK_PLATFORM",
+            "INVALID/OS",
+        )]));
+        let err = ResolvedContext::resolve(&options, root_dir, &env_invalid).unwrap_err();
         assert!(matches!(err, ContextError::Platform(_)));
 
         // Invalid fallback in config
@@ -534,13 +515,11 @@ mod tests {
         let yaml_str = serde_yaml::to_string(&invalid_cfg).unwrap();
         std::fs::write(&config_path, yaml_str).unwrap();
 
-        let cli_cfg = Cli {
-            config: Some(config_path),
-            ..cli
+        let options_cfg = ContextOptions {
+            config_path: Some(config_path),
+            ..options
         };
-        let err_cfg =
-            ResolvedContext::from_cli_impl(&cli_cfg, root_dir, &EmptyEnv, &PlatformEnv::default())
-                .unwrap_err();
+        let err_cfg = ResolvedContext::resolve(&options_cfg, root_dir, &EmptyEnv).unwrap_err();
         assert!(matches!(
             err_cfg,
             ContextError::Config(_) | ContextError::Platform(_)
@@ -552,49 +531,23 @@ mod tests {
         let temp = tempdir().unwrap();
         let root_dir = temp.path();
 
-        let make_cli = |tb: &str| Cli {
-            os: None,
-            arch: None,
-            renderer: None,
-            labels: vec![],
-            platform: None,
-            branch: None,
+        let make_options = |tb: &str| ContextOptions {
             target_branch: tb.to_string(),
-            verbose: false,
-            quiet: false,
-            config: None,
-            strict: false,
-            command: Commands::Status { json: false },
+            ..Default::default()
         };
 
         // Empty string defaults to "main"
-        let ctx_empty = ResolvedContext::from_cli_impl(
-            &make_cli(""),
-            root_dir,
-            &EmptyEnv,
-            &PlatformEnv::default(),
-        )
-        .unwrap();
+        let ctx_empty = ResolvedContext::resolve(&make_options(""), root_dir, &EmptyEnv).unwrap();
         assert_eq!(ctx_empty.target_branch, "main");
 
         // Whitespace-only defaults to "main"
-        let ctx_spaces = ResolvedContext::from_cli_impl(
-            &make_cli("   "),
-            root_dir,
-            &EmptyEnv,
-            &PlatformEnv::default(),
-        )
-        .unwrap();
+        let ctx_spaces =
+            ResolvedContext::resolve(&make_options("   "), root_dir, &EmptyEnv).unwrap();
         assert_eq!(ctx_spaces.target_branch, "main");
 
         // Explicit non-empty target branch retained
-        let ctx_develop = ResolvedContext::from_cli_impl(
-            &make_cli("develop"),
-            root_dir,
-            &EmptyEnv,
-            &PlatformEnv::default(),
-        )
-        .unwrap();
+        let ctx_develop =
+            ResolvedContext::resolve(&make_options("develop"), root_dir, &EmptyEnv).unwrap();
         assert_eq!(ctx_develop.target_branch, "develop");
     }
 }

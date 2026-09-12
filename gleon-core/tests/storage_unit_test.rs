@@ -1,4 +1,14 @@
-//! Unit tests for ObjectStoreAdapter using memory:// storage backend.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    missing_docs
+)]
+//! Unit tests for `ObjectStoreAdapter` using memory:// storage backend.
 
 #![cfg(not(miri))]
 
@@ -116,8 +126,7 @@ async fn test_adapter_download_io_errors() {
 
     assert!(
         matches!(err, Err(StorageError::Io { .. })),
-        "Expected Io error: {:?}",
-        err
+        "Expected Io error: {err:?}"
     );
 }
 

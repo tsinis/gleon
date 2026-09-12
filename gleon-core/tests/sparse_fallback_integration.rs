@@ -1,9 +1,19 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    missing_docs
+)]
 //! End-to-end integration test verifying sparse multi-platform fallback baselines.
 //!
 //! Tests the full multi-platform lifecycle:
 //! 1. Seed base screenshots on macOS (3 tests).
 //! 2. Push baselines to remote storage adapter.
-//! 3. Switch to Linux with fallback_platform: macos.
+//! 3. Switch to Linux with `fallback_platform`: macos.
 //! 4. Modify test1 on Linux, verify diff passes test2 and test3 from macOS fallback and flags test1 as Mismatch.
 //! 5. Approve test1 on Linux (creates 1 sparse override on Linux).
 //! 6. Verify status is clean and diff passes with 1 Linux override + 2 macOS fallbacks.
@@ -85,12 +95,14 @@ screenshots:
     macos_ctx.platform = macos_platform;
     macos_ctx.fallback_platform_key = None;
     macos_ctx.config = Some(config.clone());
+    macos_ctx.base_dir = base_path.to_path_buf();
 
     #[allow(clippy::field_reassign_with_default)]
     let mut linux_ctx = ResolvedContext::default();
     linux_ctx.platform = linux_platform;
     linux_ctx.fallback_platform_key = Some(macos_key.clone());
     linux_ctx.config = Some(config);
+    linux_ctx.base_dir = base_path.to_path_buf();
 
     // Create goldens directory with 3 screenshot files
     let goldens_dir = base_path.join("test").join("goldens");
@@ -107,10 +119,10 @@ screenshots:
     // -------------------------------------------------------------------------
     // Step 1: Stage on macOS & push to storage
     // -------------------------------------------------------------------------
-    let stage_res = stage_workspace(&macos_ctx, base_path, None).unwrap();
+    let stage_res = stage_workspace(&macos_ctx, None).unwrap();
     assert_eq!(stage_res.total_screenshots_staged, 3);
 
-    let push_res = push_blobs(&macos_ctx, base_path, Some(&storage_cfg), false, None)
+    let push_res = push_blobs(&macos_ctx, Some(&storage_cfg), false, None)
         .await
         .unwrap();
     assert_eq!(push_res.uploaded_blobs, 3);
@@ -127,7 +139,7 @@ screenshots:
     std::fs::write(goldens_dir.join("t1.png"), &png_t1_linux).unwrap();
 
     // Run diff on Linux: t2 and t3 should succeed via macOS fallback, t1 should mismatch
-    let diff_1 = run_diff(&linux_ctx, base_path).unwrap();
+    let diff_1 = run_diff(&linux_ctx).unwrap();
     assert_eq!(diff_1.total_tests, 3);
     assert_eq!(diff_1.failed_tests, 1);
     assert!(!diff_1.passed);
@@ -135,7 +147,7 @@ screenshots:
     // -------------------------------------------------------------------------
     // Step 3: Approve t1 on Linux
     // -------------------------------------------------------------------------
-    let approve_res = approve_workspace(&linux_ctx, base_path, &[], None).unwrap();
+    let approve_res = approve_workspace(&linux_ctx, &[], None).unwrap();
     assert_eq!(approve_res.total_approved, 1);
     assert_eq!(
         approve_res.approved_test_cases,
@@ -149,7 +161,7 @@ screenshots:
     assert!(!linux_manifests_dir.join("test/goldens/t3.json").exists());
 
     // Push Linux override blob to remote storage
-    let push_res_linux = push_blobs(&linux_ctx, base_path, Some(&storage_cfg), false, None)
+    let push_res_linux = push_blobs(&linux_ctx, Some(&storage_cfg), false, None)
         .await
         .unwrap();
     assert_eq!(push_res_linux.uploaded_blobs, 1);
@@ -157,10 +169,10 @@ screenshots:
     // -------------------------------------------------------------------------
     // Step 4: Verify status and diff on Linux are clean & passing
     // -------------------------------------------------------------------------
-    let status_res = check_status(&linux_ctx, base_path).unwrap();
+    let status_res = check_status(&linux_ctx).unwrap();
     assert!(status_res.is_clean());
 
-    let diff_2 = run_diff(&linux_ctx, base_path).unwrap();
+    let diff_2 = run_diff(&linux_ctx).unwrap();
     assert_eq!(diff_2.total_tests, 3);
     assert_eq!(diff_2.failed_tests, 0);
     assert!(diff_2.passed);
@@ -183,8 +195,12 @@ screenshots:
     // Copy current workspace screenshots to runner
     copy_dir_recursive(&base_path.join("test"), &runner_base.join("test"));
 
+    // Same platform/config as linux_ctx, but rooted at the runner's checkout directory.
+    let mut runner_ctx = linux_ctx.clone();
+    runner_ctx.base_dir = runner_base.to_path_buf();
+
     // Pull blobs on runner
-    let pull_res = pull_blobs(&linux_ctx, runner_base, Some(&storage_cfg), false, None)
+    let pull_res = pull_blobs(&runner_ctx, Some(&storage_cfg), false, None)
         .await
         .unwrap();
     // Must download 3 blobs (1 Linux override + 2 macOS fallbacks)
@@ -192,7 +208,7 @@ screenshots:
     assert_eq!(pull_res.downloaded_blobs, 3);
 
     // Diff on runner must pass completely
-    let diff_runner = run_diff(&linux_ctx, runner_base).unwrap();
+    let diff_runner = run_diff(&runner_ctx).unwrap();
     assert_eq!(diff_runner.total_tests, 3);
     assert_eq!(diff_runner.failed_tests, 0);
     assert!(diff_runner.passed);
@@ -203,22 +219,22 @@ screenshots:
     std::fs::write(goldens_dir.join("t1.png"), &png_t1_macos).unwrap();
 
     // Diff fails against Linux override (because override was orange, now red)
-    let diff_3 = run_diff(&linux_ctx, base_path).unwrap();
+    let diff_3 = run_diff(&linux_ctx).unwrap();
     assert_eq!(diff_3.failed_tests, 1);
 
     // Approve on Linux: since new image matches macOS fallback baseline, override is pruned
-    let approve_2 = approve_workspace(&linux_ctx, base_path, &[], None).unwrap();
+    let approve_2 = approve_workspace(&linux_ctx, &[], None).unwrap();
     assert_eq!(approve_2.total_approved, 1);
 
     // Linux override manifest must now be deleted from disk
     assert!(!linux_manifests_dir.join("test/goldens/t1.json").exists());
 
     // Status on Linux is clean
-    let status_clean = check_status(&linux_ctx, base_path).unwrap();
+    let status_clean = check_status(&linux_ctx).unwrap();
     assert!(status_clean.is_clean());
 
     // Diff on Linux passes
-    let diff_4 = run_diff(&linux_ctx, base_path).unwrap();
+    let diff_4 = run_diff(&linux_ctx).unwrap();
     assert_eq!(diff_4.total_tests, 3);
     assert_eq!(diff_4.failed_tests, 0);
     assert!(diff_4.passed);
@@ -229,7 +245,7 @@ screenshots:
     // -------------------------------------------------------------------------
     std::fs::remove_file(goldens_dir.join("t2.png")).unwrap();
 
-    let status_deleted = check_status(&linux_ctx, base_path).unwrap();
+    let status_deleted = check_status(&linux_ctx).unwrap();
     assert_eq!(
         status_deleted.deleted,
         vec![std::path::PathBuf::from("test/goldens/t2.png")]
@@ -239,7 +255,7 @@ screenshots:
     assert!(macos_manifests_dir.join("test/goldens/t2.json").exists());
 
     // Stage on macOS (the fallback source of truth platform): prunes orphan manifest t2.json
-    let stage_macos_orphan = stage_workspace(&macos_ctx, base_path, None).unwrap();
+    let stage_macos_orphan = stage_workspace(&macos_ctx, None).unwrap();
     // t1 and t3 are unchanged, so newly staged count is 0
     assert_eq!(stage_macos_orphan.total_screenshots_staged, 0);
 
@@ -249,7 +265,7 @@ screenshots:
     assert!(macos_manifests_dir.join("test/goldens/t3.json").exists());
 
     // Status on Linux is now completely clean without any deleted tests
-    let status_final = check_status(&linux_ctx, base_path).unwrap();
+    let status_final = check_status(&linux_ctx).unwrap();
     assert!(status_final.is_clean());
 }
 

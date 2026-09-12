@@ -1,8 +1,17 @@
 #![cfg(not(miri))]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    missing_docs
+)]
 
-use gleon_core::cli::{Cli, Commands};
 use gleon_core::config::GleonConfig;
-use gleon_core::context::ResolvedContext;
+use gleon_core::context::{ContextOptions, ResolvedContext};
 use gleon_core::ops::init_workspace;
 use std::fs;
 
@@ -11,10 +20,9 @@ fn test_init_workspace_creates_real_structure_and_valid_config() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli = Cli::for_test(Commands::Init);
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
-    let result = init_workspace(&ctx, base_path).expect("init_workspace should succeed");
+    let result = init_workspace(&ctx).expect("init_workspace should succeed");
 
     assert_eq!(result.gleon_dir, base_path.join(".gleon"));
     let config_path = result.config_created.expect("gleon.yaml should be created");
@@ -43,13 +51,12 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "custom/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(&config_path, custom_yaml).unwrap();
 
-    let cli = Cli::for_test(Commands::Init);
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
-    let result = init_workspace(&ctx, base_path).expect("Second init should succeed");
+    let result = init_workspace(&ctx).expect("Second init should succeed");
 
     assert_eq!(result.config_created, None);
     let loaded_config = GleonConfig::load_from_file(&config_path).unwrap();
@@ -64,23 +71,16 @@ fn test_init_workspace_honors_cli_overrides() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli = Cli {
+    let options = ContextOptions {
         branch: Some("feature/login".to_string()),
         os: Some("custom-os".to_string()),
         arch: Some("custom-arch".to_string()),
-        renderer: None,
         labels: vec![("theme".to_string(), "dark".to_string())],
-        platform: None,
-        verbose: false,
-        quiet: false,
-        config: None,
-        strict: false,
-        target_branch: "main".to_string(),
-        command: Commands::Init,
+        ..Default::default()
     };
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&options, base_path).unwrap();
 
-    init_workspace(&ctx, base_path).expect("init_workspace should succeed");
+    init_workspace(&ctx).expect("init_workspace should succeed");
 
     let platform_key = ctx.platform.to_key().unwrap();
     assert_eq!(platform_key, "9:custom-os-11:custom-arch-5:theme=4:dark");
@@ -103,10 +103,9 @@ fn test_gitignore_append_no_newline() {
     // Write a .gitignore that lacks a trailing newline
     fs::write(&gitignore_path, "node_modules").unwrap();
 
-    let cli = Cli::for_test(Commands::Init);
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
-    init_workspace(&ctx, base_path).unwrap();
+    init_workspace(&ctx).unwrap();
 
     let content = fs::read_to_string(&gitignore_path).unwrap();
     assert!(content.contains("node_modules\nblobs/\n"));
@@ -122,10 +121,9 @@ fn test_env_template_already_exists() {
 
     fs::write(&env_template_path, "EXISTING_VAR=1\n").unwrap();
 
-    let cli = Cli::for_test(Commands::Init);
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
-    init_workspace(&ctx, base_path).unwrap();
+    init_workspace(&ctx).unwrap();
 
     // The .gleon/.env.template shouldn't be overwritten
     let content = fs::read_to_string(&env_template_path).unwrap();

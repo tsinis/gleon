@@ -1,7 +1,16 @@
 #![cfg(not(miri))]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    missing_docs
+)]
 
-use gleon_core::cli::{Cli, Commands};
-use gleon_core::context::ResolvedContext;
+use gleon_core::context::{ContextOptions, ResolvedContext};
 use gleon_core::ops::{DiffOpError, init_workspace, run_diff, stage_workspace};
 use std::fs;
 use std::path::Path;
@@ -11,29 +20,20 @@ fn test_diff_uninitialized_fails() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli = Cli {
+    let options = ContextOptions {
         branch: Some("main".to_string()),
-        os: None,
-        arch: None,
-        renderer: None,
-        labels: vec![],
-        platform: None,
-        verbose: false,
-        quiet: false,
-        config: None,
-        strict: false,
         target_branch: "main".to_string(),
-        command: Commands::Diff {
-            auto_pull: false,
-            resolve: false,
-        },
+        ..Default::default()
     };
 
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
-    let result = run_diff(&ctx, base_path);
+    let ctx = ResolvedContext::from_options(&options, base_path).unwrap();
+    let result = run_diff(&ctx);
 
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), DiffOpError::NotInitialized));
+    assert!(matches!(
+        result.unwrap_err(),
+        DiffOpError::Core(gleon_core::ops::common::CoreError::NotInitialized)
+    ));
 }
 
 #[test]
@@ -41,11 +41,10 @@ fn test_diff_full_flow_with_real_fixtures() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     // 1. Init workspace
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     // 2. Copy real PNG fixture (baseline_100x100.png)
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -64,34 +63,22 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli {
+    let options = ContextOptions {
         branch: Some("main".to_string()),
-        os: None,
-        arch: None,
-        renderer: None,
-        labels: vec![],
-        platform: None,
-        verbose: false,
-        quiet: false,
-        config: None,
-        strict: false,
         target_branch: "main".to_string(),
-        command: Commands::Diff {
-            auto_pull: false,
-            resolve: false,
-        },
+        ..Default::default()
     };
 
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&options, base_path).unwrap();
 
     // 3. Stage initial baseline
-    stage_workspace(&ctx, base_path, None).expect("stage_workspace should succeed");
+    stage_workspace(&ctx, None).expect("stage_workspace should succeed");
 
     // 4. Run diff against identical baseline -> should pass
-    let report_match = run_diff(&ctx, base_path).expect("run_diff should succeed");
+    let report_match = run_diff(&ctx).expect("run_diff should succeed");
     assert!(report_match.passed);
     assert_eq!(report_match.total_tests, 1);
     assert_eq!(report_match.failed_tests, 0);
@@ -102,7 +89,7 @@ screenshots:
     fs::write(&screenshot_file, &modified_png_bytes).unwrap();
 
     // 6. Run diff against modified image -> should report failure
-    let report_mismatch = run_diff(&ctx, base_path).expect("run_diff should succeed");
+    let report_mismatch = run_diff(&ctx).expect("run_diff should succeed");
     assert!(!report_mismatch.passed);
     assert_eq!(report_mismatch.failed_tests, 1);
 
@@ -117,22 +104,16 @@ fn test_diff_from_nested_subdirectory() {
     let temp_dir = tempfile::tempdir().unwrap();
     let root_dir = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, root_dir).unwrap();
-    init_workspace(&ctx_init, root_dir).expect("init_workspace should succeed");
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), root_dir).unwrap();
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     let nested_dir = root_dir.join("src").join("billing");
     fs::create_dir_all(&nested_dir).unwrap();
 
-    let cli = Cli::for_test(Commands::Diff {
-        auto_pull: false,
-        resolve: false,
-    });
-    let ctx = ResolvedContext::from_cli(&cli, &nested_dir).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), &nested_dir).unwrap();
     assert_eq!(ctx.base_dir, root_dir);
 
-    let report =
-        run_diff(&ctx, &ctx.base_dir).expect("run_diff should succeed when using ctx.base_dir");
+    let report = run_diff(&ctx).expect("run_diff should succeed when using ctx.base_dir");
     assert!(report.passed);
 }
 
@@ -141,9 +122,8 @@ fn test_diff_cross_platform_backslash_manifest_keys() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -160,17 +140,13 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli::for_test(Commands::Diff {
-        auto_pull: false,
-        resolve: false,
-    });
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     // Stage baseline
-    stage_workspace(&ctx, base_path, None).expect("stage_workspace should succeed");
+    stage_workspace(&ctx, None).expect("stage_workspace should succeed");
 
     // Explicitly verify backslash-to-forward-slash path key normalization
     let backslash_path = Path::new("billing\\form.png");
@@ -178,7 +154,7 @@ screenshots:
     assert_eq!(normalized, "billing/form.png");
 
     // Run diff -> should handle backslash manifest keys cross-platform!
-    let report = run_diff(&ctx, base_path).expect("run_diff should handle backslash manifest keys");
+    let report = run_diff(&ctx).expect("run_diff should handle backslash manifest keys");
     assert!(report.passed);
     assert_eq!(report.total_tests, 1);
     assert_eq!(report.failed_tests, 0);
@@ -189,9 +165,8 @@ fn test_diff_missing_baseline_returns_missing_baseline() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -207,17 +182,13 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli::for_test(Commands::Diff {
-        auto_pull: false,
-        resolve: false,
-    });
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     // Do NOT stage unstaged.png
-    let report = run_diff(&ctx, base_path).expect("run_diff should run");
+    let report = run_diff(&ctx).expect("run_diff should run");
     assert!(!report.passed);
     assert_eq!(report.total_tests, 1);
     assert_eq!(report.failed_tests, 1);
@@ -234,14 +205,9 @@ screenshots:
 
     // Run approve_workspace using the actual images generated from diff
     let actual_dir = report.runs_dir.join("actual");
-    let cli_approve = Cli::for_test(Commands::Approve {
-        paths: vec![],
-        from: Some(actual_dir.clone()),
-    });
-    let ctx_approve = ResolvedContext::from_cli(&cli_approve, base_path).unwrap();
-    let approve_res =
-        gleon_core::ops::approve_workspace(&ctx_approve, base_path, &[], Some(&actual_dir))
-            .expect("approve_workspace should succeed");
+    let ctx_approve = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    let approve_res = gleon_core::ops::approve_workspace(&ctx_approve, &[], Some(&actual_dir))
+        .expect("approve_workspace should succeed");
     assert_eq!(
         approve_res.total_approved, 1,
         "Should approve 1 missing baseline image"
@@ -263,9 +229,8 @@ fn test_diff_missing_blob_file_and_corrupt_images() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -282,17 +247,13 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli::for_test(Commands::Diff {
-        auto_pull: false,
-        resolve: false,
-    });
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     // Stage baseline
-    stage_workspace(&ctx, base_path, None).expect("stage_workspace should succeed");
+    stage_workspace(&ctx, None).expect("stage_workspace should succeed");
 
     // 1. Remove blob file manually from .gleon/blobs/sha256
     let blobs_dir = base_path.join(".gleon/blobs/sha256");
@@ -311,7 +272,7 @@ screenshots:
     )
     .unwrap();
 
-    let report_missing_blob = run_diff(&ctx, base_path).unwrap();
+    let report_missing_blob = run_diff(&ctx).unwrap();
     assert!(!report_missing_blob.passed);
     let md_missing = fs::read_to_string(report_missing_blob.runs_dir.join("report.md")).unwrap();
     assert!(md_missing.contains("Missing Baseline"));
@@ -334,7 +295,7 @@ screenshots:
         }
     }
 
-    let report_corrupt_blob = run_diff(&ctx, base_path).unwrap();
+    let report_corrupt_blob = run_diff(&ctx).unwrap();
     assert!(!report_corrupt_blob.passed);
     let md_corrupt_blob =
         fs::read_to_string(report_corrupt_blob.runs_dir.join("report.md")).unwrap();
@@ -345,7 +306,7 @@ screenshots:
 
     // 3. Write corrupt actual screenshot file
     fs::write(&screenshot_file, b"not a png").unwrap();
-    let report_corrupt_actual = run_diff(&ctx, base_path).unwrap();
+    let report_corrupt_actual = run_diff(&ctx).unwrap();
     assert!(!report_corrupt_actual.passed);
     let md_corrupt_actual =
         fs::read_to_string(report_corrupt_actual.runs_dir.join("report.md")).unwrap();
@@ -357,9 +318,8 @@ fn test_diff_with_mask_rules_ignores_masked_differences() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -384,17 +344,13 @@ screenshots:
             width: 1
             height: 1
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli::for_test(Commands::Diff {
-        auto_pull: false,
-        resolve: false,
-    });
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     // 1. Stage baseline (applies mask to baseline blob and saves it)
-    stage_workspace(&ctx, base_path, None).expect("stage_workspace should succeed");
+    stage_workspace(&ctx, None).expect("stage_workspace should succeed");
 
     // 2. Replace actual screenshot with image modified ONLY at (50, 50)
     let modified_png_bytes =
@@ -403,7 +359,7 @@ screenshots:
 
     // 3. Run diff -> Mask on actual screenshot masks out the modified pixel (50, 50),
     // baseline is already masked. Comparison must PASS!
-    let report = run_diff(&ctx, base_path).expect("run_diff should succeed");
+    let report = run_diff(&ctx).expect("run_diff should succeed");
     assert!(report.passed);
     assert_eq!(report.total_tests, 1);
     assert_eq!(report.failed_tests, 0);
@@ -414,9 +370,8 @@ fn test_diff_baseline_staged_before_mask_configuration() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -434,21 +389,18 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "unmasked_app/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(
         base_path.join(".gleon").join("gleon.yaml"),
         initial_config_yaml,
     )
     .unwrap();
 
-    let cli = Cli::for_test(Commands::Diff {
-        auto_pull: false,
-        resolve: false,
-    });
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let options = ContextOptions::default();
+    let ctx = ResolvedContext::from_options(&options, base_path).unwrap();
 
     // 2. Stage baseline BEFORE configuring mask (blob on disk is UNMASKED)
-    stage_workspace(&ctx, base_path, None).expect("stage_workspace should succeed");
+    stage_workspace(&ctx, None).expect("stage_workspace should succeed");
 
     // 3. Update config AFTER staging to ADD mask covering pixel (50, 50)
     let masked_config_yaml = r#"
@@ -463,7 +415,7 @@ screenshots:
             width: 1
             height: 1
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(
         base_path.join(".gleon").join("gleon.yaml"),
         masked_config_yaml,
@@ -476,11 +428,11 @@ screenshots:
     fs::write(&screenshot_file, &modified_png_bytes).unwrap();
 
     // Re-resolve context with updated config
-    let ctx_masked = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx_masked = ResolvedContext::from_options(&options, base_path).unwrap();
 
     // 5. Run diff -> baseline blob on disk was unmasked, but run_diff applies the new mask
     // to BOTH baseline_rgba and actual_rgba on the fly. Comparison MUST PASS!
-    let report = run_diff(&ctx_masked, base_path).expect("run_diff should succeed");
+    let report = run_diff(&ctx_masked).expect("run_diff should succeed");
     assert!(report.passed);
     assert_eq!(report.total_tests, 1);
     assert_eq!(report.failed_tests, 0);
@@ -496,16 +448,15 @@ fn test_diff_fallback_platform_integration() {
         .join("fixtures");
 
     // 1. Setup gleon.yaml with fallback_platform
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
-    std::fs::copy(
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::copy(
         fixtures_dir.join("fallback_config.yaml"),
         base_path.join(".gleon").join("gleon.yaml"),
     )
     .unwrap();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
-    init_workspace(&ctx_init, base_path).unwrap();
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    init_workspace(&ctx_init).unwrap();
 
     // 2. Add real screenshot fixture
     let baseline_png_bytes = fs::read(fixtures_dir.join("baseline_100x100.png")).unwrap();
@@ -515,44 +466,35 @@ fn test_diff_fallback_platform_integration() {
     fs::write(screenshot_dir.join("form.png"), &baseline_png_bytes).unwrap();
 
     // 3. Stage screenshot specifically on windows-x86_64 (fallback platform)
-    let cli_stage_windows = Cli {
+    let options_windows = ContextOptions {
         os: Some("windows".to_string()),
         arch: Some("x86_64".to_string()),
-        ..Cli::for_test(Commands::Stage { paths: vec![] })
+        ..Default::default()
     };
-    let ctx_windows = ResolvedContext::from_cli(&cli_stage_windows, base_path).unwrap();
-    let stage_res = stage_workspace(&ctx_windows, base_path, None).unwrap();
+    let ctx_windows = ResolvedContext::from_options(&options_windows, base_path).unwrap();
+    let stage_res = stage_workspace(&ctx_windows, None).unwrap();
     assert_eq!(stage_res.staged_test_cases.len(), 1);
 
     // 4. Run diff on macos-aarch64 (current platform has NO manifests).
-    let cli_diff_macos = Cli {
+    let options_macos = ContextOptions {
         os: Some("macos".to_string()),
         arch: Some("aarch64".to_string()),
-        ..Cli::for_test(Commands::Diff {
-            auto_pull: false,
-            resolve: false,
-        })
+        ..Default::default()
     };
     struct EmptyEnv;
-    impl gleon_core::git::EnvProvider for EmptyEnv {
+    impl gleon_core::env::EnvProvider for EmptyEnv {
         fn get_var(&self, _key: &str) -> Option<String> {
             None
         }
     }
 
-    let ctx_macos = ResolvedContext::from_cli_impl(
-        &cli_diff_macos,
-        base_path,
-        &EmptyEnv,
-        &gleon_core::platform::PlatformEnv::default(),
-    )
-    .unwrap();
+    let ctx_macos = ResolvedContext::resolve(&options_macos, base_path, &EmptyEnv).unwrap();
     assert_eq!(
         ctx_macos.fallback_platform_key.as_deref(),
         Some("7:windows-6:x86_64")
     );
 
-    let diff_res = run_diff(&ctx_macos, base_path).unwrap();
+    let diff_res = run_diff(&ctx_macos).unwrap();
     assert!(diff_res.passed);
     assert_eq!(diff_res.total_tests, 1);
     assert_eq!(diff_res.failed_tests, 0);
@@ -563,9 +505,8 @@ fn test_diff_nested_test_name_directory_creation() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -585,20 +526,16 @@ screenshots:
 "#;
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli::for_test(Commands::Diff {
-        auto_pull: false,
-        resolve: false,
-    });
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     // Stage baseline
-    stage_workspace(&ctx, base_path, None).unwrap();
+    stage_workspace(&ctx, None).unwrap();
 
     // Replace with diff image
     fs::write(&screenshot_file, &diff_bytes).unwrap();
 
     // Run diff -> must create auth/login directory inside runs/latest/diffs/
-    let report = run_diff(&ctx, base_path).unwrap();
+    let report = run_diff(&ctx).unwrap();
     assert!(!report.passed);
     assert_eq!(report.failed_tests, 1);
 
@@ -609,8 +546,7 @@ screenshots:
         .join("diff_form.png");
     assert!(
         expected_diff_file.is_file(),
-        "Diff image must be created at {:?}",
-        expected_diff_file
+        "Diff image must be created at {expected_diff_file:?}"
     );
 }
 
@@ -619,11 +555,10 @@ fn test_diff_missing_baseline_saved_and_approved() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base_path = temp_dir.path();
 
-    let cli_init = Cli::for_test(Commands::Init);
-    let ctx_init = ResolvedContext::from_cli(&cli_init, base_path).unwrap();
+    let ctx_init = ResolvedContext::from_options(&ContextOptions::default(), base_path).unwrap();
 
     // 1. Init workspace
-    init_workspace(&ctx_init, base_path).expect("init_workspace should succeed");
+    init_workspace(&ctx_init).expect("init_workspace should succeed");
 
     // 2. Add an actual image WITHOUT running stage_workspace first, meaning no baseline
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -642,31 +577,19 @@ required_version: ">=0.1.0"
 screenshots:
   - include: "billing/**/*.png"
 "#;
-    std::fs::create_dir_all(base_path.join(".gleon")).unwrap();
+    fs::create_dir_all(base_path.join(".gleon")).unwrap();
     fs::write(base_path.join(".gleon").join("gleon.yaml"), config_yaml).unwrap();
 
-    let cli = Cli {
+    let options = ContextOptions {
         branch: Some("main".to_string()),
-        os: None,
-        arch: None,
-        renderer: None,
-        labels: vec![],
-        platform: None,
-        verbose: false,
-        quiet: false,
-        config: None,
-        strict: false,
         target_branch: "main".to_string(),
-        command: Commands::Diff {
-            auto_pull: false,
-            resolve: false,
-        },
+        ..Default::default()
     };
 
-    let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+    let ctx = ResolvedContext::from_options(&options, base_path).unwrap();
 
     // 3. Run diff -> should fail with MissingBaseline, BUT should save the actual image
-    let report = run_diff(&ctx, base_path).expect("run_diff should succeed");
+    let report = run_diff(&ctx).expect("run_diff should succeed");
     assert!(!report.passed);
     assert_eq!(report.total_tests, 1);
     assert_eq!(report.failed_tests, 1);
@@ -679,8 +602,7 @@ screenshots:
         .join("form.png");
     assert!(
         expected_actual_file.is_file(),
-        "Actual image must be saved for MissingBaseline at {:?}",
-        expected_actual_file
+        "Actual image must be saved for MissingBaseline at {expected_actual_file:?}"
     );
 
     // Verify the content is exactly the same as the original PNG

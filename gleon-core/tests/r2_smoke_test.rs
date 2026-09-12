@@ -1,3 +1,13 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    missing_docs
+)]
 //! Live cloud smoke test for Cloudflare R2 / AWS S3 compatibility.
 //! Runs only when explicitly invoked via `cargo test --test r2_smoke_test -- --ignored`.
 

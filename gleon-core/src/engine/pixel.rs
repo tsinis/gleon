@@ -4,8 +4,13 @@ use image::RgbaImage;
 use rayon::prelude::*;
 
 /// Compares two images of the same dimensions pixel-by-pixel.
+///
 /// Returns the number of mismatched pixels and a composite diff image
 /// where matching areas are darkened and mismatched areas are painted magenta.
+///
+/// # Panics
+/// Panics if `baseline` and `actual` do not have identical dimensions.
+#[must_use]
 pub fn compare_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> (u64, RgbaImage) {
     assert_eq!(
         baseline.dimensions(),
@@ -31,21 +36,24 @@ pub fn compare_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> (u64, RgbaIma
         .zip(a_chunks)
         .zip(d_chunks)
         .map(|((b_chunk, a_chunk), d_chunk)| {
-            if b_chunk != a_chunk {
-                // Magenta: [255, 0, 255, 255]
-                d_chunk.copy_from_slice(&[255, 0, 255, 255]);
-                1u64
-            } else {
+            if b_chunk == a_chunk {
                 // Darken matching pixel: divide R, G, B by 2, keep A
                 d_chunk[0] = b_chunk[0] / 2;
                 d_chunk[1] = b_chunk[1] / 2;
                 d_chunk[2] = b_chunk[2] / 2;
                 d_chunk[3] = b_chunk[3];
                 0u64
+            } else {
+                // Magenta: [255, 0, 255, 255]
+                d_chunk.copy_from_slice(&[255, 0, 255, 255]);
+                1u64
             }
         })
         .sum();
 
+    // `diff_raw` is allocated above as exactly `baseline_raw.len()` bytes, which is always
+    // `width * height * 4` for a valid `RgbaImage`, so `from_raw` can never return `None`.
+    #[allow(clippy::expect_used)]
     let diff_image = RgbaImage::from_raw(width, height, diff_raw)
         .expect("invariant: diff_raw length must be exactly width * height * 4");
 
@@ -53,6 +61,10 @@ pub fn compare_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> (u64, RgbaIma
 }
 
 /// Counts the number of mismatched pixels without allocating a diff image.
+///
+/// # Panics
+/// Panics if `baseline` and `actual` do not have identical dimensions.
+#[must_use]
 pub fn count_mismatched_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> u64 {
     assert_eq!(
         baseline.dimensions(),
@@ -87,6 +99,15 @@ pub fn count_mismatched_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> u64 
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use image::{ImageBuffer, Rgba};
@@ -125,7 +146,7 @@ mod tests {
     fn test_compare_pixels_unequal_dimensions_panics() {
         let img1 = ImageBuffer::from_pixel(10, 10, Rgba([255, 0, 0, 255]));
         let img2 = ImageBuffer::from_pixel(20, 10, Rgba([255, 0, 0, 255]));
-        compare_pixels(&img1, &img2);
+        let _ = compare_pixels(&img1, &img2);
     }
 
     #[test]
@@ -133,6 +154,6 @@ mod tests {
     fn test_count_mismatched_pixels_unequal_dimensions_panics() {
         let img1 = ImageBuffer::from_pixel(10, 10, Rgba([255, 0, 0, 255]));
         let img2 = ImageBuffer::from_pixel(10, 20, Rgba([255, 0, 0, 255]));
-        count_mismatched_pixels(&img1, &img2);
+        let _ = count_mismatched_pixels(&img1, &img2);
     }
 }

@@ -63,11 +63,124 @@ pub fn local_blob_path(
     blobs_root.join(hash.scheme()).join(hash.value())
 }
 
+/// Recovers the [`crate::manifest::ImageHash`] a local blob path was built from by
+/// [`local_blob_path`], i.e. the trailing `<scheme>/<value>` pair.
+///
+/// Returns `None` if `path` doesn't have that shape or the pair fails hash validation, so a
+/// caller can't accidentally treat an arbitrary local file as a content-addressed blob.
+#[must_use]
+pub fn image_hash_from_local_blob_path(
+    path: &std::path::Path,
+) -> Option<crate::manifest::ImageHash> {
+    let value = path.file_name()?.to_str()?;
+    let scheme = path.parent()?.file_name()?.to_str()?;
+    crate::manifest::ImageHash::new(scheme, value).ok()
+}
+
+/// Returns `true` if `hash`'s blob exists under `blobs_root` and is usable.
+///
+/// A convenience for callers that only need the yes/no answer, not the path itself (which
+/// they'd otherwise compute via [`local_blob_path`] just to immediately discard).
+#[must_use]
+pub fn has_usable_local_blob(
+    blobs_root: &std::path::Path,
+    hash: &crate::manifest::ImageHash,
+) -> bool {
+    is_usable_blob(&local_blob_path(blobs_root, hash))
+}
+
 /// Returns `true` only if `path` is an existing regular file and not a symlink.
 #[must_use]
 pub fn is_usable_blob(path: &std::path::Path) -> bool {
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) => !meta.is_symlink() && meta.is_file(),
-        Err(_) => false,
+    std::fs::symlink_metadata(path).is_ok_and(|meta| !meta.is_symlink() && meta.is_file())
+}
+
+#[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
+mod tests {
+    use super::*;
+    use crate::manifest::ImageHash;
+
+    fn sha256(value: &str) -> ImageHash {
+        ImageHash::new("sha256", value).unwrap()
+    }
+
+    #[test]
+    fn test_image_hash_from_local_blob_path_round_trips_local_blob_path() {
+        let root = std::path::Path::new("/workspace/.gleon/blobs");
+        let hash = sha256(&"a".repeat(64));
+        let path = local_blob_path(root, &hash);
+
+        assert_eq!(image_hash_from_local_blob_path(&path), Some(hash));
+    }
+
+    #[test]
+    fn test_image_hash_from_local_blob_path_rejects_malformed_input() {
+        // Empty path: no file name, no parent.
+        assert_eq!(
+            image_hash_from_local_blob_path(std::path::Path::new("")),
+            None
+        );
+
+        // A bare file name has no `<scheme>/` parent segment to read.
+        assert_eq!(
+            image_hash_from_local_blob_path(std::path::Path::new("foo.png")),
+            None
+        );
+
+        // Right shape, but the "hash" fails `ImageHash` validation (wrong length/charset).
+        assert_eq!(
+            image_hash_from_local_blob_path(std::path::Path::new("sha256/not-a-real-hash")),
+            None
+        );
+    }
+
+    #[test]
+    fn test_has_usable_local_blob_requires_a_real_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let hash = sha256(&"a".repeat(64));
+
+        assert!(
+            !has_usable_local_blob(root, &hash),
+            "missing blob must not be reported as usable"
+        );
+
+        let path = local_blob_path(root, &hash);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"png bytes").unwrap();
+        assert!(has_usable_local_blob(root, &hash));
+
+        // A directory sitting where the blob should be is not a usable blob either.
+        let dir_hash = sha256(&"b".repeat(64));
+        std::fs::create_dir_all(local_blob_path(root, &dir_hash)).unwrap();
+        assert!(!has_usable_local_blob(root, &dir_hash));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_has_usable_local_blob_rejects_symlinks() {
+        // Symlinked blobs are refused on purpose: a crafted manifest must not be able to make
+        // gleon upload an arbitrary file from outside the blob store.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let hash = sha256(&"c".repeat(64));
+
+        let target = temp.path().join("outside-secret.txt");
+        std::fs::write(&target, b"secret").unwrap();
+        let link = local_blob_path(root, &hash);
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert!(link.exists(), "symlink target resolves");
+        assert!(!has_usable_local_blob(root, &hash));
     }
 }

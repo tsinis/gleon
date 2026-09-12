@@ -1,6 +1,16 @@
 #![cfg(not(miri))]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    missing_docs
+)]
 
-use gleon_core::config::{DiffConfig, GlobPattern, Mode, ScreenshotRule};
+use gleon_core::config::{DiffConfig, GleonConfig, GlobPattern, Mode, ScreenshotRule};
 use gleon_core::scanner::{FileScanner, TestCase};
 use std::path::Path;
 use std::sync::Arc;
@@ -26,8 +36,13 @@ fn test_scanner_with_real_fixture() {
         masks: vec![],
     });
 
-    let cases: Vec<TestCase> = FileScanner::scan_files(&include, &exclude, &base_dir, rule)
-        .expect("Scanning files should succeed");
+    let config = GleonConfig {
+        screenshots: vec![(*rule).clone()],
+        exclude: exclude.clone(),
+        ..GleonConfig::default()
+    };
+    let cases: Vec<TestCase> = FileScanner::scan_workspace(&config, &base_dir)
+        .expect("Scanning the workspace should succeed");
 
     // We found all the expected PNG files (9 files total in the fixtures dir)
     assert_eq!(cases.len(), 9);

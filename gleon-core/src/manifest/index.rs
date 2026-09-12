@@ -1,35 +1,22 @@
 //! In-memory workspace index built from per-test manifest files.
 
-use ignore::WalkBuilder;
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
 use crate::manifest::ManifestError;
 use crate::manifest::single::SingleTestManifest;
-
-/// Normalizes path separators to forward slashes and lowercases test names without unnecessary allocations.
-pub fn normalize_test_name(test_name: &str) -> Cow<'_, str> {
-    if test_name.chars().any(|c| c.is_uppercase() || c == '\\') {
-        let mut s = String::with_capacity(test_name.len());
-        for c in test_name.chars() {
-            if c == '\\' {
-                s.push('/');
-            } else {
-                s.extend(c.to_lowercase());
-            }
-        }
-        Cow::Owned(s)
-    } else {
-        Cow::Borrowed(test_name)
-    }
-}
+use crate::naming::normalize_test_name;
 
 /// Validates a relative test path (e.g. `auth/login_screen`).
 /// Splits on both `/` and `\`, verifying that each segment contains only valid characters `[a-z0-9_.-]`.
+///
+/// # Errors
+/// Returns [`ManifestError::Validation`] if `test_path` is empty, contains a segment with
+/// invalid characters, or attempts parent-directory traversal.
 pub fn validate_test_path(test_path: &str) -> Result<(), ManifestError> {
-    crate::scanner::validate_test_name(test_path).map_err(ManifestError::Validation)
+    crate::naming::validate_test_name(test_path)
+        .map_err(|e| ManifestError::Validation(e.to_string()))
 }
 
 /// In-memory index mapping test case relative paths to their `SingleTestManifest`.
@@ -41,7 +28,8 @@ pub struct WorkspaceIndex {
 
 impl WorkspaceIndex {
     /// Creates a new empty `WorkspaceIndex`.
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             entries: BTreeMap::new(),
             source_paths: BTreeMap::new(),
@@ -50,22 +38,18 @@ impl WorkspaceIndex {
 
     /// Loads the `WorkspaceIndex` by scanning the given platform manifest directory.
     /// If the directory does not exist on disk, returns an empty index.
+    ///
+    /// # Errors
+    /// Returns [`ManifestError::Walker`] if directory traversal fails, [`ManifestError::Validation`]
+    /// if a manifest file has a non-UTF-8 path, an invalid test path, or collides with another
+    /// entry after normalization, or any error from [`SingleTestManifest::load`] for a malformed
+    /// manifest file.
     pub fn load<P: AsRef<Path>>(manifest_dir: P) -> Result<Self, ManifestError> {
         let manifest_dir = manifest_dir.as_ref();
 
         let mut entries = BTreeMap::new();
         let mut source_paths = BTreeMap::new();
-        let walker = WalkBuilder::new(manifest_dir)
-            .standard_filters(false)
-            .filter_entry(|e| {
-                if e.file_type().is_some_and(|ft| ft.is_dir())
-                    && matches!(e.file_name().to_str(), Some(name) if name != ".gleon" && crate::scanner::DEFAULT_PRUNED_DIRECTORIES.contains(&name))
-                {
-                    return false;
-                }
-                true
-            })
-            .build();
+        let walker = crate::walk::manifest_walker(manifest_dir).build();
 
         for entry_res in walker {
             let entry = match entry_res {
@@ -89,17 +73,16 @@ impl WorkspaceIndex {
                 continue;
             }
 
-            let rel_path = match path.strip_prefix(manifest_dir) {
-                Ok(p) => p,
-                Err(_) => continue,
+            let Ok(rel_path) = path.strip_prefix(manifest_dir) else {
+                continue;
             };
 
             // Remove .json extension
             let without_ext = rel_path.with_extension("");
             let rel_str = without_ext.to_str().ok_or_else(|| {
                 ManifestError::Validation(format!(
-                    "Non UTF-8 path encountered in manifest directory: {:?}",
-                    without_ext
+                    "Non UTF-8 path encountered in manifest directory: {}",
+                    without_ext.display()
                 ))
             })?;
             let normalized = normalize_test_name(rel_str);
@@ -108,8 +91,7 @@ impl WorkspaceIndex {
 
             if entries.contains_key(normalized.as_ref()) {
                 return Err(ManifestError::Validation(format!(
-                    "Duplicate test case key collision in manifest index: '{}'",
-                    normalized
+                    "Duplicate test case key collision in manifest index: '{normalized}'"
                 )));
             }
 
@@ -125,26 +107,31 @@ impl WorkspaceIndex {
     }
 
     /// Returns `true` if the index contains no test cases.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
     /// Returns the number of test cases in the index.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Returns a reference to the inner entries map.
-    pub fn entries(&self) -> &BTreeMap<String, SingleTestManifest> {
+    #[must_use]
+    pub const fn entries(&self) -> &BTreeMap<String, SingleTestManifest> {
         &self.entries
     }
 
     /// Consumes the index and returns the inner entries map.
+    #[must_use]
     pub fn into_entries(self) -> BTreeMap<String, SingleTestManifest> {
         self.entries
     }
 
     /// Gets a single test manifest by test case name.
+    #[must_use]
     pub fn get(&self, test_name: &str) -> Option<&SingleTestManifest> {
         let normalized = normalize_test_name(test_name);
         self.entries.get(normalized.as_ref())
@@ -166,7 +153,7 @@ impl WorkspaceIndex {
 
     /// Merges entries from a fallback `WorkspaceIndex` into `self`.
     /// Existing entries in `self` (platform overrides) take precedence and are NOT overwritten.
-    pub fn merge_fallback(&mut self, fallback: WorkspaceIndex) {
+    pub fn merge_fallback(&mut self, fallback: Self) {
         for (key, manifest) in fallback.entries {
             self.entries.entry(key).or_insert(manifest);
         }
@@ -176,6 +163,11 @@ impl WorkspaceIndex {
     }
 
     /// Saves a single test manifest to disk under `manifest_dir` and updates memory.
+    ///
+    /// # Errors
+    /// Returns [`ManifestError::Validation`] if `test_name` is not a valid test path,
+    /// or [`ManifestError::Io`]/[`ManifestError::StdIo`] if writing the manifest file or
+    /// removing a stale legacy-cased file fails.
     pub fn save_test<P: AsRef<Path>>(
         &mut self,
         manifest_dir: P,
@@ -189,10 +181,7 @@ impl WorkspaceIndex {
         let canonical_key = normalized.as_ref();
         let target_path = manifest_file_path(manifest_dir, canonical_key);
 
-        match manifest.save(&target_path) {
-            Ok(()) => {}
-            Err(e) => return Err(e),
-        }
+        manifest.save(&target_path)?;
 
         // Remove legacy-cased manifest file on disk if it differs from canonical path
         if let Some(old_source) = self
@@ -206,11 +195,7 @@ impl WorkspaceIndex {
                 _ => false,
             };
             if !is_same_file {
-                match fs::remove_file(&old_path) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(ManifestError::StdIo(e)),
-                }
+                remove_file_ignore_missing(&old_path)?;
             }
         }
 
@@ -222,6 +207,11 @@ impl WorkspaceIndex {
     }
 
     /// Removes a test case manifest file from disk and memory.
+    ///
+    /// # Errors
+    /// Returns [`ManifestError::Validation`] if `test_name` is not a valid test path, or
+    /// [`ManifestError::StdIo`] if removing the manifest file from disk fails for a reason
+    /// other than the file not existing.
     pub fn remove_test<P: AsRef<Path>>(
         &mut self,
         manifest_dir: P,
@@ -235,19 +225,11 @@ impl WorkspaceIndex {
 
         if let Some(old_source) = self.source_paths.remove(canonical_key) {
             let old_path = manifest_file_path(manifest_dir, &old_source);
-            match fs::remove_file(&old_path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(ManifestError::StdIo(e)),
-            }
+            remove_file_ignore_missing(&old_path)?;
         }
 
         let target_path = manifest_file_path(manifest_dir, canonical_key);
-        match fs::remove_file(&target_path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(ManifestError::StdIo(e)),
-        }
+        remove_file_ignore_missing(&target_path)?;
         Ok(self.entries.remove(canonical_key))
     }
 }
@@ -258,9 +240,53 @@ fn manifest_file_path(dir: &Path, key: &str) -> std::path::PathBuf {
     dir.join(file_name)
 }
 
+/// Removes the file at `path`, treating it already being absent as success.
+fn remove_file_ignore_missing(path: &Path) -> Result<(), ManifestError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(ManifestError::StdIo(e)),
+    }
+}
+
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_remove_file_ignore_missing_is_idempotent() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("manifest.json");
+        fs::write(&path, b"{}").unwrap();
+
+        // First call removes it, second is a no-op rather than an error.
+        remove_file_ignore_missing(&path).unwrap();
+        assert!(!path.exists());
+        remove_file_ignore_missing(&path).unwrap();
+    }
+
+    #[test]
+    fn test_remove_file_ignore_missing_surfaces_other_errors() {
+        // A directory is not a file: removal must fail loudly instead of being swallowed.
+        let temp = tempdir().unwrap();
+        let dir = temp.path().join("not-a-file");
+        fs::create_dir(&dir).unwrap();
+
+        assert!(matches!(
+            remove_file_ignore_missing(&dir),
+            Err(ManifestError::StdIo(_))
+        ));
+        assert!(dir.exists());
+    }
     use crate::manifest::ImageHash;
     use tempfile::tempdir;
 
@@ -342,16 +368,16 @@ mod tests {
     fn test_workspace_index_load_filters_and_validation() {
         let temp = tempdir().unwrap();
         let manifest_dir = temp.path().join("macos-aarch64");
-        std::fs::create_dir_all(&manifest_dir).unwrap();
+        fs::create_dir_all(&manifest_dir).unwrap();
 
         // 1. Subdirectory inside manifest_dir (should be skipped)
-        std::fs::create_dir_all(manifest_dir.join("subfolder")).unwrap();
+        fs::create_dir_all(manifest_dir.join("subfolder")).unwrap();
 
         // 2. Non-JSON file (should be skipped)
-        std::fs::write(manifest_dir.join("notes.txt"), "hello").unwrap();
+        fs::write(manifest_dir.join("notes.txt"), "hello").unwrap();
 
         // 3. Invalid test path file (e.g. contains invalid chars)
-        std::fs::write(manifest_dir.join("bad!name.json"), "{}").unwrap();
+        fs::write(manifest_dir.join("bad!name.json"), "{}").unwrap();
 
         let index = WorkspaceIndex::load(&manifest_dir);
         assert!(index.is_err());
@@ -361,7 +387,7 @@ mod tests {
     fn test_workspace_index_load_rejects_duplicates() {
         let temp = tempdir().unwrap();
         let manifest_dir = temp.path().join("macos-aarch64");
-        std::fs::create_dir_all(manifest_dir.join("auth")).unwrap();
+        fs::create_dir_all(manifest_dir.join("auth")).unwrap();
 
         let hash = ImageHash::new("sha256", "a".repeat(64)).unwrap();
         let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
@@ -407,7 +433,7 @@ mod tests {
     fn test_legacy_cased_manifest_migration() {
         let temp = tempdir().unwrap();
         let manifest_dir = temp.path().join("macos-aarch64");
-        std::fs::create_dir_all(manifest_dir.join("Auth")).unwrap();
+        fs::create_dir_all(manifest_dir.join("Auth")).unwrap();
 
         let hash = ImageHash::new("sha256", "a".repeat(64)).unwrap();
         let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
@@ -441,7 +467,7 @@ mod tests {
     fn test_remove_test_and_duplicate_collision() {
         let temp = tempdir().unwrap();
         let manifest_dir = temp.path().join("manifests");
-        std::fs::create_dir_all(&manifest_dir).unwrap();
+        fs::create_dir_all(&manifest_dir).unwrap();
 
         let hash = ImageHash::new("sha256", "a".repeat(64)).unwrap();
         let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
@@ -550,5 +576,25 @@ mod tests {
         let fallback = WorkspaceIndex::new();
         target.merge_fallback(fallback);
         assert!(target.is_empty());
+    }
+
+    #[test]
+    fn test_save_and_load_target_directory_manifest() {
+        let temp = tempdir().unwrap();
+        let manifest_dir = temp.path().join("manifests");
+        fs::create_dir_all(&manifest_dir).unwrap();
+
+        let mut index = WorkspaceIndex::new();
+        let hash = ImageHash::new("sha256", "a".repeat(64)).unwrap();
+        let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
+        let manifest = SingleTestManifest::new(hash, phash, 100, 100).unwrap();
+
+        index
+            .save_test(&manifest_dir, "target/login", &manifest)
+            .unwrap();
+
+        let loaded = WorkspaceIndex::load(&manifest_dir).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.get("target/login").is_some());
     }
 }

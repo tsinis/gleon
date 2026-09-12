@@ -4,14 +4,15 @@ use gleon_core::context::ResolvedContext;
 use std::path::PathBuf;
 use tracing::info;
 
+use crate::commands::report_failure;
+use crate::exit_code::ExitCode;
+
 /// Runs the `approve` command.
-pub fn run_approve(
-    ctx: &ResolvedContext,
-    paths: &[PathBuf],
-    from: Option<&PathBuf>,
-) -> anyhow::Result<i32> {
-    let res =
-        gleon_core::ops::approve_workspace(ctx, &ctx.base_dir, paths, from.map(|p| p.as_path()))?;
+pub fn run_approve(ctx: &ResolvedContext, paths: &[PathBuf], from: Option<&PathBuf>) -> ExitCode {
+    let res = match gleon_core::ops::approve_workspace(ctx, paths, from.map(PathBuf::as_path)) {
+        Ok(res) => res,
+        Err(e) => return report_failure("Error approving screenshots", &e),
+    };
 
     if res.total_approved == 0 {
         info!("No screenshots approved.");
@@ -22,5 +23,5 @@ pub fn run_approve(
             res.approved_test_cases.len()
         );
     }
-    Ok(0)
+    ExitCode::Success
 }

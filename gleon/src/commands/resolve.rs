@@ -8,13 +8,16 @@ use gleon_core::storage::{ObjectStoreAdapter, StorageConfig};
 use std::io::IsTerminal;
 use tracing::{error, info, warn};
 
+use crate::commands::report_failure;
+use crate::exit_code::ExitCode;
+
 /// Runs interactive resolution for conflicted manifest files.
 pub async fn run_resolve(
     ctx: &ResolvedContext,
     test_path_filter: Option<&str>,
     fetch: bool,
     storage_config: Option<StorageConfig>,
-) -> anyhow::Result<i32> {
+) -> ExitCode {
     run_resolve_with_tty(
         ctx,
         test_path_filter,
@@ -32,53 +35,14 @@ pub async fn run_resolve_with_tty(
     fetch: bool,
     storage_config: Option<StorageConfig>,
     is_terminal: bool,
-) -> anyhow::Result<i32> {
-    info!("Scanning for conflicted manifest files...");
-
-    let mut conflicts = match scan_conflicts(&ctx.base_dir, None) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("Error scanning for conflicts: {e}");
-            return Ok(1);
-        }
-    };
-
-    if let Some(filter) = test_path_filter {
-        conflicts.retain(|item| item.test_path.contains(filter));
-    }
-
-    if conflicts.is_empty() {
-        info!("No conflicted manifest files found.");
-        return Ok(0);
-    }
-
-    info!("Found {} conflicted manifest file(s).", conflicts.len());
-
-    let adapter = if fetch {
-        if let Some(cfg) = storage_config {
-            match ObjectStoreAdapter::from_config(&cfg) {
-                Ok(a) => Some(a),
-                Err(e) => {
-                    warn!("Storage configured but failed to initialize adapter: {e}");
-                    None
-                }
-            }
-        } else {
-            info!("Local mode active (no cloud storage configured). Skipping blob fetch.");
-            None
-        }
-    } else {
-        None
-    };
-
-    if !is_terminal {
-        error!("Terminal is non-interactive (not a TTY). Cannot prompt for resolution.");
-        error!("Run 'gleon resolve' in an interactive terminal environment.");
-        return Ok(1);
-    }
-
-    let resolved_count =
-        resolve_conflicts_with_selector(ctx, conflicts, adapter.as_ref(), |item| {
+) -> ExitCode {
+    run_resolve_impl(
+        ctx,
+        test_path_filter,
+        fetch,
+        storage_config,
+        is_terminal,
+        |item| {
             let choices = format_conflict_choices(item);
 
             Select::new()
@@ -87,15 +51,76 @@ pub async fn run_resolve_with_tty(
                 .default(0)
                 .interact()
                 .map_err(Into::into)
-        })
-        .await?;
+        },
+    )
+    .await
+}
+
+pub async fn run_resolve_impl<F>(
+    ctx: &ResolvedContext,
+    test_path_filter: Option<&str>,
+    fetch: bool,
+    storage_config: Option<StorageConfig>,
+    is_terminal: bool,
+    selector: F,
+) -> ExitCode
+where
+    F: FnMut(&ConflictedManifestItem) -> Result<usize, anyhow::Error>,
+{
+    info!("Scanning for conflicted manifest files...");
+
+    let mut conflicts = match scan_conflicts(&ctx.base_dir, None) {
+        Ok(c) => c,
+        Err(e) => return report_failure("Error scanning for conflicts", &e),
+    };
+
+    if let Some(filter) = test_path_filter {
+        conflicts.retain(|item| item.test_path.contains(filter));
+    }
+
+    if conflicts.is_empty() {
+        info!("No conflicted manifest files found.");
+        return ExitCode::Success;
+    }
+
+    info!("Found {} conflicted manifest file(s).", conflicts.len());
+
+    let adapter = if fetch {
+        storage_config.map_or_else(
+            || {
+                info!("Local mode active (no cloud storage configured). Skipping blob fetch.");
+                None
+            },
+            |cfg| match ObjectStoreAdapter::from_config(&cfg) {
+                Ok(a) => Some(a),
+                Err(e) => {
+                    warn!("Storage configured but failed to initialize adapter: {e}");
+                    None
+                }
+            },
+        )
+    } else {
+        None
+    };
+
+    if !is_terminal {
+        error!("Terminal is non-interactive (not a TTY). Cannot prompt for resolution.");
+        error!("Run 'gleon resolve' in an interactive terminal environment.");
+        return ExitCode::Failure;
+    }
+
+    let resolved_count =
+        match resolve_conflicts_with_selector(ctx, conflicts, adapter.as_ref(), selector).await {
+            Ok(count) => count,
+            Err(e) => return report_failure("Error resolving manifest conflicts", &*e),
+        };
 
     info!(
         "Successfully resolved {} manifest conflict(s).",
         resolved_count
     );
 
-    Ok(0)
+    ExitCode::Success
 }
 
 /// Formats selectable prompt choice descriptions for a conflicted manifest item.
@@ -143,8 +168,8 @@ where
         );
 
         if let Some(adapter) = adapter {
+            let blobs_root = gleon_core::paths::GleonPaths::new(&ctx.base_dir).blobs_root();
             for manifest in [&item.conflict.ours, &item.conflict.theirs] {
-                let blobs_root = ctx.base_dir.join(".gleon").join("blobs");
                 let local_blob = gleon_core::storage::local_blob_path(&blobs_root, &manifest.hash);
                 if !gleon_core::storage::is_usable_blob(&local_blob) {
                     info!(
@@ -182,22 +207,28 @@ where
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
-    use gleon_core::cli::{Cli, Commands};
+    use gleon_core::context::ContextOptions;
     use tempfile::tempdir;
 
     #[tokio::test]
     async fn test_run_resolve_missing_manifest_dir() {
         let temp = tempdir().unwrap();
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, temp.path()).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), temp.path()).unwrap();
 
-        // Missing manifest directory causes scan_conflicts to fail -> return Ok(1)
-        let res = run_resolve_with_tty(&ctx, None, false, None, false)
-            .await
-            .unwrap();
-        assert_eq!(res, 1);
+        // Missing manifest directory causes scan_conflicts to fail -> Failure
+        let res = run_resolve_with_tty(&ctx, None, false, None, false).await;
+        assert_eq!(res, ExitCode::Failure);
     }
 
     #[tokio::test]
@@ -214,43 +245,32 @@ mod tests {
         let conflicted = include_str!("../../../gleon-core/tests/fixtures/conflict_2way.json");
         std::fs::write(manifests_dir.join("login.json"), conflicted).unwrap();
 
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, base_dir).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_dir).unwrap();
 
         // 1. Filter out all test paths
         let res_filtered =
-            run_resolve_with_tty(&ctx, Some("nonexistent_filter"), false, None, false)
-                .await
-                .unwrap();
-        assert_eq!(res_filtered, 0);
+            run_resolve_with_tty(&ctx, Some("nonexistent_filter"), false, None, false).await;
+        assert_eq!(res_filtered, ExitCode::Success);
 
         // 2. Matching filter in non-interactive mode
-        let res_matching = run_resolve_with_tty(&ctx, Some("login"), false, None, false)
-            .await
-            .unwrap();
-        assert_eq!(res_matching, 1);
+        let res_matching = run_resolve_with_tty(&ctx, Some("login"), false, None, false).await;
+        assert_eq!(res_matching, ExitCode::Failure);
 
         // 3. Fetch mode without storage config
-        let res_fetch_local = run_resolve_with_tty(&ctx, Some("login"), true, None, false)
-            .await
-            .unwrap();
-        assert_eq!(res_fetch_local, 1);
+        let res_fetch_local = run_resolve_with_tty(&ctx, Some("login"), true, None, false).await;
+        assert_eq!(res_fetch_local, ExitCode::Failure);
 
         // 4. Fetch mode with invalid storage config
         let invalid_storage = StorageConfig::new("invalid_scheme://bucket".to_string());
         let res_fetch_invalid =
-            run_resolve_with_tty(&ctx, Some("login"), true, Some(invalid_storage), false)
-                .await
-                .unwrap();
-        assert_eq!(res_fetch_invalid, 1);
+            run_resolve_with_tty(&ctx, Some("login"), true, Some(invalid_storage), false).await;
+        assert_eq!(res_fetch_invalid, ExitCode::Failure);
 
         // 5. Fetch mode with valid memory storage config (hits Ok(a) => Some(a))
         let valid_storage = StorageConfig::new("memory://");
         let res_fetch_valid =
-            run_resolve_with_tty(&ctx, Some("login"), true, Some(valid_storage), false)
-                .await
-                .unwrap();
-        assert_eq!(res_fetch_valid, 1);
+            run_resolve_with_tty(&ctx, Some("login"), true, Some(valid_storage), false).await;
+        assert_eq!(res_fetch_valid, ExitCode::Failure);
     }
 
     #[tokio::test]
@@ -291,8 +311,7 @@ mod tests {
         let login_path = manifests_dir.join("login.json");
         std::fs::write(&login_path, conflicted).unwrap();
 
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, base_dir).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_dir).unwrap();
 
         let conflicts = scan_conflicts(base_dir, None).unwrap();
         assert_eq!(conflicts.len(), 1);
@@ -345,8 +364,7 @@ mod tests {
         let login_path = manifests_dir.join("login.json");
         std::fs::write(&login_path, conflicted).unwrap();
 
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, base_dir).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_dir).unwrap();
 
         let conflicts = scan_conflicts(base_dir, None).unwrap();
         let config = StorageConfig::new("memory://");
@@ -393,8 +411,7 @@ mod tests {
         let login_path = manifests_dir.join("login.json");
         std::fs::write(&login_path, conflicted).unwrap();
 
-        let cli = Cli::for_test(Commands::Init);
-        let ctx = ResolvedContext::from_cli(&cli, base_dir).unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_dir).unwrap();
 
         let conflicts = scan_conflicts(base_dir, None).unwrap();
         let mut invalid_conflicts = conflicts;
@@ -403,5 +420,26 @@ mod tests {
 
         let res = resolve_conflicts_with_selector(&ctx, invalid_conflicts, None, |_| Ok(0)).await;
         assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_run_resolve_impl_interactive_flow() {
+        let temp = tempdir().unwrap();
+        let base_dir = temp.path();
+        let manifests_dir = base_dir
+            .join(".gleon")
+            .join("manifests")
+            .join("macos-aarch64")
+            .join("auth");
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+
+        let conflicted = include_str!("../../../gleon-core/tests/fixtures/conflict_2way.json");
+        let login_path = manifests_dir.join("login.json");
+        std::fs::write(&login_path, conflicted).unwrap();
+
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_dir).unwrap();
+
+        let exit_code = run_resolve_impl(&ctx, None, false, None, true, |_| Ok(0)).await;
+        assert_eq!(exit_code, ExitCode::Success);
     }
 }

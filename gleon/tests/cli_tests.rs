@@ -1,4 +1,14 @@
 #![cfg(not(miri))]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    missing_docs
+)]
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -210,9 +220,9 @@ fn test_test_placeholder() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("gleon")?;
     cmd.arg("test")
         .assert()
-        .success()
+        .failure()
         .stderr(predicates::str::contains(
-            "Subcommand test is not fully implemented yet",
+            "Subcommand 'test' is not implemented yet",
         ));
     Ok(())
 }
@@ -252,9 +262,9 @@ fn test_gc_placeholder() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("gleon")?;
     cmd.arg("gc")
         .assert()
-        .success()
+        .failure()
         .stderr(predicates::str::contains(
-            "Subcommand gc is not fully implemented yet",
+            "Subcommand 'gc' is not implemented yet",
         ));
     Ok(())
 }
@@ -646,29 +656,6 @@ screenshots:
 }
 
 #[test]
-fn test_unimplemented_subcommands() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = init_temp_dir();
-
-    let mut cmd_test = Command::cargo_bin("gleon")?;
-    cmd_test
-        .current_dir(dir.path())
-        .arg("test")
-        .assert()
-        .success()
-        .stderr(predicates::str::contains("not fully implemented yet"));
-
-    let mut cmd_gc = Command::cargo_bin("gleon")?;
-    cmd_gc
-        .current_dir(dir.path())
-        .arg("gc")
-        .assert()
-        .success()
-        .stderr(predicates::str::contains("not fully implemented yet"));
-
-    Ok(())
-}
-
-#[test]
 fn test_status_json_flag() -> Result<(), Box<dyn std::error::Error>> {
     let dir = init_temp_dir();
     let mut cmd_status = Command::cargo_bin("gleon")
@@ -731,6 +718,59 @@ fn test_dotenv_loading_integration() -> Result<(), Box<dyn std::error::Error>> {
         .stderr(predicates::str::contains(
             "Loaded 2 environment variable(s)",
         ));
+
+    Ok(())
+}
+
+/// `gleon diff` always writes its JSON report to `.gleon/runs/latest/gleon-report.json`;
+/// `gleon report <format>` must default `--report` to that exact path so it works right after a
+/// `diff` run without the caller repeating the path back.
+#[test]
+fn test_cli_report_defaults_to_the_diff_output_path() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let core_fixtures = manifest_dir
+        .parent()
+        .ok_or("No parent dir")?
+        .join("gleon-core/tests/fixtures");
+
+    let img_200 = std::fs::read(core_fixtures.join("200x100.png"))?;
+    let img_100 = std::fs::read(core_fixtures.join("diff_16px_corners_100x100.png"))?;
+    let billing_dir = dir.path().join("billing");
+    std::fs::create_dir_all(&billing_dir)?;
+    std::fs::write(billing_dir.join("form.png"), &img_200)?;
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+    std::fs::write(dir.path().join(".gleon").join("gleon.yaml"), config_yaml)?;
+
+    Command::cargo_bin("gleon")?
+        .current_dir(dir.path())
+        .arg("stage")
+        .assert()
+        .success();
+
+    // Change the screenshot after staging so `diff` reports a failure, not a no-op pass — a
+    // passing report renders no per-test rows and couldn't tell "found the default path" apart
+    // from "silently found nothing".
+    std::fs::write(billing_dir.join("form.png"), &img_100)?;
+
+    Command::cargo_bin("gleon")?
+        .current_dir(dir.path())
+        .arg("diff")
+        .assert()
+        .code(1);
+
+    // No `--report` passed: must find `.gleon/runs/latest/gleon-report.json` on its own.
+    Command::cargo_bin("gleon")?
+        .current_dir(dir.path())
+        .args(["report", "markdown"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("form"));
 
     Ok(())
 }
@@ -922,15 +962,14 @@ fn test_cli_report_valid_pr_number_and_html_url() -> Result<(), Box<dyn std::err
     for i in 0..11 {
         items.push(format!(
             r#"{{
-                "name": "test_{}",
+                "name": "test_{i}",
                 "result": {{
                     "DecodeError": {{
-                        "relative_path": "test_{}.png",
+                        "relative_path": "test_{i}.png",
                         "error": "corrupt"
                     }}
                 }}
-            }}"#,
-            i, i
+            }}"#
         ));
     }
     let sample_json = format!("[{}]", items.join(","));
@@ -971,7 +1010,7 @@ fn test_cli_report_with_s3_storage_pre_signed_urls() -> Result<(), Box<dyn std::
                     "relative_path": "login.png",
                     "detail": { "Pixel": { "diff_count": 42 } },
                     "diff_path": "diffs/login.png",
-                    "baseline_path": "goldens/login.png",
+                    "baseline_path": ".gleon/blobs/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "actual_path": "actual/login.png"
                 }
             }
@@ -983,7 +1022,7 @@ fn test_cli_report_with_s3_storage_pre_signed_urls() -> Result<(), Box<dyn std::
                     "relative_path": "header.png",
                     "actual_size": [100, 200],
                     "baseline_size": [100, 201],
-                    "baseline_path": "goldens/header.png",
+                    "baseline_path": ".gleon/blobs/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                     "actual_path": "actual/header.png"
                 }
             }
@@ -1021,8 +1060,16 @@ fn test_cli_report_with_s3_storage_pre_signed_urls() -> Result<(), Box<dyn std::
         .arg(&json_report_path)
         .assert()
         .success()
+        // Baselines are signed by their content-addressed key, the same one `push` uploads to.
         .stdout(predicates::str::contains("my-test-bucket"))
-        .stdout(predicates::str::contains("X-Amz-Signature"));
+        .stdout(predicates::str::contains("X-Amz-Signature"))
+        .stdout(predicates::str::contains(
+            "blobs/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ))
+        // `actual`/`diff` only ever exist on the runner, so they must not be signed into
+        // dead links pointing at keys that were never uploaded.
+        .stdout(predicates::str::contains("actual/login.png?X-Amz").not())
+        .stdout(predicates::str::contains("diffs/login.png?X-Amz").not());
 
     Ok(())
 }
@@ -1080,4 +1127,57 @@ fn test_approve_command() {
         found_button_json,
         "Expected to find login/button.json manifest"
     );
+}
+
+/// Unimplemented subcommands must not report success: a green pipeline for a command that did
+/// nothing is worse than a red one, because CI treats it as a passing visual-regression gate.
+#[test]
+fn test_unimplemented_subcommands_exit_nonzero() {
+    let dir = init_temp_dir();
+
+    for sub in ["test", "gc"] {
+        let mut cmd = Command::cargo_bin("gleon").unwrap();
+        cmd.current_dir(dir.path())
+            .arg(sub)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("not implemented"));
+    }
+}
+
+/// `--auto-pull` is advertised by the CLI, so it must actually run a pull before diffing
+/// rather than being silently ignored.
+#[test]
+fn test_diff_auto_pull_runs_pull_first() {
+    let dir = init_temp_dir();
+
+    let mut cmd = Command::cargo_bin("gleon").unwrap();
+    let assert = cmd
+        .current_dir(dir.path())
+        .args(["diff", "--auto-pull"])
+        .assert();
+
+    // No storage configured -> pull reports local mode, then the diff itself proceeds.
+    assert.stderr(predicate::str::contains("Running blob pull..."));
+}
+
+/// Combining `--auto-pull` with `--resolve` must still run the pull: an early return on
+/// `--resolve` used to short-circuit before `--auto-pull` was even checked, silently dropping
+/// it whenever both flags were passed together.
+#[test]
+fn test_diff_auto_pull_runs_before_resolve() {
+    let dir = init_temp_dir();
+
+    let mut cmd = Command::cargo_bin("gleon").unwrap();
+    let assert = cmd
+        .current_dir(dir.path())
+        .args(["diff", "--auto-pull", "--resolve"])
+        .assert();
+
+    assert
+        .success()
+        .stderr(predicate::str::contains("Running blob pull..."))
+        .stderr(predicate::str::contains(
+            "Scanning for conflicted manifest files...",
+        ));
 }

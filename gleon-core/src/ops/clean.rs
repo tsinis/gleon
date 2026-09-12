@@ -4,46 +4,17 @@
 //! untracks them from the Git index (using `gix`), appends wildcard entries to
 //! `.gitignore`, and purges temporary `.gleon/runs/` and `.gleon/diffs/` directories.
 
-use crate::config::ConfigError;
-use crate::context::{ContextError, ResolvedContext};
-use crate::git::{GitError, GitResolver};
-use crate::scanner::{FileScanner, ScannerError};
-use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use crate::context::ResolvedContext;
+use crate::git::GitResolver;
+use crate::ops::common::{CoreError, append_missing_gitignore_lines, load_config_and_scan};
+use std::path::PathBuf;
 
 /// Error types that can occur during the clean operation.
 #[derive(Debug, thiserror::Error)]
 pub enum CleanError {
-    /// Context resolution error
-    #[error("Context error: {0}")]
-    Context(#[from] ContextError),
-
-    /// Configuration error
-    #[error("Config error: {0}")]
-    Config(#[from] ConfigError),
-
-    /// Scanner error
-    #[error("Scanner error: {0}")]
-    Scanner(#[from] ScannerError),
-
-    /// Git operation error
-    #[error("Git error: {0}")]
-    Git(#[from] GitError),
-
-    /// IO error
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-impl From<crate::io::IoError> for CleanError {
-    fn from(err: crate::io::IoError) -> Self {
-        match err {
-            crate::io::IoError::Io(e) => CleanError::Io(e),
-            crate::io::IoError::JsonParse(e) => {
-                CleanError::Io(std::io::Error::other(e.to_string()))
-            }
-        }
-    }
+    /// Error shared across `ops::*` operations.
+    #[error(transparent)]
+    Core(#[from] CoreError),
 }
 
 /// Options controlling the clean workspace operation.
@@ -71,18 +42,28 @@ pub struct CleanResult {
 }
 
 /// Cleans screenshot files, untracks them from Git index, updates .gitignore, and cleans runs cache.
+///
+/// # Errors
+///
+/// Returns an error if the workspace configuration cannot be scanned, if the `.gitignore` file
+/// exists but cannot be read (other than being missing) or cannot be written atomically, or if
+/// the `.gleon/runs`/`.gleon/diffs` cache directories exist but fail to be removed for a reason
+/// other than already being absent.
+// Genuinely long from four sequential, independent steps (delete+prune, git untrack,
+// .gitignore update, cache cleanup), not from duplicated logic — see ops/common.rs for the
+// helpers that already factor out what *is* shared with other operations.
+#[allow(clippy::too_many_lines)]
 pub fn clean_workspace(
     context: &ResolvedContext,
-    base_path: &Path,
     options: &CleanOptions,
 ) -> Result<CleanResult, CleanError> {
+    let base_path = context.base_dir.as_path();
     let mut result = CleanResult::default();
 
-    let config = context.config.as_ref().cloned().unwrap_or_default();
+    let config = context.config.clone().unwrap_or_default();
 
     // 1. Scan for all screenshots matched by rules in gleon.yaml
-    let test_cases =
-        FileScanner::scan_workspace(&config, base_path).map_err(CleanError::Scanner)?;
+    let test_cases = load_config_and_scan(context)?;
     let mut discovered_paths: Vec<PathBuf> = test_cases
         .into_iter()
         .map(|case| case.image.relative_path)
@@ -98,7 +79,7 @@ pub fn clean_workspace(
 
     // 2. In dry-run mode, populate preview without mutating disk or Git index
     if options.dry_run {
-        result.deleted_files = discovered_paths.clone();
+        result.deleted_files.clone_from(&discovered_paths);
         result.untracked_files.clear();
     } else {
         // 3. Delete files from disk and prune empty parent directories
@@ -175,9 +156,9 @@ pub fn clean_workspace(
     if !options.skip_gitignore {
         let gitignore_path = base_path.join(".gitignore");
         let existing = match std::fs::read_to_string(&gitignore_path) {
-            Ok(content) => content,
+            Ok(text) => text,
             Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(e) => return Err(CleanError::Io(e)),
+            Err(e) => return Err(CoreError::Io(e).into()),
         };
 
         let existing_set: std::collections::HashSet<&str> =
@@ -212,17 +193,7 @@ pub fn clean_workspace(
         if !new_entries.is_empty() {
             result.gitignore_entries_added.clone_from(&new_entries);
             if !options.dry_run {
-                use std::io::Write as IoWrite;
-                let mut buffer = existing;
-                if !buffer.is_empty() && !buffer.ends_with('\n') {
-                    buffer.push('\n');
-                }
-                for entry in new_entries {
-                    writeln!(buffer, "{entry}").expect("writing to String cannot fail");
-                }
-                crate::io::write_file_atomically(&gitignore_path, |writer| {
-                    writer.write_all(buffer.as_bytes()).map_err(CleanError::Io)
-                })?;
+                append_missing_gitignore_lines(&gitignore_path, &new_entries)?;
                 tracing::debug!(
                     "Added {} new rule(s) to .gitignore",
                     result.gitignore_entries_added.len()
@@ -233,20 +204,20 @@ pub fn clean_workspace(
 
     // 5. Clean cache directories (.gleon/runs and .gleon/diffs)
     if !options.keep_runs {
-        let gleon_dir = base_path.join(".gleon");
-        let runs_dir = gleon_dir.join("runs");
-        let diffs_dir = gleon_dir.join("diffs");
+        let paths = crate::paths::GleonPaths::new(base_path);
+        let runs_dir = paths.runs_root();
+        let diffs_dir = paths.diffs_dir();
 
         if !options.dry_run {
             match std::fs::remove_dir_all(&runs_dir) {
                 Ok(()) => {}
                 Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(CleanError::Io(e)),
+                Err(e) => return Err(CoreError::Io(e).into()),
             }
             match std::fs::remove_dir_all(&diffs_dir) {
                 Ok(()) => {}
                 Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(CleanError::Io(e)),
+                Err(e) => return Err(CoreError::Io(e).into()),
             }
         }
         result.cache_cleaned = true;
@@ -257,9 +228,21 @@ pub fn clean_workspace(
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
-    use crate::cli::{Cli, Commands};
+    use crate::config::ConfigError;
+    use crate::context::ContextError;
+    use crate::git::GitError;
+    use crate::scanner::ScannerError;
     use tempfile::tempdir;
 
     #[test]
@@ -288,12 +271,9 @@ screenshots:
         let golden_file = golden_dir.join("login.png");
         std::fs::write(&golden_file, b"sample png").unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: false,
-            keep_runs: false,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         // 2. Test dry-run
         let dry_opts = CleanOptions {
@@ -301,7 +281,7 @@ screenshots:
             skip_gitignore: false,
             keep_runs: false,
         };
-        let dry_res = clean_workspace(&ctx, base_path, &dry_opts).unwrap();
+        let dry_res = clean_workspace(&ctx, &dry_opts).unwrap();
         assert_eq!(dry_res.deleted_files.len(), 1);
         assert_eq!(
             dry_res.deleted_files[0],
@@ -311,7 +291,7 @@ screenshots:
 
         // 3. Test actual execution
         let exec_opts = CleanOptions::default();
-        let exec_res = clean_workspace(&ctx, base_path, &exec_opts).unwrap();
+        let exec_res = clean_workspace(&ctx, &exec_opts).unwrap();
         assert_eq!(exec_res.deleted_files.len(), 1);
         assert!(!golden_file.exists()); // File removed
         assert!(!golden_dir.exists()); // Empty parent dir pruned
@@ -347,19 +327,16 @@ screenshots:
         let golden_file = golden_dir.join("app.png");
         std::fs::write(&golden_file, b"sample png").unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: true,
-            keep_runs: true,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         let opts = CleanOptions {
             dry_run: false,
             skip_gitignore: true,
             keep_runs: true,
         };
-        let res = clean_workspace(&ctx, base_path, &opts).unwrap();
+        let res = clean_workspace(&ctx, &opts).unwrap();
         assert_eq!(res.deleted_files.len(), 1);
         assert!(!golden_file.exists());
         assert!(runs_dir.exists()); // runs preserved
@@ -391,15 +368,12 @@ screenshots:
         let golden_file = golden_dir.join("app.png");
         std::fs::write(&golden_file, b"sample png").unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: false,
-            keep_runs: false,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         let opts = CleanOptions::default();
-        let res = clean_workspace(&ctx, base_path, &opts).unwrap();
+        let res = clean_workspace(&ctx, &opts).unwrap();
         assert_eq!(res.deleted_files.len(), 1);
 
         let gitignore = std::fs::read_to_string(base_path.join(".gitignore")).unwrap();
@@ -431,49 +405,34 @@ screenshots:
         let golden_file = golden_dir.join("app.png");
         std::fs::write(&golden_file, b"sample png").unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: false,
-            keep_runs: false,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         let opts = CleanOptions::default();
-        let err = clean_workspace(&ctx, base_path, &opts).unwrap_err();
-        assert!(matches!(err, CleanError::Io(_)));
+        let err = clean_workspace(&ctx, &opts).unwrap_err();
+        assert!(matches!(err, CleanError::Core(CoreError::Io(_))));
     }
 
     #[test]
     fn test_clean_error_display() {
-        let io_err = CleanError::Io(std::io::Error::other("disk full"));
+        let io_err: CleanError = CoreError::Io(std::io::Error::other("disk full")).into();
         assert!(io_err.to_string().contains("IO error: disk full"));
 
-        let git_err = CleanError::Git(crate::git::GitError::DetachedHead);
-        assert!(git_err.to_string().contains("Git error:"));
+        let ctx_err: CleanError =
+            CoreError::Context(ContextError::Git(GitError::DetachedHead)).into();
+        assert!(ctx_err.to_string().contains("Context resolution error:"));
 
-        let ctx_err = CleanError::Context(crate::context::ContextError::Git(
-            crate::git::GitError::DetachedHead,
-        ));
-        assert!(ctx_err.to_string().contains("Context error:"));
-
-        let cfg_err =
-            CleanError::Config(crate::config::ConfigError::NotFound(PathBuf::from("foo")));
+        let cfg_err: CleanError =
+            CoreError::Config(ConfigError::NotFound(PathBuf::from("foo"))).into();
         assert!(cfg_err.to_string().contains("Config error:"));
 
-        let scan_err = CleanError::Scanner(crate::scanner::ScannerError::InvalidTestName {
+        let scan_err: CleanError = CoreError::Scanner(ScannerError::InvalidTestName {
             name: "bad".to_string(),
             reason: "invalid".to_string(),
-        });
+        })
+        .into();
         assert!(scan_err.to_string().contains("Scanner error:"));
-
-        let io_from_json: CleanError =
-            crate::io::IoError::JsonParse(serde_json::from_str::<String>("bad json").unwrap_err())
-                .into();
-        assert!(matches!(io_from_json, CleanError::Io(_)));
-
-        let io_from_io: CleanError =
-            crate::io::IoError::Io(std::io::Error::other("disk crash")).into();
-        assert!(matches!(io_from_io, CleanError::Io(_)));
 
         let res = CleanResult::default();
         let cloned_res = res.clone();
@@ -506,15 +465,12 @@ screenshots:
         let root_png = base_path.join("root.png");
         std::fs::write(&root_png, b"png").unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: false,
-            keep_runs: false,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         let opts = CleanOptions::default();
-        let res = clean_workspace(&ctx, base_path, &opts).unwrap();
+        let res = clean_workspace(&ctx, &opts).unwrap();
         assert_eq!(res.deleted_files.len(), 1);
 
         let gitignore = std::fs::read_to_string(base_path.join(".gitignore")).unwrap();
@@ -555,15 +511,12 @@ screenshots:
         read_only.set_mode(0o555);
         std::fs::set_permissions(&locked_dir, read_only).unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: false,
-            keep_runs: false,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         let opts = CleanOptions::default();
-        let res = clean_workspace(&ctx, base_path, &opts);
+        let res = clean_workspace(&ctx, &opts);
 
         // Restore permissions before assertions
         std::fs::set_permissions(&locked_dir, orig_perms).unwrap();
@@ -599,19 +552,16 @@ screenshots:
         let other_file = nested_dir.join("keep.txt");
         std::fs::write(&other_file, b"keep me").unwrap();
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: false,
-            keep_runs: true,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         let opts = CleanOptions {
             dry_run: false,
             skip_gitignore: false,
             keep_runs: true,
         };
-        let res = clean_workspace(&ctx, base_path, &opts).unwrap();
+        let res = clean_workspace(&ctx, &opts).unwrap();
         assert_eq!(res.deleted_files.len(), 1);
         assert!(!screenshot.exists());
         assert!(other_file.exists());
@@ -655,21 +605,21 @@ screenshots:
             return;
         }
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: false,
-            keep_runs: false,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         let opts = CleanOptions::default();
-        let res = clean_workspace(&ctx, base_path, &opts);
+        let res = clean_workspace(&ctx, &opts);
 
         // Restore permissions before assertions
         std::fs::set_permissions(&runs_dir, orig_perms).unwrap();
 
         assert!(res.is_err());
-        assert!(matches!(res.unwrap_err(), CleanError::Io(_)));
+        assert!(matches!(
+            res.unwrap_err(),
+            CleanError::Core(CoreError::Io(_))
+        ));
     }
 
     #[test]
@@ -708,21 +658,21 @@ screenshots:
             return;
         }
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: false,
-            keep_runs: false,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         let opts = CleanOptions::default();
-        let res = clean_workspace(&ctx, base_path, &opts);
+        let res = clean_workspace(&ctx, &opts);
 
         // Restore permissions before assertions
         std::fs::set_permissions(&diffs_dir, orig_perms).unwrap();
 
         assert!(res.is_err());
-        assert!(matches!(res.unwrap_err(), CleanError::Io(_)));
+        assert!(matches!(
+            res.unwrap_err(),
+            CleanError::Core(CoreError::Io(_))
+        ));
     }
 
     #[test]
@@ -774,19 +724,16 @@ screenshots:
             return;
         }
 
-        let cli = Cli::for_test(Commands::Clean {
-            dry_run: false,
-            skip_gitignore: true,
-            keep_runs: true,
-        });
-        let ctx = ResolvedContext::from_cli(&cli, base_path).unwrap();
+        let ctx =
+            ResolvedContext::from_options(&crate::context::ContextOptions::default(), base_path)
+                .unwrap();
 
         let opts = CleanOptions {
             dry_run: false,
             skip_gitignore: true,
             keep_runs: true,
         };
-        let res = clean_workspace(&ctx, base_path, &opts);
+        let res = clean_workspace(&ctx, &opts);
 
         // Restore permissions before assertions
         std::fs::set_permissions(&git_dir, orig_perms).unwrap();

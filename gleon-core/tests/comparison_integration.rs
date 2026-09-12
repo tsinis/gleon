@@ -1,4 +1,14 @@
 #![cfg(not(miri))]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    missing_docs
+)]
 
 use gleon_core::config::{DiffConfig, Mode};
 use gleon_core::engine::{ComparisonResult, MismatchDetail, compare_images};
@@ -10,7 +20,7 @@ fn load_fixture(name: &str) -> RgbaImage {
         .join("tests/fixtures")
         .join(name);
     image::open(&path)
-        .unwrap_or_else(|e| panic!("failed to load fixture at {:?}: {}", path, e))
+        .unwrap_or_else(|e| panic!("failed to load fixture at {path:?}: {e}"))
         .into_rgba8()
 }
 
@@ -34,8 +44,7 @@ fn test_integration_1_pixel_difference() {
                 ..
             }
         ),
-        "Expected exactly 1 pixel mismatch, got: {:?}",
-        result
+        "Expected exactly 1 pixel mismatch, got: {result:?}"
     );
 
     let ComparisonResult::Mismatch { diff_image, .. } = result else {
@@ -65,8 +74,7 @@ fn test_integration_16_pixels_corners() {
                 ..
             }
         ),
-        "Expected exactly 16 pixels mismatch, got: {:?}",
-        result
+        "Expected exactly 16 pixels mismatch, got: {result:?}"
     );
     let ComparisonResult::Mismatch { diff_image, .. } = result else {
         panic!("Expected Mismatch, but got Match");
@@ -105,8 +113,7 @@ fn test_integration_transparency_difference() {
                 ..
             }
         ),
-        "Expected exactly 10 pixels mismatch due to alpha channel difference, got: {:?}",
-        result
+        "Expected exactly 10 pixels mismatch due to alpha channel difference, got: {result:?}"
     );
 }
 
@@ -126,8 +133,7 @@ fn test_integration_dimension_mismatch_real_files() {
                 actual_size: (200, 100)
             }
         ),
-        "Expected DimensionMismatch, got: {:?}",
-        result
+        "Expected DimensionMismatch, got: {result:?}"
     );
 }
 
@@ -153,7 +159,6 @@ fn test_integration_ssim_large_diff() {
                 ..
             }
         ),
-        "Expected SSIM mismatch, got: {:?}",
-        result
+        "Expected SSIM mismatch, got: {result:?}"
     );
 }

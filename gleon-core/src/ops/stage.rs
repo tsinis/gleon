@@ -1,69 +1,30 @@
 //! Staging operation for processing, masking, and persisting baseline screenshots.
 
-use crate::config::ConfigError;
-use crate::context::{ContextError, ResolvedContext};
-use crate::engine::phash::compute_phash;
-use crate::manifest::{ImageHash, ManifestError, SingleTestManifest, WorkspaceIndex};
-use crate::scanner::{FileScanner, ScannerError};
-use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use crate::context::ResolvedContext;
+use crate::manifest::{ManifestError, WorkspaceIndex};
+use crate::ops::common::{
+    CoreError, build_manifest, ensure_initialized, hash_and_measure, index_keys_missing_from,
+};
+use crate::scanner::FileScanner;
+use std::path::PathBuf;
 use thiserror::Error;
 
 /// Errors that can occur during staging.
 #[derive(Debug, Error)]
 pub enum StageError {
-    /// Workspace has not been initialized (`.gleon` missing).
-    #[error("gleon workspace is not initialized. Please run 'gleon init' first.")]
-    NotInitialized,
-
-    /// Error resolving context.
-    #[error("Context resolution error: {0}")]
-    Context(#[from] ContextError),
-
-    /// Error scanning files.
-    #[error("Scanner error: {0}")]
-    Scanner(#[from] ScannerError),
-
-    /// Error loading configuration.
-    #[error("Config error: {0}")]
-    Config(#[from] ConfigError),
-
-    /// Error loading or saving manifest.
-    #[error("Manifest error: {0}")]
-    Manifest(#[from] ManifestError),
-
     /// Error decoding image file.
     #[error("Image decode error for '{path}'")]
     ImageDecode {
+        /// The path to the image that failed to decode.
         path: PathBuf,
+        /// The underlying decode error.
         #[source]
         source: image::ImageError,
     },
 
-    /// Error encoding image file.
-    #[error("Image encode error for '{path}'")]
-    ImageEncode {
-        path: PathBuf,
-        #[source]
-        source: image::ImageError,
-    },
-
-    /// Error parsing JSON.
-    #[error("JSON parse error: {0}")]
-    JsonParse(#[from] serde_json::Error),
-
-    /// IO error.
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-impl From<crate::io::IoError> for StageError {
-    fn from(err: crate::io::IoError) -> Self {
-        match err {
-            crate::io::IoError::Io(e) => StageError::Io(e),
-            crate::io::IoError::JsonParse(e) => StageError::JsonParse(e),
-        }
-    }
+    /// Error shared across `ops::*` operations.
+    #[error(transparent)]
+    Core(#[from] CoreError),
 }
 
 /// Result summary of staging screenshots.
@@ -83,7 +44,7 @@ pub(crate) fn filter_test_cases(
     if let Some(filters) = filter_paths {
         let normalized_filters: Vec<_> = filters
             .iter()
-            .map(|f| (f, FileScanner::normalize_path_str(f).to_lowercase()))
+            .map(|f| (f, FileScanner::normalize_path_str(f).into_owned()))
             .collect();
 
         test_cases.retain(|case| {
@@ -103,38 +64,16 @@ pub(crate) fn filter_test_cases(
 }
 
 /// Executes staging pipeline across the workspace.
+///
+/// # Errors
+///
+/// Returns an error if the workspace is not initialized, if the platform key cannot be
+/// resolved, if screenshots cannot be scanned, if any screenshot fails to decode, or if
+/// reading/writing manifests, blobs, or other filesystem data fails.
 pub fn stage_workspace(
     context: &ResolvedContext,
-    base_dir: &Path,
     filter_paths: Option<&[PathBuf]>,
 ) -> Result<StageResult, StageError> {
-    let gleon_dir = base_dir.join(".gleon");
-    if std::fs::metadata(&gleon_dir).is_err() {
-        return Err(StageError::NotInitialized);
-    }
-
-    let platform_key = match context.platform.to_key() {
-        Ok(key) => key,
-        Err(e) => return Err(StageError::Context(ContextError::Platform(e))),
-    };
-
-    let blobs_dir = gleon_dir.join("blobs").join("sha256");
-    let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
-    std::fs::create_dir_all(&blobs_dir).map_err(StageError::Io)?;
-    std::fs::create_dir_all(&manifests_dir).map_err(StageError::Io)?;
-
-    let config = context.config.as_ref().cloned().unwrap_or_default();
-
-    let mut test_cases =
-        FileScanner::scan_workspace(&config, base_dir).map_err(StageError::Scanner)?;
-
-    filter_test_cases(&mut test_cases, filter_paths);
-
-    let pb = crate::ui::create_progress_bar(test_cases.len() as u64);
-    pb.set_message("Staging screenshots...");
-
-    let mut workspace_index = WorkspaceIndex::load(&manifests_dir).map_err(StageError::Manifest)?;
-
     use rayon::prelude::*;
 
     struct StagedItem {
@@ -145,25 +84,42 @@ pub fn stage_workspace(
         height: u32,
     }
 
+    let paths = ensure_initialized(&context.base_dir)?;
+    let platform_key = crate::ops::common::platform_key(context)?;
+
+    let blobs_dir = paths.blob_scheme_dir("sha256");
+    let manifests_dir = paths.manifests_dir(&platform_key);
+    std::fs::create_dir_all(&blobs_dir).map_err(CoreError::Io)?;
+    std::fs::create_dir_all(&manifests_dir).map_err(CoreError::Io)?;
+
+    let config = context.config.clone().unwrap_or_default();
+
+    let mut test_cases =
+        FileScanner::scan_workspace(&config, &context.base_dir).map_err(CoreError::Scanner)?;
+
+    filter_test_cases(&mut test_cases, filter_paths);
+
+    let pb = crate::ui::create_progress_bar(test_cases.len() as u64);
+    pb.set_message("Staging screenshots...");
+
+    let mut workspace_index = WorkspaceIndex::load(&manifests_dir).map_err(CoreError::Manifest)?;
+
     let processed_results: Result<Vec<StagedItem>, StageError> = test_cases
         .into_par_iter()
         .map(|case| {
-            let png_bytes = std::fs::read(&case.image.absolute_path).map_err(StageError::Io)?;
-            let dynamic_img =
-                image::load_from_memory(&png_bytes).map_err(|source| StageError::ImageDecode {
-                    path: case.image.relative_path.clone(),
-                    source,
+            let png_bytes = std::fs::read(&case.image.absolute_path).map_err(CoreError::Io)?;
+            let (sha256_hex, phash_str, width, height) =
+                hash_and_measure(&png_bytes).map_err(|e| match e {
+                    ManifestError::Image(source) => StageError::ImageDecode {
+                        path: case.image.relative_path.clone(),
+                        source,
+                    },
+                    other => CoreError::Manifest(other).into(),
                 })?;
-            let width = dynamic_img.width();
-            let height = dynamic_img.height();
-            let rgba_img = dynamic_img.to_rgba8();
-
-            let phash_str = compute_phash(&rgba_img);
-            let sha256_hex = hex::encode(Sha256::digest(&png_bytes));
 
             // Save blob to .gleon/blobs/sha256/<sha256_hex>
             let blob_path = blobs_dir.join(&sha256_hex);
-            crate::io::save_file_atomically(&blob_path, &png_bytes).map_err(StageError::from)?;
+            crate::io::save_file_atomically(&blob_path, &png_bytes).map_err(CoreError::from)?;
 
             pb.inc(1);
 
@@ -194,16 +150,13 @@ pub fn stage_workspace(
             .iter()
             .map(|item| item.case_name.as_str())
             .collect();
-        let orphan_names: Vec<_> = workspace_index
-            .entries()
-            .keys()
-            .filter(|k| !scanned_names.contains(k.as_str()))
-            .cloned()
+        let orphan_names: Vec<String> = index_keys_missing_from(&workspace_index, &scanned_names)
+            .map(String::from)
             .collect();
         for existing in orphan_names {
             workspace_index
                 .remove_test(&manifests_dir, &existing)
-                .map_err(StageError::Manifest)?;
+                .map_err(CoreError::Manifest)?;
         }
     }
 
@@ -211,14 +164,8 @@ pub fn stage_workspace(
     let mut total_screenshots_staged = 0;
 
     for item in processed_results {
-        let hash = ImageHash::new("sha256", &item.sha256_hex).map_err(StageError::Manifest)?;
-        let phash = item
-            .phash_str
-            .parse::<ImageHash>()
-            .map_err(StageError::Manifest)?;
-
-        let new_manifest = SingleTestManifest::new(hash, phash, item.width, item.height)
-            .map_err(StageError::Manifest)?;
+        let new_manifest =
+            build_manifest(&item.sha256_hex, &item.phash_str, item.width, item.height)?;
 
         let is_unchanged = workspace_index
             .get(&item.case_name)
@@ -227,7 +174,7 @@ pub fn stage_workspace(
         if !is_unchanged {
             workspace_index
                 .save_test(&manifests_dir, &item.case_name, &new_manifest)
-                .map_err(StageError::Manifest)?;
+                .map_err(CoreError::Manifest)?;
             total_screenshots_staged += 1;
             staged_test_cases.push(item.case_name);
         }
@@ -240,29 +187,45 @@ pub fn stage_workspace(
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
+    use crate::config::ConfigError;
+    use crate::context::ContextError;
+    use crate::scanner::ScannerError;
 
     #[test]
     fn test_stage_error_display() {
-        let err1 = StageError::NotInitialized;
+        let err1: StageError = CoreError::NotInitialized.into();
         assert!(err1.to_string().contains("not initialized"));
 
-        let err2 = StageError::Context(ContextError::Platform(
+        let err2: StageError = CoreError::Context(ContextError::Platform(
             crate::platform::PlatformError::InvalidSegment("test".to_string()),
-        ));
+        ))
+        .into();
         assert!(err2.to_string().contains("Context resolution error"));
 
-        let err3 = StageError::Scanner(ScannerError::InvalidTestName {
+        let err3: StageError = CoreError::Scanner(ScannerError::InvalidTestName {
             name: "bad/name".to_string(),
             reason: "reason".to_string(),
-        });
+        })
+        .into();
         assert!(err3.to_string().contains("Scanner error"));
 
-        let err4 = StageError::Config(ConfigError::Validation("bad config".to_string()));
+        let err4: StageError =
+            CoreError::Config(ConfigError::Validation("bad config".to_string())).into();
         assert!(err4.to_string().contains("Config error"));
 
-        let err5 = StageError::Manifest(ManifestError::Validation("bad manifest".to_string()));
+        let err5: StageError =
+            CoreError::Manifest(ManifestError::Validation("bad manifest".to_string())).into();
         assert!(err5.to_string().contains("Manifest error"));
 
         let img_err = image::ImageError::Limits(image::error::LimitError::from_kind(
@@ -275,17 +238,7 @@ mod tests {
         assert!(err6.to_string().contains("Image decode error"));
         assert!(std::error::Error::source(&err6).is_some());
 
-        let img_err2 = image::ImageError::Limits(image::error::LimitError::from_kind(
-            image::error::LimitErrorKind::DimensionError,
-        ));
-        let err7 = StageError::ImageEncode {
-            path: PathBuf::from("b.png"),
-            source: img_err2,
-        };
-        assert!(err7.to_string().contains("Image encode error"));
-        assert!(std::error::Error::source(&err7).is_some());
-
-        let err8 = StageError::Io(std::io::Error::other("io test"));
+        let err8: StageError = CoreError::Io(std::io::Error::other("io test")).into();
         assert!(err8.to_string().contains("IO error"));
     }
 
@@ -297,7 +250,7 @@ mod tests {
         };
         let cloned = res.clone();
         assert_eq!(res, cloned);
-        assert!(!format!("{:?}", res).is_empty());
+        assert!(!format!("{res:?}").is_empty());
         let default_res = StageResult::default();
         assert_eq!(default_res.total_screenshots_staged, 0);
     }

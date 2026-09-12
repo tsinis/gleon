@@ -4,7 +4,8 @@ use crate::io::{IoError, save_json_atomically};
 use crate::manifest::{
     ConflictManifest, ConflictParseError, SingleTestManifest, parse_conflict_manifest,
 };
-use ignore::WalkBuilder;
+use crate::ops::common::resolve_platform_filter_dir;
+use crate::paths::GleonPaths;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -35,7 +36,7 @@ pub enum ResolveError {
 /// Represents a conflicted manifest file discovered during scanning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConflictedManifestItem {
-    /// Relative test path (e.g. "auth/login_screen").
+    /// Relative test path (e.g. "`auth/login_screen`").
     pub test_path: String,
     /// Platform component (e.g. "macos-aarch64").
     pub platform: String,
@@ -53,25 +54,10 @@ pub fn scan_conflicts(
     base_dir: &Path,
     platform_filter: Option<&str>,
 ) -> Result<Vec<ConflictedManifestItem>, ResolveError> {
-    let manifests_root = base_dir.join(".gleon").join("manifests");
+    let manifests_root = GleonPaths::new(base_dir).manifests_root();
 
-    let search_dir = match platform_filter {
-        Some(p) => {
-            let path = Path::new(p);
-            let mut components = path.components();
-            match (components.next(), components.next()) {
-                (Some(std::path::Component::Normal(seg)), None) => {
-                    let seg_str = seg.to_string_lossy();
-                    if crate::manifest::index::validate_test_path(&seg_str).is_err() {
-                        return Err(ResolveError::InvalidPlatformFilter(p.to_string()));
-                    }
-                    manifests_root.join(p)
-                }
-                _ => return Err(ResolveError::InvalidPlatformFilter(p.to_string())),
-            }
-        }
-        None => manifests_root.clone(),
-    };
+    let search_dir = resolve_platform_filter_dir(&manifests_root, platform_filter)
+        .map_err(|p| ResolveError::InvalidPlatformFilter(p.to_string()))?;
 
     if std::fs::metadata(&search_dir).is_err() {
         return Err(ResolveError::ManifestDirNotFound(search_dir));
@@ -79,18 +65,7 @@ pub fn scan_conflicts(
 
     let mut items = Vec::new();
 
-    for entry_res in WalkBuilder::new(&search_dir)
-        .standard_filters(false)
-        .filter_entry(|e| {
-            if e.file_type().is_some_and(|ft| ft.is_dir())
-                && matches!(e.file_name().to_str(), Some(name) if name != ".gleon" && crate::scanner::DEFAULT_PRUNED_DIRECTORIES.contains(&name))
-            {
-                return false;
-            }
-            true
-        })
-        .build()
-    {
+    for entry_res in crate::walk::manifest_walker(&search_dir).build() {
         let entry = match entry_res {
             Ok(e) => e,
             Err(err) => {
@@ -103,10 +78,7 @@ pub fn scan_conflicts(
         if entry.file_type().is_some_and(|ft| ft.is_file())
             && path.extension().is_some_and(|ext| ext == "json")
         {
-            let content = match std::fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(e) => return Err(ResolveError::Io(e)),
-            };
+            let content = std::fs::read_to_string(path)?;
 
             if content.contains("<<<<<<<") {
                 let conflict = match parse_conflict_manifest(&content) {
@@ -167,6 +139,15 @@ pub fn apply_resolution(
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use tempfile::tempdir;

@@ -1,4 +1,14 @@
 #![cfg(not(miri))]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    missing_docs
+)]
 
 use gleon_core::git::GitResolver;
 use std::env;
@@ -18,12 +28,11 @@ fn find_repo_root() -> Option<PathBuf> {
 
 #[test]
 fn test_verify_ignored_with_real_fixtures() {
-    let repo_root = match find_repo_root() {
-        Some(root) => root,
-        None => {
-            eprintln!("Skipping test: not running inside a git repository");
-            return;
-        }
+    let repo_root = if let Some(root) = find_repo_root() {
+        root
+    } else {
+        eprintln!("Skipping test: not running inside a git repository");
+        return;
     };
     let fixtures_dir = repo_root.join("gleon/tests/fixtures/git");
 
@@ -53,12 +62,11 @@ fn test_verify_ignored_with_real_fixtures() {
 
 #[test]
 fn test_verify_ignored_outside_repo() {
-    let repo_root = match find_repo_root() {
-        Some(root) => root,
-        None => {
-            eprintln!("Skipping test: not running inside a git repository");
-            return;
-        }
+    let repo_root = if let Some(root) = find_repo_root() {
+        root
+    } else {
+        eprintln!("Skipping test: not running inside a git repository");
+        return;
     };
 
     // A path completely outside the repository (sibling of workspace root)
@@ -67,19 +75,17 @@ fn test_verify_ignored_outside_repo() {
     let result = GitResolver::verify_ignored_impl(&[outside_path], &repo_root);
     assert!(
         matches!(result, Err(gleon_core::git::GitError::OutsideRepository(_))),
-        "Expected OutsideRepository error, got {:?}",
-        result
+        "Expected OutsideRepository error, got {result:?}"
     );
 }
 
 #[test]
 fn test_verify_ignored_relative_outside_repo() {
-    let repo_root = match find_repo_root() {
-        Some(root) => root,
-        None => {
-            eprintln!("Skipping test: not running inside a git repository");
-            return;
-        }
+    let repo_root = if let Some(root) = find_repo_root() {
+        root
+    } else {
+        eprintln!("Skipping test: not running inside a git repository");
+        return;
     };
 
     // A relative path escaping the workspace
@@ -88,27 +94,24 @@ fn test_verify_ignored_relative_outside_repo() {
     let result = GitResolver::verify_ignored_impl(&[outside_path], &repo_root);
     assert!(
         matches!(result, Err(gleon_core::git::GitError::OutsideRepository(_))),
-        "Expected OutsideRepository error, got {:?}",
-        result
+        "Expected OutsideRepository error, got {result:?}"
     );
 }
 
 #[test]
 #[cfg(not(miri))]
 fn test_resolve_branch_real_repo() {
-    let repo_root = match find_repo_root() {
-        Some(root) => root,
-        None => {
-            eprintln!("Skipping test: not running inside a git repository");
-            return;
-        }
+    let repo_root = if let Some(root) = find_repo_root() {
+        root
+    } else {
+        eprintln!("Skipping test: not running inside a git repository");
+        return;
     };
 
-    let result = GitResolver::resolve_branch_impl(None, &repo_root, &gleon_core::git::OsEnv);
+    let result = GitResolver::resolve_branch_impl(None, &repo_root, &gleon_core::env::OsEnv);
     assert!(
         result.is_ok(),
-        "Expected branch resolution to succeed on real repo, got {:?}",
-        result
+        "Expected branch resolution to succeed on real repo, got {result:?}"
     );
     let branch = result.unwrap();
     assert!(!branch.is_empty(), "Branch name should not be empty");
@@ -117,12 +120,11 @@ fn test_resolve_branch_real_repo() {
 #[test]
 #[cfg(not(miri))]
 fn test_verify_ignored_real_repo_files() {
-    let repo_root = match find_repo_root() {
-        Some(root) => root,
-        None => {
-            eprintln!("Skipping test: not running inside a git repository");
-            return;
-        }
+    let repo_root = if let Some(root) = find_repo_root() {
+        root
+    } else {
+        eprintln!("Skipping test: not running inside a git repository");
+        return;
     };
 
     let cargo_toml = repo_root.join("Cargo.toml");
@@ -139,12 +141,11 @@ fn test_verify_ignored_real_repo_files() {
 #[test]
 #[cfg(not(miri))]
 fn test_resolve_merge_base_real_repo() {
-    let repo_root = match find_repo_root() {
-        Some(root) => root,
-        None => {
-            eprintln!("Skipping test: not running inside a git repository");
-            return;
-        }
+    let repo_root = if let Some(root) = find_repo_root() {
+        root
+    } else {
+        eprintln!("Skipping test: not running inside a git repository");
+        return;
     };
 
     let result = GitResolver::resolve_merge_base(&repo_root, "HEAD");
@@ -156,8 +157,7 @@ fn test_resolve_merge_base_real_repo() {
     } else {
         assert!(
             result.is_ok(),
-            "Expected merge-base to succeed, got {:?}",
-            result
+            "Expected merge-base to succeed, got {result:?}"
         );
         let sha = result.unwrap();
         assert_eq!(sha.len(), 40, "SHA should be 40 characters");
@@ -167,12 +167,11 @@ fn test_resolve_merge_base_real_repo() {
 #[test]
 #[cfg(not(miri))]
 fn test_get_commit_author_real_repo() {
-    let repo_root = match find_repo_root() {
-        Some(root) => root,
-        None => {
-            eprintln!("Skipping test: not running inside a git repository");
-            return;
-        }
+    let repo_root = if let Some(root) = find_repo_root() {
+        root
+    } else {
+        eprintln!("Skipping test: not running inside a git repository");
+        return;
     };
 
     let sha = GitResolver::resolve_merge_base(&repo_root, "HEAD");
@@ -180,8 +179,7 @@ fn test_get_commit_author_real_repo() {
         let author = GitResolver::get_commit_author(&repo_root, &sha);
         assert!(
             author.is_ok(),
-            "Expected get_commit_author to succeed, got {:?}",
-            author
+            "Expected get_commit_author to succeed, got {author:?}"
         );
         let author_str = author.unwrap();
         assert!(!author_str.is_empty(), "Author string should not be empty");

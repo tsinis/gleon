@@ -14,6 +14,11 @@ pub enum IoError {
     JsonParse(#[from] serde_json::Error),
 }
 
+/// Loads and deserializes JSON content from the file at `path`.
+///
+/// # Errors
+/// Returns [`IoError::Io`] if the file cannot be opened, or [`IoError::JsonParse`] if its
+/// content is not valid JSON matching `T`.
 pub fn load_json<T: serde::de::DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<T, IoError> {
     let path = path.as_ref();
     std::fs::File::open(path)
@@ -31,6 +36,10 @@ pub fn load_json<T: serde::de::DeserializeOwned, P: AsRef<Path>>(path: P) -> Res
 }
 
 /// Loads the JSON (or uses Default if missing), applies the closure, and saves it atomically.
+///
+/// # Errors
+/// Returns `E` if loading fails for a reason other than the file being missing, if the
+/// closure `f` returns an error, or if the atomic save fails.
 pub fn update_json_atomically<T, P, F, D, E>(path: P, default_fn: D, f: F) -> Result<(), E>
 where
     T: serde::Serialize + serde::de::DeserializeOwned,
@@ -52,6 +61,13 @@ where
     }
 }
 
+/// Writes to a temporary file created next to `path` via the closure `f`, then atomically
+/// persists it to `path` (calling fsync on the file, and on non-Windows platforms, its directory).
+///
+/// # Errors
+/// Returns `E` if the parent directory cannot be resolved or created, the temporary file
+/// cannot be created or written, the closure `f` returns an error, or the final
+/// persist/fsync step fails.
 pub fn write_file_atomically<P, F, E>(path: P, f: F) -> Result<(), E>
 where
     P: AsRef<Path>,
@@ -85,24 +101,31 @@ where
         .map_err(|e| E::from(IoError::Io(e)))?;
 
     {
+        use std::io::Write;
         let mut writer = std::io::BufWriter::new(temp_file.as_file());
         f(&mut writer)?;
-        use std::io::Write;
         writer.flush().map_err(|e| E::from(IoError::Io(e)))?;
     }
 
     #[cfg(all(unix, not(miri)))]
     let perms_result = {
         use std::os::unix::fs::PermissionsExt;
+        // An existing target keeps its own mode (a deliberately locked-down file stays that
+        // way). A brand-new one must NOT inherit `tempfile`'s 0600 default: these files
+        // (manifests, reports, `.gitignore`) are committed to Git and read back by other
+        // users/containers in CI, so they get the same 0644 a plain `File::create` would
+        // produce under the conventional 022 umask.
+        const DEFAULT_FILE_MODE: u32 = 0o644;
         temp_file
             .as_file()
             .metadata()
             .map_err(IoError::Io)
             .and_then(|metadata| {
                 let mut perms = metadata.permissions();
-                if let Ok(existing) = std::fs::metadata(path) {
-                    perms.set_mode(existing.permissions().mode());
-                }
+                perms.set_mode(
+                    std::fs::metadata(path)
+                        .map_or(DEFAULT_FILE_MODE, |existing| existing.permissions().mode()),
+                );
                 temp_file
                     .as_file()
                     .set_permissions(perms)
@@ -114,23 +137,38 @@ where
     let perms_result: Result<(), E> = Ok(());
 
     perms_result
-        .and_then(|_| {
+        .and_then(|()| {
             temp_file
                 .as_file()
                 .sync_all()
                 .map_err(|e| E::from(IoError::Io(e)))
         })
-        .and_then(|_| {
+        .and_then(|()| {
             temp_file.persist(path).map_err(|e| {
                 tracing::error!("Failed to save file atomically to {:?}: {}", path, e);
                 E::from(IoError::Io(e.error))
             })
         })
-        .and_then(|_| {
+        .map(|_persisted_file| {
             #[cfg(not(windows))]
             {
-                let dir = std::fs::File::open(parent).map_err(|e| E::from(IoError::Io(e)))?;
-                dir.sync_all().map_err(|e| E::from(IoError::Io(e)))?;
+                // Best-effort, like every other directory fsync in the codebase: the file itself
+                // is already durably persisted above. `fsync` on a *directory* descriptor is
+                // rejected with `EINVAL` on NFS/SMB/FUSE/9p (Docker volumes, WSL mounts), and
+                // failing the whole atomic save there would make gleon unusable on those mounts.
+                match std::fs::File::open(parent) {
+                    Ok(dir) => {
+                        if let Err(e) = dir.sync_all() {
+                            tracing::debug!(
+                                "Directory fsync not supported for {:?} ({e}); file contents are still durable",
+                                parent
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("Could not open {:?} to fsync directory entry: {e}", parent);
+                    }
+                }
             }
             #[cfg(windows)]
             {
@@ -138,10 +176,13 @@ where
                     let _ = dir.sync_all();
                 }
             }
-            Ok(())
         })
 }
 
+/// Atomically writes raw bytes to `path`.
+///
+/// # Errors
+/// Returns [`IoError`] if the write or the atomic persist step fails.
 pub fn save_file_atomically<P: AsRef<Path>>(path: P, content: &[u8]) -> Result<(), IoError> {
     write_file_atomically(path, |writer| {
         use std::io::Write;
@@ -149,6 +190,11 @@ pub fn save_file_atomically<P: AsRef<Path>>(path: P, content: &[u8]) -> Result<(
     })
 }
 
+/// Serializes `value` to pretty-printed JSON and atomically writes it to `path`.
+///
+/// # Errors
+/// Returns [`IoError::JsonParse`] if serialization fails, or [`IoError::Io`] if the atomic
+/// write fails.
 pub fn save_json_atomically<T: serde::Serialize + ?Sized, P: AsRef<Path>>(
     path: P,
     value: &T,
@@ -159,9 +205,53 @@ pub fn save_json_atomically<T: serde::Serialize + ?Sized, P: AsRef<Path>>(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use serde::Serialize;
+
+    #[test]
+    #[cfg(all(unix, not(miri)))]
+    fn test_write_file_atomically_new_file_is_group_world_readable() {
+        // A freshly created file must land with the usual 0644-style mode, not the 0600 that
+        // `tempfile` defaults to: manifests written this way are committed to Git and read back
+        // by other users/containers in CI.
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("fresh.json");
+        save_file_atomically(&path, b"{}").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "expected 0644 for a new file, got {mode:o}");
+    }
+
+    #[test]
+    #[cfg(all(unix, not(miri)))]
+    fn test_write_file_atomically_preserves_existing_mode() {
+        // When the target already exists its mode wins, so a deliberately locked-down file
+        // stays locked down across rewrites.
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("existing.json");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        save_file_atomically(&path, b"new").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "existing mode must be preserved, got {mode:o}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    }
 
     #[derive(Serialize)]
     struct Dummy {

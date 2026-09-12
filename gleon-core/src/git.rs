@@ -1,5 +1,6 @@
 //! Git branch resolution and gitignore validation.
 
+use crate::env::{EnvProvider, OsEnv};
 use std::path::Path;
 
 /// Errors that can occur during Git operations.
@@ -60,21 +61,6 @@ pub enum GitError {
     Io(#[from] std::io::Error),
 }
 
-/// Helper trait for mocking environment variables in tests.
-pub trait EnvProvider {
-    /// Gets the environment variable value.
-    fn get_var(&self, key: &str) -> Option<String>;
-}
-
-/// Standard OS environment variable provider.
-pub struct OsEnv;
-
-impl EnvProvider for OsEnv {
-    fn get_var(&self, key: &str) -> Option<String> {
-        std::env::var(key).ok()
-    }
-}
-
 /// Resolver for Git branch context.
 pub struct GitResolver;
 
@@ -87,6 +73,13 @@ impl GitResolver {
     /// 3. Discovering git and reading HEAD
     ///
     /// Returns `GitError::Discover` if no Git repository is found (callers like `ResolvedContext` handle offline fallback).
+    ///
+    /// # Errors
+    /// Returns `GitError::Io` if the current working directory cannot be determined,
+    /// `GitError::Discover` if no Git repository is found, `GitError::HeadRead` if
+    /// HEAD cannot be read, `GitError::DetachedHead` if HEAD is detached with no CI
+    /// branch variables set, or `GitError::InvalidBranchName` if the resolved branch
+    /// name is empty or contains invalid characters.
     pub fn resolve_branch() -> Result<String, GitError> {
         let env = OsEnv;
         let current_dir = std::env::current_dir().map_err(GitError::Io)?;
@@ -94,6 +87,12 @@ impl GitResolver {
     }
 
     /// Internal implementation of branch resolution allowing dependency injection.
+    ///
+    /// # Errors
+    /// Returns `GitError::Discover` if no Git repository is found, `GitError::HeadRead`
+    /// if HEAD cannot be read, `GitError::DetachedHead` if HEAD is detached with no CI
+    /// branch variables set, or `GitError::InvalidBranchName` if the resolved branch
+    /// name is empty or contains invalid characters.
     pub fn resolve_branch_impl(
         cli_branch: Option<&str>,
         base_dir: &Path,
@@ -102,7 +101,7 @@ impl GitResolver {
         // 1. CLI branch override
         if let Some(branch) = cli_branch {
             let cleaned = clean_branch_name(branch);
-            return validate_branch_name(&cleaned).map(|_| cleaned);
+            return validate_branch_name(&cleaned).map(|()| cleaned);
         }
 
         // 2. GLEON_BRANCH env var
@@ -111,13 +110,13 @@ impl GitResolver {
             .map(|b| clean_branch_name(&b))
             .filter(|c| !c.is_empty())
         {
-            return validate_branch_name(&branch).map(|_| branch);
+            return validate_branch_name(&branch).map(|()| branch);
         }
 
         // 3. CI env variables (provider specific)
         if let Some(branch) = resolve_ci_branch(env) {
             let cleaned = clean_branch_name(&branch);
-            return validate_branch_name(&cleaned).map(|_| cleaned);
+            return validate_branch_name(&cleaned).map(|()| cleaned);
         }
 
         // 4. Git discovery
@@ -127,7 +126,7 @@ impl GitResolver {
                     Ok(Some(head_name)) => {
                         let branch = head_name.shorten().to_string();
                         let cleaned = clean_branch_name(&branch);
-                        validate_branch_name(&cleaned).map(|_| cleaned)
+                        validate_branch_name(&cleaned).map(|()| cleaned)
                     }
                     Ok(None) => {
                         // Detached HEAD and no env overrides
@@ -137,8 +136,7 @@ impl GitResolver {
                 }
             }
             Err(e) => Err(GitError::Discover(format!(
-                "Not a git repository (or no git installed). Please run inside a git repository, or provide the branch manually using the --branch CLI flag or the GLEON_BRANCH environment variable. Underlying error: {}",
-                e
+                "Not a git repository (or no git installed). Please run inside a git repository, or provide the branch manually using the --branch CLI flag or the GLEON_BRANCH environment variable. Underlying error: {e}"
             ))),
         }
     }
@@ -146,25 +144,32 @@ impl GitResolver {
     /// Uses the `ignore` crate to verify if screenshot paths are matched by .gitignore rules.
     /// Returns true if all provided paths are correctly ignored.
     /// Returns `GitError::Discover` if no Git repository is found.
+    ///
+    /// # Errors
+    /// Returns `GitError::Io` if the current working directory cannot be determined,
+    /// `GitError::Discover` if no Git repository is found, `GitError::OutsideRepository`
+    /// if a given path resolves outside the repository, or `GitError::IgnoreBuild` if
+    /// the gitignore matcher fails to build.
     pub fn verify_ignored<P: AsRef<Path>>(paths: &[P]) -> Result<bool, GitError> {
         let current_dir = std::env::current_dir().map_err(GitError::Io)?;
         Self::verify_ignored_impl(paths, &current_dir)
     }
 
-    /// Internal implementation of verify_ignored allowing dependency injection of search path.
+    /// Internal implementation of `verify_ignored` allowing dependency injection of search path.
+    ///
+    /// # Errors
+    /// Returns `GitError::Discover` if no Git repository is found, `GitError::OutsideRepository`
+    /// if a given path resolves outside the repository, or `GitError::IgnoreBuild` if
+    /// the gitignore matcher fails to build.
     pub fn verify_ignored_impl<P: AsRef<Path>>(
         paths: &[P],
         base_dir: &Path,
     ) -> Result<bool, GitError> {
-        let repo = match gix::discover(base_dir) {
-            Ok(repo) => repo,
-            Err(e) => {
-                return Err(GitError::Discover(format!(
-                    "Not a git repository (or no git installed). verify_ignored requires a git repository. Underlying error: {}",
-                    e
-                )));
-            }
-        };
+        let repo = gix::discover(base_dir).map_err(|e| {
+            GitError::Discover(format!(
+                "Not a git repository (or no git installed). verify_ignored requires a git repository. Underlying error: {e}"
+            ))
+        })?;
 
         let repo_root = repo.workdir().ok_or_else(|| {
             GitError::Discover("Bare repository has no working directory".to_string())
@@ -187,7 +192,10 @@ impl GitResolver {
                 return Err(GitError::OutsideRepository(abs_path));
             }
 
-            let rel_path = abs_path.strip_prefix(&repo_root).unwrap().to_path_buf();
+            let rel_path = abs_path
+                .strip_prefix(&repo_root)
+                .map_err(|_| GitError::OutsideRepository(abs_path.clone()))?
+                .to_path_buf();
             processed_paths.push((abs_path, rel_path));
         }
 
@@ -214,7 +222,7 @@ impl GitResolver {
                     // Already visited this directory and its parents!
                     break;
                 }
-                visited_dirs.insert(dir.to_path_buf());
+                visited_dirs.insert(dir.clone());
 
                 let gitignore = dir.join(".gitignore");
                 gitignores_to_add.insert(gitignore);
@@ -250,8 +258,8 @@ impl GitResolver {
             // If the file/dir doesn't exist yet, we check if it matches ignore rules based on name.
             // Under ignore crate, matched path checks can be run with is_dir flag.
             let is_dir = abs_path.is_dir();
-            let matched = matcher.matched_path_or_any_parents(rel_path, is_dir);
-            if !matched.is_ignore() {
+            let ignore_match = matcher.matched_path_or_any_parents(rel_path, is_dir);
+            if !ignore_match.is_ignore() {
                 return Ok(false);
             }
         }
@@ -260,6 +268,7 @@ impl GitResolver {
     }
 
     /// Computes the SHA-256 hash of the raw UTF-8 branch name for safe flat-key storage.
+    #[must_use]
     pub fn branch_path_token(branch_name: &str) -> String {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
@@ -269,11 +278,14 @@ impl GitResolver {
 
     /// Resolves the merge-base between HEAD and the given target branch.
     /// Detects shallow clones and returns a specific error for fallback logging.
+    ///
+    /// # Errors
+    /// Returns `GitError::Discover` if no Git repository is found, `GitError::ShallowClone`
+    /// if the repository is a shallow clone, `GitError::HeadRead` if HEAD cannot be
+    /// read, or `GitError::MergeBaseFailed` if the target branch cannot be resolved
+    /// or no common ancestor exists.
     pub fn resolve_merge_base(base_dir: &Path, target_branch: &str) -> Result<String, GitError> {
-        let repo = match gix::discover(base_dir) {
-            Ok(repo) => repo,
-            Err(e) => return Err(GitError::Discover(e.to_string())),
-        };
+        let repo = gix::discover(base_dir).map_err(|e| GitError::Discover(e.to_string()))?;
 
         // Check if the repository is a shallow clone by checking for the existence of .git/shallow
         if repo.shallow_file().exists() {
@@ -282,128 +294,111 @@ impl GitResolver {
             ));
         }
 
-        let head_commit = match repo.head_commit() {
-            Ok(commit) => commit,
-            Err(e) => return Err(GitError::HeadRead(e.to_string())),
-        };
+        let head_commit = repo
+            .head_commit()
+            .map_err(|e| GitError::HeadRead(e.to_string()))?;
         let head_id = head_commit.id;
 
-        let target_id = match repo.rev_parse_single(target_branch) {
-            Ok(id) => id,
-            Err(e) => {
-                return Err(GitError::MergeBaseFailed(format!(
-                    "Failed to resolve target branch '{}': {}",
-                    target_branch, e
-                )));
-            }
-        };
+        let target_id = repo.rev_parse_single(target_branch).map_err(|e| {
+            GitError::MergeBaseFailed(format!(
+                "Failed to resolve target branch '{target_branch}': {e}"
+            ))
+        })?;
 
-        match repo.merge_base(head_id, target_id) {
-            Ok(base_id) => Ok(base_id.to_string()),
-            Err(e) => Err(GitError::MergeBaseFailed(e.to_string())),
-        }
+        repo.merge_base(head_id, target_id)
+            .map(|base_id| base_id.to_string())
+            .map_err(|e| GitError::MergeBaseFailed(e.to_string()))
     }
 
     /// Gets the author name and email of the given commit, defaulting to "unknown".
+    ///
+    /// # Errors
+    /// Returns `GitError::Discover` if no Git repository is found, `GitError::CommitLookup`
+    /// if `commit_sha` cannot be resolved to a commit, or `GitError::CommitDecode` if
+    /// the commit object cannot be decoded.
     pub fn get_commit_author(base_dir: &Path, commit_sha: &str) -> Result<String, GitError> {
-        let repo = match gix::discover(base_dir) {
-            Ok(repo) => repo,
-            Err(e) => return Err(GitError::Discover(e.to_string())),
-        };
+        let repo = gix::discover(base_dir).map_err(|e| GitError::Discover(e.to_string()))?;
 
-        let id = match gix::ObjectId::from_hex(commit_sha.as_bytes())
-            .or_else(|_| repo.rev_parse_single(commit_sha).map(|id| id.detach()))
-        {
-            Ok(id) => id,
-            Err(e) => {
-                return Err(GitError::CommitLookup {
-                    ref_or_sha: commit_sha.to_string(),
-                    reason: e.to_string(),
-                });
-            }
-        };
+        let id = gix::ObjectId::from_hex(commit_sha.as_bytes())
+            .or_else(|_| repo.rev_parse_single(commit_sha).map(gix::Id::detach))
+            .map_err(|e| GitError::CommitLookup {
+                ref_or_sha: commit_sha.to_string(),
+                reason: e.to_string(),
+            })?;
 
-        let commit = match repo.find_commit(id) {
-            Ok(commit) => commit,
-            Err(e) => {
-                return Err(GitError::CommitLookup {
-                    ref_or_sha: id.to_string(),
-                    reason: e.to_string(),
-                });
-            }
-        };
+        let commit = repo.find_commit(id).map_err(|e| GitError::CommitLookup {
+            ref_or_sha: id.to_string(),
+            reason: e.to_string(),
+        })?;
 
-        let decoded = match commit.decode() {
-            Ok(decoded) => decoded,
-            Err(e) => {
-                return Err(GitError::CommitDecode {
-                    commit_sha: id.to_string(),
-                    reason: e.to_string(),
-                });
-            }
-        };
+        let decoded = commit.decode().map_err(|e| GitError::CommitDecode {
+            commit_sha: id.to_string(),
+            reason: e.to_string(),
+        })?;
 
-        if let Ok(sig) = gix::actor::SignatureRef::from_bytes(decoded.author.as_ref()) {
-            let actor = sig.actor();
-            let name = actor.name.to_string();
-            let email = actor.email.to_string();
-            if name.is_empty() && email.is_empty() {
+        gix::actor::SignatureRef::from_bytes(decoded.author.as_ref()).map_or_else(
+            |_| {
                 tracing::debug!(
-                    "Commit author name and email are empty for commit '{}'",
+                    "Failed to parse author signature bytes for commit '{}'",
                     commit_sha
                 );
                 Ok("unknown".to_string())
-            } else {
-                Ok(format!("{} <{}>", name, email))
-            }
-        } else {
-            tracing::debug!(
-                "Failed to parse author signature bytes for commit '{}'",
-                commit_sha
-            );
-            Ok("unknown".to_string())
-        }
+            },
+            |sig| {
+                let actor = sig.actor();
+                let name = actor.name.to_string();
+                let email = actor.email.to_string();
+                if name.is_empty() && email.is_empty() {
+                    tracing::debug!(
+                        "Commit author name and email are empty for commit '{}'",
+                        commit_sha
+                    );
+                    Ok("unknown".to_string())
+                } else {
+                    Ok(format!("{name} <{email}>"))
+                }
+            },
+        )
     }
 
     /// Gets the repository's full hexadecimal object ID of HEAD (supporting both SHA-1 and SHA-256 widths).
+    ///
+    /// # Errors
+    /// Returns `GitError::Discover` if no Git repository is found, or `GitError::HeadRead`
+    /// if HEAD cannot be read.
     pub fn get_head_commit_sha(base_dir: &Path) -> Result<String, GitError> {
-        let repo = match gix::discover(base_dir) {
-            Ok(repo) => repo,
-            Err(e) => return Err(GitError::Discover(e.to_string())),
-        };
+        let repo = gix::discover(base_dir).map_err(|e| GitError::Discover(e.to_string()))?;
 
-        let head_commit = match repo.head_commit() {
-            Ok(commit) => commit,
-            Err(e) => return Err(GitError::HeadRead(e.to_string())),
-        };
+        let head_commit = repo
+            .head_commit()
+            .map_err(|e| GitError::HeadRead(e.to_string()))?;
 
         Ok(head_commit.id.to_string())
     }
 
     /// Untracks given relative or absolute paths from the Git index (equivalent to `git rm --cached`).
     /// Returns the list of paths that were actually present in the Git index and removed.
-    /// Gracefully returns an empty Vec if base_dir is not in a Git repository.
+    /// Gracefully returns an empty Vec if `base_dir` is not in a Git repository.
+    ///
+    /// # Errors
+    /// Returns `GitError::Io` if writing the updated index back to disk fails.
     pub fn untrack_from_index<P: AsRef<Path>>(
         base_dir: &Path,
         paths: &[P],
     ) -> Result<Vec<std::path::PathBuf>, GitError> {
-        let repo = match gix::discover(base_dir) {
-            Ok(repo) => repo,
-            Err(_) => return Ok(vec![]),
+        let Ok(repo) = gix::discover(base_dir) else {
+            return Ok(vec![]);
         };
 
-        let repo_root = match repo.workdir() {
-            Some(dir) => dir,
-            None => return Ok(vec![]),
+        let Some(repo_root) = repo.workdir() else {
+            return Ok(vec![]);
         };
-        let repo_root = match normalize_path(repo_root) {
-            Ok(root) => root,
-            Err(_) => return Ok(vec![]),
+        let Ok(repo_root) = normalize_path(repo_root) else {
+            return Ok(vec![]);
         };
 
-        let mut index = match repo.open_index() {
-            Ok(idx) => idx,
-            Err(_) => return Ok(vec![]),
+        let Ok(mut index) = repo.open_index() else {
+            return Ok(vec![]);
         };
 
         let mut seen_indices = std::collections::HashSet::new();
@@ -424,7 +419,18 @@ impl GitResolver {
             };
 
             if let Ok(rel_to_repo) = abs_path.strip_prefix(&repo_root) {
-                let norm_str = crate::scanner::FileScanner::normalize_path_str(rel_to_repo);
+                // Git index keys are byte-exact: normalize separators only. Folding case here
+                // (as `normalize_path_str` does, since it also builds test identities) makes the
+                // lookup miss every path containing an uppercase character, leaving the file
+                // deleted on disk but still staged.
+                // Bound separately so the `to_string_lossy()` temporary outlives the
+                // `normalize_path_separators` borrow below (an inline `&rel_to_repo
+                // .to_string_lossy()` is dropped at the end of the statement while still
+                // borrowed). This still allocates at most once: `rel_str` only owns when the
+                // path isn't valid UTF-8, and `norm_str` only owns on top of that when it also
+                // contains a backslash.
+                let rel_str = rel_to_repo.to_string_lossy();
+                let norm_str = crate::naming::normalize_path_separators(&rel_str);
                 if let Ok(entry_idx) = index.entry_index_by_path(norm_str.as_bytes().into())
                     && seen_indices.insert(entry_idx)
                 {
@@ -475,7 +481,7 @@ fn normalize_path(path: &Path) -> Result<std::path::PathBuf, GitError> {
             Component::Normal(c) => {
                 normalized.push(c);
             }
-            Component::CurDir => continue,
+            Component::CurDir => {}
             other => {
                 normalized.push(other.as_os_str());
             }
@@ -504,20 +510,15 @@ fn validate_branch_name(name: &str) -> Result<(), GitError> {
     Ok(())
 }
 
-fn is_env_truthy(val: Option<String>) -> bool {
-    val.as_deref()
-        .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
+fn is_env_truthy(val: Option<&String>) -> bool {
+    val.is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
 }
 
 fn resolve_ci_branch(env: &dyn EnvProvider) -> Option<String> {
-    let get_valid = |k: &str| {
-        env.get_var(k)
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| s.trim().to_string())
-    };
+    let get_valid = |k: &str| crate::env::get_trimmed_var(env, k);
 
     // 1. GitHub Actions
-    if is_env_truthy(env.get_var("GITHUB_ACTIONS"))
+    if is_env_truthy(env.get_var("GITHUB_ACTIONS").as_ref())
         && let Some(b) = get_valid("GITHUB_HEAD_REF").or_else(|| get_valid("GITHUB_REF_NAME"))
     {
         return Some(b);
@@ -533,7 +534,7 @@ fn resolve_ci_branch(env: &dyn EnvProvider) -> Option<String> {
     }
 
     // 3. CircleCI
-    if is_env_truthy(env.get_var("CIRCLECI"))
+    if is_env_truthy(env.get_var("CIRCLECI").as_ref())
         && let Some(b) = get_valid("CIRCLE_BRANCH")
     {
         return Some(b);
@@ -547,14 +548,14 @@ fn resolve_ci_branch(env: &dyn EnvProvider) -> Option<String> {
     }
 
     // 5. Azure DevOps
-    if is_env_truthy(env.get_var("TF_BUILD"))
+    if is_env_truthy(env.get_var("TF_BUILD").as_ref())
         && let Some(b) = get_valid("BUILD_SOURCEBRANCHNAME")
     {
         return Some(b);
     }
 
     // 6. Travis CI
-    if is_env_truthy(env.get_var("TRAVIS"))
+    if is_env_truthy(env.get_var("TRAVIS").as_ref())
         && let Some(b) = get_valid("TRAVIS_BRANCH")
     {
         return Some(b);
@@ -568,7 +569,7 @@ fn resolve_ci_branch(env: &dyn EnvProvider) -> Option<String> {
     }
 
     // 8. Bitrise
-    if is_env_truthy(env.get_var("BITRISE_IO"))
+    if is_env_truthy(env.get_var("BITRISE_IO").as_ref())
         && let Some(b) = get_valid("BITRISE_GIT_BRANCH")
     {
         return Some(b);
@@ -599,6 +600,15 @@ fn resolve_ci_branch(env: &dyn EnvProvider) -> Option<String> {
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
@@ -882,12 +892,12 @@ mod tests {
 
     #[test]
     fn test_is_env_truthy() {
-        assert!(is_env_truthy(Some("true".to_string())));
-        assert!(is_env_truthy(Some("True".to_string())));
-        assert!(is_env_truthy(Some("TRUE".to_string())));
-        assert!(is_env_truthy(Some("1".to_string())));
-        assert!(!is_env_truthy(Some("false".to_string())));
-        assert!(!is_env_truthy(Some("0".to_string())));
+        assert!(is_env_truthy(Some(&"true".to_string())));
+        assert!(is_env_truthy(Some(&"True".to_string())));
+        assert!(is_env_truthy(Some(&"TRUE".to_string())));
+        assert!(is_env_truthy(Some(&"1".to_string())));
+        assert!(!is_env_truthy(Some(&"false".to_string())));
+        assert!(!is_env_truthy(Some(&"0".to_string())));
         assert!(!is_env_truthy(None));
     }
 
