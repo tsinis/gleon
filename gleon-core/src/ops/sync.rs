@@ -43,7 +43,7 @@ pub fn list_platform_dirs(manifests_root: &Path) -> Result<Vec<(String, PathBuf)
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
-        let is_dir = path.is_dir();
+        let is_dir = std::fs::metadata(&path)?.is_dir();
         let valid_name = entry
             .file_name()
             .to_str()
@@ -169,6 +169,7 @@ where
 {
     let progress_bar = crate::ui::create_progress_bar(items.len() as u64);
 
+    let concurrency = concurrency.max(1);
     let mut stream = futures::stream::iter(
         items
             .into_iter()
@@ -340,5 +341,52 @@ mod tests {
         })
         .await;
         assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_transfer_with_progress_zero_concurrency_does_not_panic() {
+        let items = vec![1, 2, 3];
+        let res: Result<(), String> = transfer_with_progress(items, 0, |item, pb| async move {
+            pb.inc(1);
+            let _ = item;
+            Ok(())
+        })
+        .await;
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    #[cfg(all(unix, not(miri)))]
+    fn test_list_platform_dirs_propagates_metadata_error() {
+        use std::os::unix::fs::PermissionsExt;
+        // SAFETY: `libc::geteuid()` is a side-effect-free POSIX syscall query that returns the process EUID.
+        #[allow(unsafe_code)]
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+
+        let temp = tempdir().unwrap();
+        let manifests = temp.path().join("manifests");
+        let secret = temp.path().join("secret");
+        let target = secret.join("platform-dir");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::create_dir_all(&manifests).unwrap();
+
+        let sym = manifests.join("symlink-platform");
+        std::os::unix::fs::symlink(&target, &sym).unwrap();
+
+        let mut perms = std::fs::metadata(&secret).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&secret, perms).unwrap();
+
+        let res = list_platform_dirs(&manifests);
+
+        let is_err = res.is_err();
+        let mut restore = std::fs::metadata(&secret).unwrap().permissions();
+        restore.set_mode(0o755);
+        let _ = std::fs::set_permissions(&secret, restore);
+
+        assert!(is_err);
     }
 }

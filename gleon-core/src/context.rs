@@ -121,12 +121,12 @@ impl ResolvedContext {
                 "Loading configuration from explicitly provided path: {:?}",
                 path
             );
-            let cfg = GleonConfig::load_from_file(path)?;
             let resolved_path = if path.is_absolute() {
                 path.clone()
             } else {
                 base_dir.join(path)
             };
+            let cfg = GleonConfig::load_from_file(&resolved_path)?;
             let config_dir = resolved_path
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."));
@@ -223,6 +223,7 @@ mod tests {
     use super::*;
     use std::fs::File;
     use std::io::Write;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     struct EmptyEnv;
@@ -269,6 +270,30 @@ mod tests {
         assert!(context.config.is_some());
         assert_eq!(context.branch, "main");
         assert_eq!(context.target_branch, "develop");
+    }
+
+    #[test]
+    fn test_from_cli_with_relative_config_path() {
+        let dir = tempdir().unwrap();
+        create_mock_git_repo(dir.path(), "ref: refs/heads/main\n");
+        let sub_dir = dir.path().join("configs");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        let config_file = sub_dir.join("custom.yaml");
+        let mut file = File::create(&config_file).unwrap();
+        writeln!(
+            file,
+            "required_version: \">=0.1.0\"\nscreenshots:\n  - include: \"*.png\""
+        )
+        .unwrap();
+
+        let relative_path = PathBuf::from("configs/custom.yaml");
+        let options = ContextOptions {
+            config_path: Some(relative_path),
+            ..Default::default()
+        };
+
+        let context = ResolvedContext::resolve(&options, dir.path(), &EmptyEnv).unwrap();
+        assert!(context.config.is_some());
     }
 
     #[test]
