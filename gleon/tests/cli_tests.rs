@@ -722,6 +722,59 @@ fn test_dotenv_loading_integration() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// `gleon diff` always writes its JSON report to `.gleon/runs/latest/gleon-report.json`;
+/// `gleon report <format>` must default `--report` to that exact path so it works right after a
+/// `diff` run without the caller repeating the path back.
+#[test]
+fn test_cli_report_defaults_to_the_diff_output_path() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let core_fixtures = manifest_dir
+        .parent()
+        .ok_or("No parent dir")?
+        .join("gleon-core/tests/fixtures");
+
+    let img_200 = std::fs::read(core_fixtures.join("200x100.png"))?;
+    let img_100 = std::fs::read(core_fixtures.join("diff_16px_corners_100x100.png"))?;
+    let billing_dir = dir.path().join("billing");
+    std::fs::create_dir_all(&billing_dir)?;
+    std::fs::write(billing_dir.join("form.png"), &img_200)?;
+
+    let config_yaml = r#"
+required_version: ">=0.1.0"
+screenshots:
+  - include: "billing/**/*.png"
+"#;
+    std::fs::write(dir.path().join(".gleon").join("gleon.yaml"), config_yaml)?;
+
+    Command::cargo_bin("gleon")?
+        .current_dir(dir.path())
+        .arg("stage")
+        .assert()
+        .success();
+
+    // Change the screenshot after staging so `diff` reports a failure, not a no-op pass — a
+    // passing report renders no per-test rows and couldn't tell "found the default path" apart
+    // from "silently found nothing".
+    std::fs::write(billing_dir.join("form.png"), &img_100)?;
+
+    Command::cargo_bin("gleon")?
+        .current_dir(dir.path())
+        .arg("diff")
+        .assert()
+        .code(1);
+
+    // No `--report` passed: must find `.gleon/runs/latest/gleon-report.json` on its own.
+    Command::cargo_bin("gleon")?
+        .current_dir(dir.path())
+        .args(["report", "markdown"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("form"));
+
+    Ok(())
+}
+
 #[test]
 fn test_cli_report_markdown_stdout_and_file() -> Result<(), Box<dyn std::error::Error>> {
     let dir = init_temp_dir();

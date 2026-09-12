@@ -184,7 +184,10 @@ pub enum Commands {
         #[arg(value_name = "FORMAT", value_parser = ["markdown", "html", "junit", "junit.xml", "xml", "json"])]
         format: String,
         /// Path to the JSON report file
-        #[arg(long)]
+        ///
+        /// Defaults to where `gleon diff` just wrote it, so `gleon report <format>` works out of
+        /// the box right after a run without repeating the path back.
+        #[arg(long, default_value = ".gleon/runs/latest/gleon-report.json")]
         report: std::path::PathBuf,
         /// Pull Request number
         #[arg(long)]
@@ -237,6 +240,37 @@ mod tests {
         let cli = Cli::try_parse_from(args)?;
         assert_eq!(cli.branch, Some("feature-test".to_string()));
         assert_eq!(cli.command, Commands::Status { json: false });
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_report_defaults_report_path_to_the_diff_output() -> Result<(), clap::Error> {
+        // `gleon diff` always writes its JSON report to this exact path; requiring users/CI to
+        // repeat it back via `--report` on every `gleon report` call is a footgun.
+        let args = ["gleon", "report", "markdown"];
+        let cli = Cli::try_parse_from(args)?;
+        assert_eq!(
+            cli.command,
+            Commands::Report {
+                format: "markdown".to_string(),
+                report: std::path::PathBuf::from(".gleon/runs/latest/gleon-report.json"),
+                pr_number: None,
+                out: None,
+            }
+        );
+
+        // Still overridable.
+        let args_override = ["gleon", "report", "html", "--report", "custom/report.json"];
+        let cli_override = Cli::try_parse_from(args_override)?;
+        assert_eq!(
+            cli_override.command,
+            Commands::Report {
+                format: "html".to_string(),
+                report: std::path::PathBuf::from("custom/report.json"),
+                pr_number: None,
+                out: None,
+            }
+        );
         Ok(())
     }
 
