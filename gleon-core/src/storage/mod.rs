@@ -114,6 +114,36 @@ mod tests {
     }
 
     #[test]
+    fn test_image_hash_from_local_blob_path_round_trips_local_blob_path() {
+        let root = std::path::Path::new("/workspace/.gleon/blobs");
+        let hash = sha256(&"a".repeat(64));
+        let path = local_blob_path(root, &hash);
+
+        assert_eq!(image_hash_from_local_blob_path(&path), Some(hash));
+    }
+
+    #[test]
+    fn test_image_hash_from_local_blob_path_rejects_malformed_input() {
+        // Empty path: no file name, no parent.
+        assert_eq!(
+            image_hash_from_local_blob_path(std::path::Path::new("")),
+            None
+        );
+
+        // A bare file name has no `<scheme>/` parent segment to read.
+        assert_eq!(
+            image_hash_from_local_blob_path(std::path::Path::new("foo.png")),
+            None
+        );
+
+        // Right shape, but the "hash" fails `ImageHash` validation (wrong length/charset).
+        assert_eq!(
+            image_hash_from_local_blob_path(std::path::Path::new("sha256/not-a-real-hash")),
+            None
+        );
+    }
+
+    #[test]
     fn test_has_usable_local_blob_requires_a_real_file() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();

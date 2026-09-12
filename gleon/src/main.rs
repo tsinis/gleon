@@ -61,10 +61,7 @@ async fn main() -> anyhow::Result<()> {
     // consistently with those.
     let exit_code = match run(&cli, &current_dir, &env).await {
         Ok(code) => code,
-        Err(e) => {
-            tracing::error!("{e:#}");
-            i32::from(ExitCode::Failure)
-        }
+        Err(e) => i32::from(commands::report_failure("Context resolution failed", &*e)),
     };
     if exit_code != 0 {
         std::process::exit(exit_code);

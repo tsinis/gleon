@@ -195,7 +195,12 @@ impl FileScanner {
             .build()
     }
 
-    /// Normalizes path separators to forward slashes for cross-platform manifest key consistency.
+    /// Normalizes path separators and folds ASCII case into a canonical test identity.
+    ///
+    /// This is for building/looking up test identities (manifest keys), where case-insensitive
+    /// matching is correct. It must **not** be used for real filesystem or Git index paths on
+    /// case-sensitive systems — use [`crate::naming::normalize_path_separators`] there instead,
+    /// which normalizes separators only.
     #[must_use]
     pub fn normalize_path_str(path: &Path) -> Cow<'_, str> {
         match path.to_string_lossy() {

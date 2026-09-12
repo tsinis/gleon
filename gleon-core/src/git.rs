@@ -423,9 +423,14 @@ impl GitResolver {
                 // (as `normalize_path_str` does, since it also builds test identities) makes the
                 // lookup miss every path containing an uppercase character, leaving the file
                 // deleted on disk but still staged.
-                let norm_str =
-                    crate::naming::normalize_path_separators(&rel_to_repo.to_string_lossy())
-                        .into_owned();
+                // Bound separately so the `to_string_lossy()` temporary outlives the
+                // `normalize_path_separators` borrow below (an inline `&rel_to_repo
+                // .to_string_lossy()` is dropped at the end of the statement while still
+                // borrowed). This still allocates at most once: `rel_str` only owns when the
+                // path isn't valid UTF-8, and `norm_str` only owns on top of that when it also
+                // contains a backslash.
+                let rel_str = rel_to_repo.to_string_lossy();
+                let norm_str = crate::naming::normalize_path_separators(&rel_str);
                 if let Ok(entry_idx) = index.entry_index_by_path(norm_str.as_bytes().into())
                     && seen_indices.insert(entry_idx)
                 {

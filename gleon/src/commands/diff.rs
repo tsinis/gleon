@@ -18,15 +18,15 @@ pub async fn run_diff(
     resolve_conflicts: bool,
     storage_cfg: Option<StorageConfig>,
 ) -> ExitCode {
-    if resolve_conflicts {
-        return resolve::run_resolve(ctx, None, false, storage_cfg).await;
-    }
-
     if auto_pull {
         let pull_code = pull::run_pull(ctx, storage_cfg.as_ref(), false, None).await;
         if pull_code != ExitCode::Success {
             return pull_code;
         }
+    }
+
+    if resolve_conflicts {
+        return resolve::run_resolve(ctx, None, false, storage_cfg).await;
     }
 
     let report = match gleon_core::ops::run_diff(ctx) {

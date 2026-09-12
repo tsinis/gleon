@@ -126,6 +126,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_normalize_path_separators_borrows_when_no_backslash() {
+        let path = "billing/Stripe/Form.png";
+        match normalize_path_separators(path) {
+            Cow::Borrowed(s) => assert_eq!(s, path),
+            Cow::Owned(s) => panic!("expected a borrow, got an owned allocation: {s:?}"),
+        }
+    }
+
+    #[test]
+    fn test_normalize_path_separators_only_swaps_slashes_case_is_preserved() {
+        // This is the exact shape that broke Git index lookups: folding case here (as
+        // `normalize_path_str` does) makes the lookup miss every path containing an uppercase
+        // character. Separators must flip; case must survive untouched.
+        let path = r"billing\Stripe\Form.png";
+        match normalize_path_separators(path) {
+            Cow::Owned(s) => assert_eq!(s, "billing/Stripe/Form.png"),
+            Cow::Borrowed(s) => panic!("expected an owned allocation, got a borrow: {s:?}"),
+        }
+    }
+
+    #[test]
     fn test_validate_test_name() {
         assert!(validate_test_name(".").is_err());
         assert!(validate_test_name("billing").is_ok());

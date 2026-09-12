@@ -99,6 +99,15 @@ impl GleonPaths {
     pub fn gitignore(&self) -> PathBuf {
         self.gleon_dir().join(".gitignore")
     }
+
+    /// Moves `base_dir` to its parent in place, mirroring [`PathBuf::pop`].
+    ///
+    /// Returns `false` (and leaves `base_dir` unchanged) once there is no parent left, exactly
+    /// like `PathBuf::pop`. Lets [`find_workspace_root`] walk up the tree by mutating a single
+    /// `GleonPaths` instead of allocating a new `PathBuf` on every ancestor.
+    pub fn pop(&mut self) -> bool {
+        self.base_dir.pop()
+    }
 }
 
 /// Walks up from `start_dir` (inclusive) through parent directories, returning the first
@@ -107,14 +116,14 @@ pub fn find_workspace_root(
     start_dir: &Path,
     marker: impl Fn(&GleonPaths) -> bool,
 ) -> Option<GleonPaths> {
-    // Walk up in place: `PathBuf::pop` reuses the same allocation, so only the matching
-    // ancestor is ever turned into an owned `GleonPaths`.
-    let mut current = start_dir.to_path_buf();
+    // Walk up in place: a single `GleonPaths` is mutated via `pop`, so only one `PathBuf`
+    // ever exists for the whole walk (no per-ancestor allocation).
+    let mut candidate = GleonPaths::new(start_dir);
     loop {
-        if marker(&GleonPaths::new(current.as_path())) {
-            return Some(GleonPaths::new(current));
+        if marker(&candidate) {
+            return Some(candidate);
         }
-        if !current.pop() {
+        if !candidate.pop() {
             return None;
         }
     }

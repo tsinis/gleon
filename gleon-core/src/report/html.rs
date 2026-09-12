@@ -250,6 +250,13 @@ impl super::ReportGenerator {
                     source: e,
                 })?;
 
+        // Resolved once here rather than inside `make_relative_path`: image paths recorded on
+        // disk are absolute while `--out report.html` hands us a relative (often empty)
+        // `report_dir`, and every failing test's `actual`/`baseline`/`diff` path would otherwise
+        // each pay for their own `current_dir()` syscall during rendering.
+        let absolute_report_dir = report_dir.map(super::format::to_absolute);
+        let report_dir = absolute_report_dir.as_deref();
+
         let ctx = context! {
             total_tests => total_tests,
             failed_tests => failed_tests,
