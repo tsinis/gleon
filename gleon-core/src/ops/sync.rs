@@ -321,7 +321,7 @@ mod tests {
         let img_hash = ImageHash::new("sha256", hash).unwrap();
         let meta = hashes.get(&img_hash).unwrap();
         assert_eq!(meta.platform, "linux");
-        assert!(meta.test_name == "test" || meta.test_name == "test2");
+        assert_eq!(meta.test_name, "test");
     }
 
     #[test]

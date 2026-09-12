@@ -415,7 +415,7 @@ impl ObjectStoreAdapter {
             .await;
 
         if let Err(e) = put_res {
-            // S3-compatible proxies, Ceph, MinIO, or custom storage backends may reject
+            // S3-compatible proxies, MinIO, or custom storage backends may reject
             // custom metadata or attributes. Since metadata is non-critical DevEx information,
             // we log a warning and fall back to standard `put` without attributes.
             tracing::warn!(
@@ -476,7 +476,7 @@ fn build_blob_attributes(metadata: Option<&BlobMetadata>) -> object_store::Attri
                 );
             } else {
                 tracing::warn!(
-                    test = %test_name,
+                    test = ?test_name,
                     "Skipping invalid test metadata header containing non-ASCII or control characters"
                 );
             }
@@ -489,7 +489,7 @@ fn build_blob_attributes(metadata: Option<&BlobMetadata>) -> object_store::Attri
                 );
             } else {
                 tracing::warn!(
-                    platform = %platform,
+                    platform = ?platform,
                     "Skipping invalid platform metadata header containing non-ASCII or control characters"
                 );
             }
@@ -502,7 +502,7 @@ fn build_blob_attributes(metadata: Option<&BlobMetadata>) -> object_store::Attri
                 );
             } else {
                 tracing::warn!(
-                    path = %path,
+                    path = ?path,
                     "Skipping invalid path metadata header containing non-ASCII or control characters"
                 );
             }
@@ -837,5 +837,61 @@ mod tests {
         assert!(adapter.blob_exists(&hash).await.unwrap());
         let attrs = adapter.get_blob_attributes(&hash).await.unwrap().unwrap();
         assert!(attrs.is_empty());
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_put_opts_error_fallback_failure_propagates_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", temp.path().display());
+        let cfg = StorageConfig::new(url);
+        let mut adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+
+        adapter.supports_attributes = true;
+
+        // In LocalFileSystem, blob keys are written to blobs/<scheme>/<hash>.
+        // If "blobs" is a file instead of a directory, both put_opts and fallback put fail!
+        let blobs_conflict = temp.path().join("blobs");
+        std::fs::write(&blobs_conflict, b"not a directory").unwrap();
+
+        let src_file = temp.path().join("sample.png");
+        std::fs::write(&src_file, b"data").unwrap();
+
+        let hash = crate::manifest::ImageHash::new(
+            "sha256",
+            "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        )
+        .unwrap();
+
+        let meta = BlobMetadata::new("checkout/cart", "ios-arm64");
+        let res = adapter
+            .upload_blob_with_metadata(&hash, &src_file, Some(&meta))
+            .await;
+        assert!(matches!(res, Err(StorageError::Store { .. })));
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_upload_blob_put_failure_propagates_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", temp.path().display());
+        let cfg = StorageConfig::new(url);
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+        assert!(!adapter.supports_attributes);
+
+        let blobs_conflict = temp.path().join("blobs");
+        std::fs::write(&blobs_conflict, b"not a directory").unwrap();
+
+        let src_file = temp.path().join("sample2.png");
+        std::fs::write(&src_file, b"data2").unwrap();
+
+        let hash = crate::manifest::ImageHash::new(
+            "sha256",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        )
+        .unwrap();
+
+        let res = adapter.upload_blob(&hash, &src_file).await;
+        assert!(matches!(res, Err(StorageError::Store { .. })));
     }
 }

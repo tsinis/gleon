@@ -14,9 +14,9 @@ use object_store::path::Path as ObjPath;
 pub struct BlobMetadata {
     /// Test case path referencing the blob (e.g. `auth/login_screen`).
     pub test_name: Option<String>,
-    /// Platform key where the blob was referenced (e.g. `macos-arm64-skia`).
+    /// Platform key where the blob was referenced (e.g. `macos-arm64`).
     pub platform: Option<String>,
-    /// Exact relative path of the asset (e.g. `macos-arm64-skia/auth/login_screen.png`).
+    /// Exact relative path of the asset (e.g. `macos-arm64/auth/login_screen.png`).
     pub path: Option<String>,
     /// MIME content type of the asset (defaults to `Some("image/png")` when constructed via [`BlobMetadata::new`]).
     pub content_type: Option<String>,

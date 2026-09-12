@@ -241,7 +241,7 @@ async fn test_upload_blob_with_metadata_attributes() {
     // Query non-existent hash returns None
     let missing_hash = gleon_core::manifest::ImageHash::new(
         "sha256",
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "8888888888888888888888888888888888888888888888888888888888888888",
     )
     .unwrap();
     assert!(
@@ -336,5 +336,75 @@ async fn test_upload_blob_with_custom_content_type_and_sanitization() {
             .unwrap()
             .as_ref(),
         "macos-arm64/auth/login.png"
+    );
+
+    // Second upload: invalid path and invalid content_type are also skipped safely
+    let hash2 = gleon_core::manifest::ImageHash::new(
+        "sha256",
+        "9999999999999999999999999999999999999999999999999999999999999999",
+    )
+    .unwrap();
+
+    let meta2 = BlobMetadata {
+        content_type: Some("invalid\ncontent/type".to_string()),
+        path: Some("invalid\npath/screen.png".to_string()),
+        ..Default::default()
+    };
+
+    adapter
+        .upload_blob_with_metadata(&hash2, &src_file, Some(&meta2))
+        .await
+        .unwrap();
+
+    let attrs2 = adapter
+        .get_blob_attributes(&hash2)
+        .await
+        .unwrap()
+        .expect("attributes present");
+
+    assert!(attrs2.get(&Attribute::ContentType).is_none());
+    assert!(
+        attrs2
+            .get(&Attribute::Metadata(std::borrow::Cow::Borrowed("path")))
+            .is_none()
+    );
+
+    // Third upload: metadata with None fields falls back to default Content-Type and sets no headers
+    let hash3 = gleon_core::manifest::ImageHash::new(
+        "sha256",
+        "1111111111111111111111111111111111111111111111111111111111111111",
+    )
+    .unwrap();
+
+    let meta3 = BlobMetadata::default();
+    adapter
+        .upload_blob_with_metadata(&hash3, &src_file, Some(&meta3))
+        .await
+        .unwrap();
+
+    let attrs3 = adapter
+        .get_blob_attributes(&hash3)
+        .await
+        .unwrap()
+        .expect("attributes present");
+
+    assert_eq!(
+        attrs3.get(&Attribute::ContentType).unwrap().as_ref(),
+        "image/png"
+    );
+    assert!(
+        attrs3
+            .get(&Attribute::Metadata(std::borrow::Cow::Borrowed("test")))
+            .is_none()
+    );
+    assert!(
+        attrs3
+            .get(&Attribute::Metadata(std::borrow::Cow::Borrowed("platform")))
+            .is_none()
+    );
+    assert!(
+        attrs3
+            .get(&Attribute::Metadata(std::borrow::Cow::Borrowed("path")))
+            .is_none()
     );
 }
