@@ -5,6 +5,40 @@ pub mod adapter;
 pub use adapter::{ObjectStoreAdapter, StorageConfig};
 use object_store::path::Path as ObjPath;
 
+/// Optional metadata attached to an uploaded blob in cloud storage.
+///
+/// When multiple test cases or platforms reference the exact same content hash, the metadata
+/// attached to the remote blob represents the *first lexicographically discovered* reference
+/// (deterministic traversal: sorted platform keys, then sorted test names).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BlobMetadata {
+    /// Test case path referencing the blob (e.g. `auth/login_screen`).
+    pub test_name: Option<String>,
+    /// Platform key where the blob was referenced (e.g. `macos-arm64-skia`).
+    pub platform: Option<String>,
+    /// Exact relative path of the asset (e.g. `macos-arm64-skia/auth/login_screen.png`).
+    pub path: Option<String>,
+    /// MIME content type of the asset (defaults to `Some("image/png")` when constructed via [`BlobMetadata::new`]).
+    pub content_type: Option<String>,
+}
+
+impl BlobMetadata {
+    /// Creates a new `BlobMetadata` pre-populating `test_name`, `platform`, calculated `path`,
+    /// and default `content_type` (`image/png`).
+    #[must_use]
+    pub fn new(test_name: impl Into<String>, platform: impl Into<String>) -> Self {
+        let test_name = test_name.into();
+        let platform = platform.into();
+        let path = format!("{platform}/{test_name}.png");
+        Self {
+            test_name: Some(test_name),
+            platform: Some(platform),
+            path: Some(path),
+            content_type: Some("image/png".to_string()),
+        }
+    }
+}
+
 /// Storage error types.
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {

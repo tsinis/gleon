@@ -12,7 +12,8 @@
 
 #![cfg(not(miri))]
 
-use gleon_core::storage::{ObjectStoreAdapter, StorageConfig, StorageError};
+use gleon_core::storage::{BlobMetadata, ObjectStoreAdapter, StorageConfig, StorageError};
+use object_store::Attribute;
 use tempfile::tempdir;
 
 #[test]
@@ -172,4 +173,168 @@ fn test_aws_options_coverage() {
     let config_bad = StorageConfig::new("http://[:::1]"); // Invalid IPv6
     let err = ObjectStoreAdapter::from_config(&config_bad);
     assert!(matches!(err, Err(StorageError::InvalidUrl { .. })));
+}
+
+#[test]
+fn test_blob_metadata_creation() {
+    let meta = BlobMetadata::new("auth/login", "macos-arm64");
+    assert_eq!(meta.test_name.as_deref(), Some("auth/login"));
+    assert_eq!(meta.platform.as_deref(), Some("macos-arm64"));
+    assert_eq!(meta.path.as_deref(), Some("macos-arm64/auth/login.png"));
+    assert_eq!(meta.content_type.as_deref(), Some("image/png"));
+
+    let default_meta = BlobMetadata::default();
+    assert_eq!(default_meta.test_name, None);
+    assert_eq!(default_meta.platform, None);
+    assert_eq!(default_meta.path, None);
+    assert_eq!(default_meta.content_type, None);
+}
+
+#[tokio::test]
+async fn test_upload_blob_with_metadata_attributes() {
+    let config = StorageConfig::new("memory://");
+    let adapter = ObjectStoreAdapter::from_config(&config).unwrap();
+
+    let dir = tempdir().unwrap();
+    let src_file = dir.path().join("blob_with_meta.png");
+    std::fs::write(&src_file, b"sample_png_bytes").unwrap();
+
+    let hash = gleon_core::manifest::ImageHash::new(
+        "sha256",
+        "4444444444444444444444444444444444444444444444444444444444444444",
+    )
+    .unwrap();
+
+    let meta = BlobMetadata::new("auth/login_screen", "macos-arm64");
+    adapter
+        .upload_blob_with_metadata(&hash, &src_file, Some(&meta))
+        .await
+        .unwrap();
+
+    // Verify stored attributes using encapsulated get_blob_attributes
+    let attributes = adapter
+        .get_blob_attributes(&hash)
+        .await
+        .unwrap()
+        .expect("attributes present");
+
+    let content_type = attributes
+        .get(&Attribute::ContentType)
+        .expect("ContentType attribute present");
+    assert_eq!(content_type.as_ref(), "image/png");
+
+    let test_attr = attributes
+        .get(&Attribute::Metadata(std::borrow::Cow::Borrowed("test")))
+        .expect("test metadata present");
+    assert_eq!(test_attr.as_ref(), "auth/login_screen");
+
+    let platform_attr = attributes
+        .get(&Attribute::Metadata(std::borrow::Cow::Borrowed("platform")))
+        .expect("platform metadata present");
+    assert_eq!(platform_attr.as_ref(), "macos-arm64");
+
+    let path_attr = attributes
+        .get(&Attribute::Metadata(std::borrow::Cow::Borrowed("path")))
+        .expect("path metadata present");
+    assert_eq!(path_attr.as_ref(), "macos-arm64/auth/login_screen.png");
+
+    // Query non-existent hash returns None
+    let missing_hash = gleon_core::manifest::ImageHash::new(
+        "sha256",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
+    .unwrap();
+    assert!(
+        adapter
+            .get_blob_attributes(&missing_hash)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn test_local_file_system_skips_attributes_for_file_scheme() {
+    let dir = tempdir().unwrap();
+    // file:// URL creates an adapter with supports_attributes = false
+    let url = format!("file://{}", dir.path().display());
+    let config = StorageConfig::new(url);
+    let adapter = ObjectStoreAdapter::from_config(&config).unwrap();
+
+    let src_file = dir.path().join("local_sample.png");
+    std::fs::write(&src_file, b"sample_file_data").unwrap();
+
+    let hash = gleon_core::manifest::ImageHash::new(
+        "sha256",
+        "5555555555555555555555555555555555555555555555555555555555555555",
+    )
+    .unwrap();
+
+    let meta = BlobMetadata::new("home/dashboard", "linux-x86_64");
+    adapter
+        .upload_blob_with_metadata(&hash, &src_file, Some(&meta))
+        .await
+        .expect("upload on LocalFileSystem should succeed directly via put");
+
+    assert!(adapter.blob_exists(&hash).await.unwrap());
+    let attrs = adapter.get_blob_attributes(&hash).await.unwrap().unwrap();
+    assert!(attrs.is_empty());
+}
+
+#[tokio::test]
+async fn test_upload_blob_with_custom_content_type_and_sanitization() {
+    let config = StorageConfig::new("memory://");
+    let adapter = ObjectStoreAdapter::from_config(&config).unwrap();
+
+    let dir = tempdir().unwrap();
+    let src_file = dir.path().join("blob_custom_meta.png");
+    std::fs::write(&src_file, b"sample_custom_bytes").unwrap();
+
+    let hash = gleon_core::manifest::ImageHash::new(
+        "sha256",
+        "7777777777777777777777777777777777777777777777777777777777777777",
+    )
+    .unwrap();
+
+    // Pass custom content_type and invalid (control / newline) characters in metadata
+    let mut meta = BlobMetadata::new("auth/login", "macos-arm64");
+    meta.content_type = Some("image/webp".to_string());
+    meta.test_name = Some("auth\nmalicious".to_string()); // Invalid CRLF should be skipped
+    meta.platform = Some("macos\r\ninjection".to_string()); // Invalid CRLF should be skipped
+    meta.path = Some("macos-arm64/auth/login.png".to_string()); // Valid, should be kept
+
+    adapter
+        .upload_blob_with_metadata(&hash, &src_file, Some(&meta))
+        .await
+        .unwrap();
+
+    let attrs = adapter
+        .get_blob_attributes(&hash)
+        .await
+        .unwrap()
+        .expect("attributes present");
+
+    assert_eq!(
+        attrs.get(&Attribute::ContentType).unwrap().as_ref(),
+        "image/webp"
+    );
+    // Malformed headers were skipped safely
+    assert!(
+        attrs
+            .get(&Attribute::Metadata(std::borrow::Cow::Borrowed("test")))
+            .is_none()
+    );
+    assert!(
+        attrs
+            .get(&Attribute::Metadata(std::borrow::Cow::Borrowed("platform")))
+            .is_none()
+    );
+    // Valid header was retained
+    assert_eq!(
+        attrs
+            .get(&Attribute::Metadata(std::borrow::Cow::Borrowed("path")))
+            .unwrap()
+            .as_ref(),
+        "macos-arm64/auth/login.png"
+    );
 }

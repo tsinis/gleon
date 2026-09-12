@@ -12,7 +12,7 @@ use object_store::{ObjectStore, ObjectStoreExt, parse_url_opts};
 use tempfile::NamedTempFile;
 use tracing::{debug, instrument};
 
-use super::{StorageError, blob_key};
+use super::{BlobMetadata, StorageError, blob_key};
 
 /// Configuration for storage initialization and authentication credentials.
 #[derive(Clone, PartialEq, Eq)]
@@ -140,6 +140,7 @@ pub struct ObjectStoreAdapter {
     signer: Option<Arc<dyn object_store::signer::Signer>>,
     prefix: object_store::path::Path,
     concurrency: usize,
+    supports_attributes: bool,
 }
 
 impl ObjectStoreAdapter {
@@ -162,6 +163,8 @@ impl ObjectStoreAdapter {
         } else {
             object_store::path::Path::parse(url_path).map_err(|e| invalid_url(&e))?
         };
+
+        let supports_attributes = parsed_url.scheme() != "file";
 
         let (store, signer): (
             Arc<dyn ObjectStore>,
@@ -237,6 +240,7 @@ impl ObjectStoreAdapter {
                     signer: None,
                     prefix: object_store::path::Path::from(""), // Handled internally by PrefixStore
                     concurrency: std::cmp::max(1, config.concurrency),
+                    supports_attributes,
                 });
             }
         };
@@ -249,6 +253,7 @@ impl ObjectStoreAdapter {
             signer,
             prefix,
             concurrency: std::cmp::max(1, config.concurrency),
+            supports_attributes,
         })
     }
 
@@ -291,15 +296,33 @@ impl ObjectStoreAdapter {
         self.concurrency
     }
 
-    /// Uploads a single blob from disk to remote storage at `blobs/sha256/<hash>`.
+    /// Returns the attributes of a remote blob, if supported and available.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if the remote query fails for a reason other than the blob not existing.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn get_blob_attributes(
+        &self,
+        hash: &crate::manifest::ImageHash,
+    ) -> Result<Option<object_store::Attributes>, StorageError> {
+        let key = blob_key(hash);
+        match self.store.get(&key).await {
+            Ok(res) => Ok(Some(res.attributes)),
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(source) => Err(StorageError::Store { source }),
+        }
+    }
+
+    /// Uploads a single blob from disk to remote storage at `blobs/<scheme>/<hash>` with optional metadata.
     ///
     /// # Errors
     /// Returns [`StorageError`] if the local file cannot be read or remote upload fails.
-    #[instrument(skip(self, src_path), level = "debug")]
-    pub async fn upload_blob(
+    #[instrument(skip(self, src_path, metadata), level = "debug")]
+    pub async fn upload_blob_with_metadata(
         &self,
         hash: &crate::manifest::ImageHash,
         src_path: &Path,
+        metadata: Option<&BlobMetadata>,
     ) -> Result<(), StorageError> {
         let key = blob_key(hash);
         let mut options = std::fs::OpenOptions::new();
@@ -322,19 +345,19 @@ impl ObjectStoreAdapter {
         // On Windows, opening a reparse point with FILE_FLAG_OPEN_REPARSE_POINT succeeds.
         // We must inspect the metadata of the opened handle to reject symlinks.
         // On Unix, O_NOFOLLOW fails to open symlinks with ELOOP, but this check is a harmless safety net.
-        let metadata = std_file.metadata()?;
+        let file_meta = std_file.metadata()?;
 
         #[cfg(windows)]
         let is_symlink_or_reparse = {
             use std::os::windows::fs::MetadataExt;
             const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-            metadata.is_symlink()
-                || (metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+            file_meta.is_symlink()
+                || (file_meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
         };
         #[cfg(not(windows))]
-        let is_symlink_or_reparse = metadata.is_symlink();
+        let is_symlink_or_reparse = file_meta.is_symlink();
 
-        if is_symlink_or_reparse || !metadata.is_file() {
+        if is_symlink_or_reparse || !file_meta.is_file() {
             return Err(StorageError::Io {
                 source: std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -343,7 +366,7 @@ impl ObjectStoreAdapter {
             });
         }
 
-        let len = metadata.len();
+        let len = file_meta.len();
         const MAX_BLOB_SIZE: u64 = 100 * 1024 * 1024;
         if len > MAX_BLOB_SIZE {
             return Err(StorageError::Io {
@@ -362,14 +385,134 @@ impl ObjectStoreAdapter {
         #[allow(clippy::cast_possible_truncation)]
         let mut bytes = Vec::with_capacity(len as usize);
         tokio::io::AsyncReadExt::read_to_end(&mut file, &mut bytes).await?;
-        self.store
-            .put(&key, object_store::PutPayload::from(bytes))
-            .await
-            .map_err(|source| StorageError::Store { source })?;
+
+        let payload_bytes = bytes::Bytes::from(bytes);
+
+        // Fast-path: backends known not to support custom metadata (such as LocalFileSystem `file://`)
+        // directly upload via `put`, avoiding redundant failed `put_opts` round-trips.
+        if !self.supports_attributes {
+            self.store
+                .put(&key, object_store::PutPayload::from(payload_bytes))
+                .await
+                .map_err(|source| StorageError::Store { source })?;
+            debug!(hash = %hash.value(), "Successfully uploaded blob to remote storage");
+            return Ok(());
+        }
+
+        let attributes = build_blob_attributes(metadata);
+        let put_opts = object_store::PutOptions {
+            attributes,
+            ..Default::default()
+        };
+
+        let put_res = self
+            .store
+            .put_opts(
+                &key,
+                object_store::PutPayload::from(payload_bytes.clone()),
+                put_opts,
+            )
+            .await;
+
+        if let Err(e) = put_res {
+            // S3-compatible proxies, Ceph, MinIO, or custom storage backends may reject
+            // custom metadata or attributes. Since metadata is non-critical DevEx information,
+            // we log a warning and fall back to standard `put` without attributes.
+            tracing::warn!(
+                hash = %hash.value(),
+                error = %e,
+                "Failed to upload blob with custom metadata, falling back to standard put without metadata"
+            );
+            self.store
+                .put(&key, object_store::PutPayload::from(payload_bytes))
+                .await
+                .map_err(|source| StorageError::Store { source })?;
+        }
+
         debug!(hash = %hash.value(), "Successfully uploaded blob to remote storage");
         Ok(())
     }
 
+    /// Uploads a single blob from disk to remote storage at `blobs/<scheme>/<hash>`.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if the local file cannot be read or remote upload fails.
+    #[instrument(skip(self, src_path), level = "debug")]
+    pub async fn upload_blob(
+        &self,
+        hash: &crate::manifest::ImageHash,
+        src_path: &Path,
+    ) -> Result<(), StorageError> {
+        self.upload_blob_with_metadata(hash, src_path, None).await
+    }
+}
+
+/// Checks that a metadata value is suitable for an HTTP header value (non-empty, ASCII, non-control).
+#[inline]
+fn is_valid_meta_value(val: &str) -> bool {
+    !val.is_empty() && val.chars().all(|c| c.is_ascii() && !c.is_ascii_control())
+}
+
+/// Constructs `object_store::Attributes` for a blob upload, validating and sanitizing headers.
+fn build_blob_attributes(metadata: Option<&BlobMetadata>) -> object_store::Attributes {
+    let mut attributes = object_store::Attributes::new();
+    let content_type = metadata
+        .and_then(|m| m.content_type.as_deref())
+        .unwrap_or("image/png");
+
+    if is_valid_meta_value(content_type) {
+        attributes.insert(
+            object_store::Attribute::ContentType,
+            object_store::AttributeValue::from(content_type.to_string()),
+        );
+    }
+
+    if let Some(meta) = metadata {
+        if let Some(test_name) = &meta.test_name {
+            if is_valid_meta_value(test_name) {
+                attributes.insert(
+                    object_store::Attribute::Metadata(std::borrow::Cow::Borrowed("test")),
+                    object_store::AttributeValue::from(test_name.clone()),
+                );
+            } else {
+                tracing::warn!(
+                    test = %test_name,
+                    "Skipping invalid test metadata header containing non-ASCII or control characters"
+                );
+            }
+        }
+        if let Some(platform) = &meta.platform {
+            if is_valid_meta_value(platform) {
+                attributes.insert(
+                    object_store::Attribute::Metadata(std::borrow::Cow::Borrowed("platform")),
+                    object_store::AttributeValue::from(platform.clone()),
+                );
+            } else {
+                tracing::warn!(
+                    platform = %platform,
+                    "Skipping invalid platform metadata header containing non-ASCII or control characters"
+                );
+            }
+        }
+        if let Some(path) = &meta.path {
+            if is_valid_meta_value(path) {
+                attributes.insert(
+                    object_store::Attribute::Metadata(std::borrow::Cow::Borrowed("path")),
+                    object_store::AttributeValue::from(path.clone()),
+                );
+            } else {
+                tracing::warn!(
+                    path = %path,
+                    "Skipping invalid path metadata header containing non-ASCII or control characters"
+                );
+            }
+        }
+    }
+
+    attributes
+}
+
+impl ObjectStoreAdapter {
     /// Checks if a blob exists on remote storage without downloading it.
     ///
     /// # Errors
@@ -661,5 +804,38 @@ mod tests {
 
         let result = adapter.upload_blob(&hash, &link).await;
         assert!(matches!(result, Err(StorageError::Io { .. })));
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_put_opts_error_fallback_to_plain_put() {
+        let temp = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", temp.path().display());
+        let cfg = StorageConfig::new(url);
+        let mut adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+
+        // Force supports_attributes = true on LocalFileSystem so that put_opts is invoked.
+        // LocalFileSystem returns NotImplemented on put_opts with attributes,
+        // exercising the warning log and fallback to standard put.
+        adapter.supports_attributes = true;
+
+        let src_file = temp.path().join("fallback_sample.png");
+        std::fs::write(&src_file, b"sample_fallback_data").unwrap();
+
+        let hash = crate::manifest::ImageHash::new(
+            "sha256",
+            "6666666666666666666666666666666666666666666666666666666666666666",
+        )
+        .unwrap();
+
+        let meta = BlobMetadata::new("checkout/cart", "ios-arm64");
+        adapter
+            .upload_blob_with_metadata(&hash, &src_file, Some(&meta))
+            .await
+            .expect("fallback to plain put should succeed");
+
+        assert!(adapter.blob_exists(&hash).await.unwrap());
+        let attrs = adapter.get_blob_attributes(&hash).await.unwrap().unwrap();
+        assert!(attrs.is_empty());
     }
 }

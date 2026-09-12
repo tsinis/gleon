@@ -99,11 +99,25 @@ pub fn resolve_platform_dirs(
     }
 }
 
+/// Metadata associated with a referenced blob in the workspace index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReferencedBlobMeta {
+    /// Platform key where the blob was referenced.
+    pub platform: String,
+    /// Normalized test case path referencing the blob (e.g. `auth/login_screen`).
+    pub test_name: String,
+}
+
 /// Loads each platform directory's manifest index and collects the unique blob hashes they
-/// reference, mapped to the (first) platform that referenced them — used for error reporting.
+/// reference, mapped to their (first) referencing platform and test name metadata.
 ///
 /// Directories that don't exist (e.g. a platform never staged) are silently skipped, matching
 /// `push_blobs`'s original behavior.
+///
+/// If multiple tests or platforms reference the same content hash (CAS deduplication), metadata
+/// selection is deterministic: it preserves the *first lexicographically visited* reference.
+/// Platforms in `platform_dirs` are visited in order (typically sorted via [`list_platform_dirs`]),
+/// and tests within each platform's [`WorkspaceIndex`] are visited in sorted order.
 ///
 /// This is also the piece a future `gc` operation needs: call [`list_platform_dirs`] with
 /// `manifests_root` to get every platform, then this function to get the full referenced-hash
@@ -114,8 +128,8 @@ pub fn resolve_platform_dirs(
 /// if a manifest index fails to load.
 pub fn collect_referenced_hashes(
     platform_dirs: &[(String, PathBuf)],
-) -> Result<BTreeMap<ImageHash, String>, CoreError> {
-    let mut hash_to_platform = BTreeMap::new();
+) -> Result<BTreeMap<ImageHash, ReferencedBlobMeta>, CoreError> {
+    let mut hash_to_meta = BTreeMap::new();
 
     for (plat_key, plat_dir) in platform_dirs {
         match std::fs::metadata(plat_dir) {
@@ -124,14 +138,17 @@ pub fn collect_referenced_hashes(
             Err(e) => return Err(CoreError::Io(e)),
         }
         let index = WorkspaceIndex::load(plat_dir).map_err(CoreError::Manifest)?;
-        for manifest in index.entries().values() {
-            hash_to_platform
+        for (test_name, manifest) in index.entries() {
+            hash_to_meta
                 .entry(manifest.hash.clone())
-                .or_insert_with(|| plat_key.clone());
+                .or_insert_with(|| ReferencedBlobMeta {
+                    platform: plat_key.clone(),
+                    test_name: test_name.clone(),
+                });
         }
     }
 
-    Ok(hash_to_platform)
+    Ok(hash_to_meta)
 }
 
 /// Returns `storage_config` if it's set and non-blank, or logs an informational "local mode"
@@ -301,6 +318,10 @@ mod tests {
         ];
         let hashes = collect_referenced_hashes(&dirs).unwrap();
         assert_eq!(hashes.len(), 1);
+        let img_hash = ImageHash::new("sha256", hash).unwrap();
+        let meta = hashes.get(&img_hash).unwrap();
+        assert_eq!(meta.platform, "linux");
+        assert!(meta.test_name == "test" || meta.test_name == "test2");
     }
 
     #[test]

@@ -73,10 +73,10 @@ pub async fn push_blobs(
     let platform_dirs =
         resolve_platform_dirs(context, &manifests_root, all_platforms, platform_override)?;
 
-    // Collect all referenced unique sha256 blob hashes and their platform (for error reporting)
-    let hash_to_platform = collect_referenced_hashes(&platform_dirs)?;
+    // Collect all referenced unique blob hashes and their metadata (for error reporting and cloud metadata)
+    let hash_to_meta = collect_referenced_hashes(&platform_dirs)?;
 
-    let total_manifest_blobs = hash_to_platform.len();
+    let total_manifest_blobs = hash_to_meta.len();
     if total_manifest_blobs == 0 {
         return Ok(PushResult {
             total_manifest_blobs: 0,
@@ -90,7 +90,7 @@ pub async fn push_blobs(
 
     // Query remote storage in batch per unique scheme using adapter.list_blobs()
     let mut unique_schemes = HashSet::new();
-    for hash in hash_to_platform.keys() {
+    for hash in hash_to_meta.keys() {
         unique_schemes.insert(hash.scheme());
     }
 
@@ -110,30 +110,31 @@ pub async fn push_blobs(
     let mut missing_blobs = Vec::new();
     let mut skipped_blobs = 0;
 
-    for (hash, platform) in hash_to_platform {
+    for (hash, meta) in hash_to_meta {
         if existing_remote_hashes.contains(&hash) {
             skipped_blobs += 1;
         } else {
             if !crate::storage::has_usable_local_blob(&blobs_root, &hash) {
                 return Err(PushError::MissingLocalBlob {
                     hash: hash.value().to_string(),
-                    platform,
+                    platform: meta.platform,
                 });
             }
-            missing_blobs.push(hash);
+            missing_blobs.push((hash, meta));
         }
     }
 
     let missing_count = missing_blobs.len();
 
     // Upload missing blobs in parallel with Fail-Fast short-circuiting
-    transfer_with_progress(missing_blobs, adapter.concurrency(), |hash, pb| {
+    transfer_with_progress(missing_blobs, adapter.concurrency(), |(hash, meta), pb| {
         let adapter = adapter.clone();
         let src_path = blobs_root.join(hash.scheme()).join(hash.value());
+        let blob_meta = crate::storage::BlobMetadata::new(&meta.test_name, &meta.platform);
         async move {
             pb.set_message(format!("Uploading {}", short_hash(&hash)));
             let res = adapter
-                .upload_blob(&hash, &src_path)
+                .upload_blob_with_metadata(&hash, &src_path, Some(&blob_meta))
                 .await
                 .map_err(PushError::Storage);
             pb.inc(1);
