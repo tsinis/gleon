@@ -122,8 +122,17 @@ impl ResolvedContext {
                 path
             );
             let cfg = GleonConfig::load_from_file(path)?;
-            let root =
-                find_config_and_root(base_dir).map_or_else(|| base_dir.to_path_buf(), |(_, r)| r);
+            let resolved_path = if path.is_absolute() {
+                path.clone()
+            } else {
+                base_dir.join(path)
+            };
+            let config_dir = resolved_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."));
+            let root = crate::paths::find_workspace_root(config_dir, |p| p.gleon_dir().is_dir())
+                .or_else(|| crate::paths::find_workspace_root(base_dir, |p| p.gleon_dir().is_dir()))
+                .map_or_else(|| base_dir.to_path_buf(), |p| p.base_dir().to_path_buf());
             (Some(cfg), root)
         } else if let Some((config_path, root_dir)) = find_config_and_root(base_dir) {
             tracing::debug!(
@@ -260,6 +269,33 @@ mod tests {
         assert!(context.config.is_some());
         assert_eq!(context.branch, "main");
         assert_eq!(context.target_branch, "develop");
+    }
+
+    #[test]
+    fn test_resolve_derives_base_dir_from_explicit_config_path() {
+        let external_dir = tempdir().unwrap();
+        let unrelated_dir = tempdir().unwrap();
+        create_mock_git_repo(external_dir.path(), "ref: refs/heads/feature\n");
+
+        let gleon_dir = external_dir.path().join(".gleon");
+        std::fs::create_dir_all(&gleon_dir).unwrap();
+        let config_path = gleon_dir.join("gleon.yaml");
+        let mut file = File::create(&config_path).unwrap();
+        writeln!(
+            file,
+            "required_version: \">=0.1.0\"\nscreenshots:\n  - include: \"*.png\""
+        )
+        .unwrap();
+
+        let options = ContextOptions {
+            config_path: Some(config_path),
+            ..Default::default()
+        };
+
+        // Pass unrelated_dir as the base_dir argument; resolve must derive base_dir from config_path's root.
+        let context = ResolvedContext::resolve(&options, unrelated_dir.path(), &EmptyEnv).unwrap();
+        assert_eq!(context.base_dir, external_dir.path());
+        assert_eq!(context.branch, "feature");
     }
 
     #[test]

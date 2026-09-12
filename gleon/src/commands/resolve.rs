@@ -36,6 +36,37 @@ pub async fn run_resolve_with_tty(
     storage_config: Option<StorageConfig>,
     is_terminal: bool,
 ) -> ExitCode {
+    run_resolve_impl(
+        ctx,
+        test_path_filter,
+        fetch,
+        storage_config,
+        is_terminal,
+        |item| {
+            let choices = format_conflict_choices(item);
+
+            Select::new()
+                .with_prompt(format!("Choose baseline to keep for '{}'", item.test_path))
+                .items(&choices)
+                .default(0)
+                .interact()
+                .map_err(Into::into)
+        },
+    )
+    .await
+}
+
+pub async fn run_resolve_impl<F>(
+    ctx: &ResolvedContext,
+    test_path_filter: Option<&str>,
+    fetch: bool,
+    storage_config: Option<StorageConfig>,
+    is_terminal: bool,
+    selector: F,
+) -> ExitCode
+where
+    F: FnMut(&ConflictedManifestItem) -> Result<usize, anyhow::Error>,
+{
     info!("Scanning for conflicted manifest files...");
 
     let mut conflicts = match scan_conflicts(&ctx.base_dir, None) {
@@ -79,18 +110,7 @@ pub async fn run_resolve_with_tty(
     }
 
     let resolved_count =
-        match resolve_conflicts_with_selector(ctx, conflicts, adapter.as_ref(), |item| {
-            let choices = format_conflict_choices(item);
-
-            Select::new()
-                .with_prompt(format!("Choose baseline to keep for '{}'", item.test_path))
-                .items(&choices)
-                .default(0)
-                .interact()
-                .map_err(Into::into)
-        })
-        .await
-        {
+        match resolve_conflicts_with_selector(ctx, conflicts, adapter.as_ref(), selector).await {
             Ok(count) => count,
             Err(e) => return report_failure("Error resolving manifest conflicts", &*e),
         };
@@ -400,5 +420,26 @@ mod tests {
 
         let res = resolve_conflicts_with_selector(&ctx, invalid_conflicts, None, |_| Ok(0)).await;
         assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_run_resolve_impl_interactive_flow() {
+        let temp = tempdir().unwrap();
+        let base_dir = temp.path();
+        let manifests_dir = base_dir
+            .join(".gleon")
+            .join("manifests")
+            .join("macos-aarch64")
+            .join("auth");
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+
+        let conflicted = include_str!("../../../gleon-core/tests/fixtures/conflict_2way.json");
+        let login_path = manifests_dir.join("login.json");
+        std::fs::write(&login_path, conflicted).unwrap();
+
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), base_dir).unwrap();
+
+        let exit_code = run_resolve_impl(&ctx, None, false, None, true, |_| Ok(0)).await;
+        assert_eq!(exit_code, ExitCode::Success);
     }
 }

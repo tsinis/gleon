@@ -33,6 +33,26 @@ pub fn pruned_walker(dir: &Path) -> WalkBuilder {
     builder
 }
 
+/// Builds a `WalkBuilder` rooted at `dir` for traversing manifest trees under `.gleon/manifests/`.
+///
+/// Unlike [`pruned_walker`], this walker does not prune directory names like `target` or `build`,
+/// which are valid test path components under `.gleon/manifests/` (e.g. `target/login.json`).
+/// It prunes only hidden directories (`name.starts_with('.')`) beneath the search root.
+#[must_use]
+pub fn manifest_walker(dir: &Path) -> WalkBuilder {
+    let mut builder = WalkBuilder::new(dir);
+    builder.standard_filters(false).filter_entry(|entry| {
+        if entry.file_type().is_some_and(|ft| ft.is_dir())
+            && entry.depth() > 0
+            && matches!(entry.file_name().to_str(), Some(name) if name.starts_with('.'))
+        {
+            return false;
+        }
+        true
+    });
+    builder
+}
+
 /// Compiles a `GlobSet` from a list of patterns.
 ///
 /// # Errors
@@ -84,6 +104,28 @@ mod tests {
 
         assert!(!names.contains(&"dead.txt".to_string()));
         assert!(names.contains(&"live.txt".to_string()));
+    }
+
+    #[test]
+    fn test_manifest_walker_prunes_hidden_but_retains_target_and_build() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git").join("dead.txt"), "x").unwrap();
+        std::fs::create_dir_all(root.join("target").join("login")).unwrap();
+        std::fs::write(root.join("target").join("login").join("live.json"), "{}").unwrap();
+        std::fs::create_dir_all(root.join("build")).unwrap();
+        std::fs::write(root.join("build").join("header.json"), "{}").unwrap();
+
+        let names: Vec<_> = manifest_walker(root)
+            .build()
+            .filter_map(Result::ok)
+            .filter_map(|e| e.file_name().to_str().map(str::to_string))
+            .collect();
+
+        assert!(!names.contains(&"dead.txt".to_string()));
+        assert!(names.contains(&"live.json".to_string()));
+        assert!(names.contains(&"header.json".to_string()));
     }
 
     #[test]

@@ -261,14 +261,17 @@ impl super::ReportGenerator {
             return "### ✅ Gleon Visual Regression: All tests passed!\n".to_string();
         }
 
-        let has_image_urls =
-            options.base_image_url.is_some() || options.image_url_resolver.is_some();
-
         let rows: Vec<MarkdownRow> = failed_tests
             .iter()
             .take(Self::MAX_MARKDOWN_DIFF_ROWS)
             .map(|tc| build_row(tc, options))
             .collect();
+
+        let has_image_urls = (options.base_image_url.is_some()
+            || options.image_url_resolver.is_some())
+            && rows
+                .iter()
+                .any(|r| r.expected != "N/A" || r.actual != "N/A" || r.diff != "N/A");
 
         let remaining = total_failed.saturating_sub(Self::MAX_MARKDOWN_DIFF_ROWS);
 
@@ -411,8 +414,8 @@ mod tests {
             "absolute local path leaked into the comment: {comment}"
         );
         assert!(
-            comment.contains("N/A"),
-            "unpublishable images should render as N/A: {comment}"
+            comment.contains("| Test Name | Status | Error |"),
+            "when all images are unpublishable, report must fall back to the status table: {comment}"
         );
     }
 
@@ -820,5 +823,25 @@ mod tests {
         assert!(md_url.contains("IO Error"));
         assert!(md_url.contains("Encode Error"));
         assert!(md_url.contains("0.9500 SSIM"));
+    }
+
+    #[test]
+    fn test_render_pr_comment_all_na_images_falls_back_to_status_table() {
+        let tests = vec![TestCaseResult {
+            name: "io_error_test".to_string(),
+            result: TestImageResult::IoError {
+                relative_path: PathBuf::from("io.png"),
+                error: "permission denied".to_string(),
+            },
+        }];
+
+        let opts_with_url = MarkdownReportOptions {
+            base_image_url: Some("http://cdn.com"),
+            ..Default::default()
+        };
+        let md = ReportGenerator::render_pr_comment(&tests, &opts_with_url);
+        assert!(md.contains("| Test Name | Status | Error |"));
+        assert!(md.contains("| `io_error_test` | IO Error | permission denied |"));
+        assert!(!md.contains("| Expected | Actual | Diff |"));
     }
 }

@@ -62,7 +62,7 @@ where
 }
 
 /// Writes to a temporary file created next to `path` via the closure `f`, then atomically
-/// persists it to `path` (fsyncing the file, and on non-Windows platforms, its directory).
+/// persists it to `path` (calling fsync on the file, and on non-Windows platforms, its directory).
 ///
 /// # Errors
 /// Returns `E` if the parent directory cannot be resolved or created, the temporary file

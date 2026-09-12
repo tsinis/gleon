@@ -65,7 +65,7 @@ pub fn scan_conflicts(
 
     let mut items = Vec::new();
 
-    for entry_res in crate::walk::pruned_walker(&search_dir).build() {
+    for entry_res in crate::walk::manifest_walker(&search_dir).build() {
         let entry = match entry_res {
             Ok(e) => e,
             Err(err) => {

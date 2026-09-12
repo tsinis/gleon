@@ -711,4 +711,99 @@ screenshots:
         assert!(status.modified.is_empty());
         assert_eq!(status.deleted, vec![PathBuf::from("t4.png")]);
     }
+
+    #[test]
+    fn test_status_with_masks_matching_and_differing() {
+        let temp = tempfile::tempdir().unwrap();
+        let gleon_dir = temp.path().join(".gleon");
+        let ctx_temp = ResolvedContext::default();
+
+        let platform_key = ctx_temp.platform.to_key().unwrap();
+        let manifests_dir = gleon_dir.join("manifests").join(&platform_key);
+        let blobs_dir = gleon_dir.join("blobs").join("sha256");
+        std::fs::create_dir_all(&manifests_dir).unwrap();
+        std::fs::create_dir_all(&blobs_dir).unwrap();
+
+        // Create a 10x10 white image for baseline
+        let mut baseline_img = image::RgbaImage::new(10, 10);
+        for pixel in baseline_img.pixels_mut() {
+            *pixel = image::Rgba([255, 255, 255, 255]);
+        }
+        let baseline_path = temp.path().join("baseline.png");
+        baseline_img.save(&baseline_path).unwrap();
+        let baseline_bytes = std::fs::read(&baseline_path).unwrap();
+        let (baseline_hash, ..) = crate::ops::common::hash_and_measure(&baseline_bytes).unwrap();
+
+        // Save blob in blobs_dir
+        std::fs::write(blobs_dir.join(&baseline_hash), &baseline_bytes).unwrap();
+
+        let mut index = WorkspaceIndex::new();
+        index
+            .save_test(
+                &manifests_dir,
+                "test1",
+                &crate::manifest::SingleTestManifest {
+                    schema_version: 1,
+                    hash: crate::manifest::ImageHash::new("sha256", &baseline_hash).unwrap(),
+                    phash: crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap(),
+                    width: 10,
+                    height: 10,
+                },
+            )
+            .unwrap();
+
+        index
+            .save_test(
+                &manifests_dir,
+                "test2",
+                &crate::manifest::SingleTestManifest {
+                    schema_version: 1,
+                    hash: crate::manifest::ImageHash::new("sha256", &baseline_hash).unwrap(),
+                    phash: crate::manifest::ImageHash::new("dhash", "0000000000000000").unwrap(),
+                    width: 10,
+                    height: 10,
+                },
+            )
+            .unwrap();
+
+        // Actual test1: 10x10 white image, but pixel (0, 0) is black.
+        // With mask at (0, 0, 1, 1), they become equal after mask!
+        let mut actual_img1 = baseline_img.clone();
+        actual_img1.put_pixel(0, 0, image::Rgba([0, 0, 0, 255]));
+        actual_img1.save(temp.path().join("test1.png")).unwrap();
+
+        // Actual test2: 10x10 white image, but pixel (9, 9) is black.
+        // With mask at (0, 0, 1, 1), they STILL DIFFER after mask!
+        let mut actual_img2 = baseline_img;
+        actual_img2.put_pixel(9, 9, image::Rgba([0, 0, 0, 255]));
+        actual_img2.save(temp.path().join("test2.png")).unwrap();
+
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            config: Some(crate::config::GleonConfig {
+                screenshots: vec![crate::config::ScreenshotRule {
+                    include: vec![crate::config::GlobPattern::new("**/*.png").unwrap()],
+                    mode: crate::config::Mode::Pixel,
+                    diff: crate::config::DiffConfig::default(),
+                    masks: vec![crate::config::MaskRule {
+                        path: crate::config::GlobPattern::new("**/*.png").unwrap(),
+                        zones: vec![crate::config::Zone {
+                            x: 0,
+                            y: 0,
+                            width: crate::config::Dimension::Pixels(1),
+                            height: crate::config::Dimension::Pixels(1),
+                        }],
+                    }],
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let report = check_status(&ctx).unwrap();
+        // test1 is masked so unchanged
+        assert!(!report.modified.contains(&PathBuf::from("test1.png")));
+        // test2 still differs so modified
+        assert!(report.modified.contains(&PathBuf::from("test2.png")));
+    }
 }

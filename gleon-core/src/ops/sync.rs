@@ -203,7 +203,7 @@ mod tests {
     #[test]
     fn test_short_hash_truncates_without_panicking_on_short_values() {
         let sha = ImageHash::new("sha256", "a".repeat(64)).unwrap();
-        assert_eq!(short_hash(&sha), "aaaaaaaa");
+        assert_eq!(short_hash(&sha), &"a".repeat(8));
 
         // Non-sha256 schemes accept any non-empty alphanumeric value, including ones
         // shorter than the 8-byte truncation window — slicing must clamp, not panic.

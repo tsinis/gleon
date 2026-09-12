@@ -199,20 +199,19 @@ impl super::ReportGenerator {
     /// Generates raw junit.xml file bytes mapping failures and decode/dimension errors to
     /// `<failure>` nodes.
     ///
-    /// # Errors
+    /// # Panics
+    /// Panics if the bundled template cannot be retrieved (impossible in normal builds).
     ///
-    /// Returns `ReportError::Render` if the bundled `junit.xml` template is
-    /// missing from the registry or fails to render against the test case data.
+    /// # Errors
+    /// Returns [`ReportError::Render`] if template rendering fails.
     pub fn generate_junit_xml(test_cases: &[TestCaseResult]) -> Result<String, ReportError> {
         let total_tests = test_cases.len();
         let failed_tests = test_cases.iter().filter(|tc| !tc.passed()).count();
 
+        #[allow(clippy::expect_used)]
         let tmpl = super::JINJA_ENV
             .get_template("junit.xml")
-            .map_err(|e| ReportError::Render {
-                template: "junit.xml",
-                source: e,
-            })?;
+            .expect("bundled junit.xml template is registered");
 
         let ctx = context! {
             total_tests => total_tests,

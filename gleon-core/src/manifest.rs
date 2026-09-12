@@ -80,7 +80,7 @@ impl ImageHash {
     ///
     /// # Errors
     /// Returns [`ManifestError::Validation`] if `scheme` is empty or contains characters
-    /// other than ASCII alphanumerics, `_`, or `-`; if `value` is empty or contains invalid
+    /// other than ASCII alphanumeric characters, `_`, or `-`; if `value` is empty or contains invalid
     /// characters for the given scheme; or if `scheme` is `sha256` and `value` is not exactly
     /// 64 ASCII hex characters.
     pub fn new(scheme: impl Into<String>, value: impl Into<String>) -> Result<Self, ManifestError> {

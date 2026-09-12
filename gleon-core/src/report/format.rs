@@ -33,7 +33,7 @@ fn normalize_components(path: &std::path::Path) -> Vec<std::path::Component<'_>>
 /// Resolves `path` against the current working directory, if it is relative.
 ///
 /// Meant to be called **once**, up front, on a `report_dir` before it is threaded through many
-/// [`FormattedPath`]s — pre-absolutizing it here means every one of those can hit the
+/// [`FormattedPath`]s — making it absolute here means every one of those can hit the
 /// same-coordinate-frame fast path in [`make_relative_path`] instead of each independently
 /// falling back to `current_dir()`. Falls back to returning `path` unchanged if the working
 /// directory can't be read.
@@ -320,5 +320,16 @@ mod tests {
         }
         .to_string();
         assert_eq!(formatted_empty, ".");
+
+        let cur_dir = std::path::Path::new("./foo.png");
+        let formatted_cur = FormattedPath {
+            path: cur_dir,
+            report_dir: None,
+        }
+        .to_string();
+        assert_eq!(formatted_cur, "./foo.png");
+
+        let same = make_relative_path(std::path::Path::new("/a/b"), std::path::Path::new("/a/b"));
+        assert_eq!(same, PathBuf::from("."));
     }
 }

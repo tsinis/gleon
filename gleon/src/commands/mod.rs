@@ -14,9 +14,29 @@ pub mod status;
 
 use crate::exit_code::ExitCode;
 
-/// Renders `context` plus `err` and every error in its `source()` chain as one line.
+/// Returns `true` if `rendered` is already formatted inside `parent` (e.g. exact match,
+/// `: {rendered}`, or `({rendered})`), avoiding duplicate causes when walking an error chain.
+fn is_interpolated_cause(parent: &str, rendered: &str) -> bool {
+    if parent == rendered {
+        return true;
+    }
+    if let Some(prefix) = parent.strip_suffix(rendered)
+        && prefix.ends_with(": ")
+    {
+        return true;
+    }
+    if let Some(stripped_paren) = parent.strip_suffix(')')
+        && let Some(prefix) = stripped_paren.strip_suffix(rendered)
+        && prefix.ends_with('(')
+    {
+        return true;
+    }
+    false
+}
+
+/// Formats a command-failure error message, walking `err.source()` up to a bounded depth.
 ///
-/// Walking the chain explicitly matters because a `thiserror` variant whose `#[error(...)]`
+/// Ensures chained causes are surfaced in the final log even when an intermediate error
 /// message does not interpolate its `#[source]` field (e.g. `ApproveError::ImageDecode`) would
 /// otherwise report only "Image decode error for 'x.png'" and drop the actual reason.
 fn format_failure(context: &str, err: &dyn std::error::Error) -> String {
@@ -34,9 +54,10 @@ fn format_failure(context: &str, err: &dyn std::error::Error) -> String {
         let Some(cause) = source else { break };
         let rendered = cause.to_string();
         // Skip only causes the *immediate parent* already interpolated itself
-        // (`#[error("IO error: {0}")]`). Comparing against the whole accumulated line instead
-        // would also drop causes whose text happens to occur in the caller's context string.
-        if !parent.contains(&rendered) {
+        // (`#[error("IO error: {0}")]` or `#[error("failed ({0})")]` or transparent).
+        // Naive substring checking `parent.contains(&rendered)` would drop distinct causes
+        // whose name happens to appear inside the parent text (e.g. cause "report").
+        if !is_interpolated_cause(&parent, &rendered) {
             // Writing to a `String` via `fmt::Write` never fails.
             #[allow(clippy::expect_used)]
             write!(out, ": {rendered}").expect("write! to a String cannot fail");
@@ -202,6 +223,34 @@ mod tests {
             format_failure("Error pushing baseline blobs", &Cause),
             "Error pushing baseline blobs: the image format could not be determined"
         );
+    }
+
+    #[test]
+    fn test_format_failure_preserves_distinct_cause_matching_parent_substring() {
+        #[derive(Debug)]
+        struct SubstringCause;
+        impl std::fmt::Display for SubstringCause {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("report")
+            }
+        }
+        impl std::error::Error for SubstringCause {}
+
+        #[derive(Debug)]
+        struct ParentWithSubstring(SubstringCause);
+        impl std::fmt::Display for ParentWithSubstring {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("failed to render report template")
+            }
+        }
+        impl std::error::Error for ParentWithSubstring {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let msg = format_failure("Context", &ParentWithSubstring(SubstringCause));
+        assert_eq!(msg, "Context: failed to render report template: report");
     }
 
     #[test]

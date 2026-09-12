@@ -49,7 +49,7 @@ impl WorkspaceIndex {
 
         let mut entries = BTreeMap::new();
         let mut source_paths = BTreeMap::new();
-        let walker = crate::walk::pruned_walker(manifest_dir).build();
+        let walker = crate::walk::manifest_walker(manifest_dir).build();
 
         for entry_res in walker {
             let entry = match entry_res {
@@ -576,5 +576,25 @@ mod tests {
         let fallback = WorkspaceIndex::new();
         target.merge_fallback(fallback);
         assert!(target.is_empty());
+    }
+
+    #[test]
+    fn test_save_and_load_target_directory_manifest() {
+        let temp = tempdir().unwrap();
+        let manifest_dir = temp.path().join("manifests");
+        fs::create_dir_all(&manifest_dir).unwrap();
+
+        let mut index = WorkspaceIndex::new();
+        let hash = ImageHash::new("sha256", "a".repeat(64)).unwrap();
+        let phash = ImageHash::new("dhash", "0000000000000000").unwrap();
+        let manifest = SingleTestManifest::new(hash, phash, 100, 100).unwrap();
+
+        index
+            .save_test(&manifest_dir, "target/login", &manifest)
+            .unwrap();
+
+        let loaded = WorkspaceIndex::load(&manifest_dir).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.get("target/login").is_some());
     }
 }

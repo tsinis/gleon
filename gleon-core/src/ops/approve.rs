@@ -752,4 +752,18 @@ mod tests {
                 .exists()
         );
     }
+
+    #[test]
+    fn test_approve_workspace_with_relative_custom_source_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = ResolvedContext {
+            base_dir: temp.path().to_path_buf(),
+            ..Default::default()
+        };
+        let gleon_paths = crate::paths::GleonPaths::new(temp.path());
+        std::fs::create_dir_all(gleon_paths.manifests_root()).unwrap();
+
+        let err = approve_workspace(&ctx, &[], Some(Path::new("relative_custom"))).unwrap_err();
+        assert!(matches!(err, ApproveError::NoActualScreenshots { .. }));
+    }
 }

@@ -123,9 +123,15 @@ impl ReportGenerator {
         let xml_path = runs_dir.join("junit.xml");
         crate::io::save_file_atomically(&xml_path, xml.as_bytes())?;
 
+        let html_path = runs_dir.join("report.html");
         if let Some(html) = Self::generate_html(test_cases, Some(runs_dir))? {
-            let html_path = runs_dir.join("report.html");
             crate::io::save_file_atomically(&html_path, html.as_bytes())?;
+        } else {
+            match std::fs::remove_file(&html_path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(ReportError::Io(e)),
+            }
         }
 
         let json_path = runs_dir.join("gleon-report.json");
@@ -160,5 +166,18 @@ mod tests {
         assert!(matches!(report_json_err, ReportError::JsonParse(_)));
 
         assert_eq!(report_err.to_string(), "IO error: test io");
+    }
+
+    #[test]
+    fn test_generate_all_removes_stale_report_html_when_no_diffs() {
+        let temp = tempfile::tempdir().unwrap();
+        let runs_dir = temp.path();
+        let stale_html = runs_dir.join("report.html");
+        std::fs::write(&stale_html, b"<html>stale</html>").unwrap();
+        assert!(stale_html.exists());
+
+        let test_cases = Vec::new();
+        ReportGenerator::generate_all(runs_dir, &test_cases).unwrap();
+        assert!(!stale_html.exists());
     }
 }

@@ -60,7 +60,7 @@ pub fn lint_workspace_manifests(
     let mut conflicted_files = Vec::new();
     let mut corrupted_files = Vec::new();
 
-    for entry_res in crate::walk::pruned_walker(&search_dir).build() {
+    for entry_res in crate::walk::manifest_walker(&search_dir).build() {
         let entry = match entry_res {
             Ok(e) => e,
             Err(err) => {

@@ -200,7 +200,7 @@ pub fn load_config_and_scan(context: &ResolvedContext) -> Result<Vec<TestCase>, 
     FileScanner::scan_workspace(&config, &context.base_dir).map_err(CoreError::Scanner)
 }
 
-/// Decodes a PNG's raw bytes and computes its SHA-256 digest, perceptual hash, and dimensions.
+/// Decodes raw PNG bytes and computes its SHA-256 digest, perceptual hash, and dimensions.
 ///
 /// Uses [`SingleTestManifest::load_image_from_bytes`] (not a bare decode) so callers get the
 /// same dimension/format validation regardless of call site.
@@ -526,5 +526,54 @@ mod tests {
         // Already exists: no-op, content untouched.
         assert!(!create_new_file_with_content(&path, b"world", temp.path()).unwrap());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_core_error_from_io_error() {
+        let io_err = crate::io::IoError::Io(std::io::Error::other("test io"));
+        let core_err: CoreError = io_err.into();
+        assert!(matches!(core_err, CoreError::Io(_)));
+
+        let json_err: serde_json::Error = serde_json::from_str::<String>("invalid").unwrap_err();
+        let io_json_err = crate::io::IoError::JsonParse(json_err);
+        let core_json_err: CoreError = io_json_err.into();
+        assert!(matches!(core_json_err, CoreError::Io(_)));
+    }
+
+    #[test]
+    fn test_create_new_file_with_content_error() {
+        let res = create_new_file_with_content(
+            Path::new("/nonexistent_dir/nested/blob.png"),
+            b"test",
+            Path::new("/nonexistent_dir"),
+        );
+        assert!(matches!(res, Err(CoreError::Io(_))));
+    }
+
+    #[test]
+    fn test_load_merged_index_with_fallback_non_empty() {
+        let temp = tempdir().unwrap();
+        let paths = GleonPaths::new(temp.path());
+        let macos_manifests = paths.manifests_dir("macos");
+        std::fs::create_dir_all(&macos_manifests).unwrap();
+
+        let mut index = WorkspaceIndex::new();
+        index
+            .save_test(
+                &macos_manifests,
+                "login",
+                &SingleTestManifest {
+                    schema_version: 1,
+                    hash: ImageHash::new("sha256", "a".repeat(64)).unwrap(),
+                    phash: ImageHash::new("dhash", "0000000000000000").unwrap(),
+                    width: 10,
+                    height: 10,
+                },
+            )
+            .unwrap();
+
+        let merged = load_merged_index_with_fallback(&paths, "linux", Some("macos")).unwrap();
+        assert_eq!(merged.len(), 1);
+        assert!(merged.get("login").is_some());
     }
 }

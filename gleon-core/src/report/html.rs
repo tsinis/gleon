@@ -227,10 +227,13 @@ impl super::ReportGenerator {
     /// Generates a single self-contained HTML report string linking images via relative paths.
     /// Skips generation entirely if 100% of tests passed by returning None.
     ///
+    /// # Panics
+    ///
+    /// Panics if the bundled template cannot be retrieved (impossible in normal builds).
+    ///
     /// # Errors
     ///
-    /// Returns `ReportError::Render` if the bundled `report.html` template is
-    /// missing from the registry or fails to render against the failure data.
+    /// Returns [`ReportError::Render`] if template rendering fails.
     pub fn generate_html(
         test_cases: &[TestCaseResult],
         report_dir: Option<&std::path::Path>,
@@ -242,13 +245,10 @@ impl super::ReportGenerator {
             return Ok(None);
         }
 
-        let tmpl =
-            super::JINJA_ENV
-                .get_template("report.html")
-                .map_err(|e| ReportError::Render {
-                    template: "report.html",
-                    source: e,
-                })?;
+        #[allow(clippy::expect_used)]
+        let tmpl = super::JINJA_ENV
+            .get_template("report.html")
+            .expect("bundled report.html template is registered");
 
         // Resolved once here rather than inside `make_relative_path`: image paths recorded on
         // disk are absolute while `--out report.html` hands us a relative (often empty)
