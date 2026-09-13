@@ -568,7 +568,7 @@ fn test_collect_all_referenced_hashes_multiple_refs_same_commit_fails_without_fo
 
     let empty_tree = gix::objs::Tree::empty();
     let tree_id = repo.write_object(&empty_tree).unwrap();
-    let commit = commit_test_tree(
+    let c1 = commit_test_tree(
         &repo,
         "refs/heads/main",
         "init",
@@ -576,14 +576,19 @@ fn test_collect_all_referenced_hashes_multiple_refs_same_commit_fails_without_fo
         std::iter::empty::<gix::ObjectId>(),
     );
 
-    // Create a second reference pointing to the exact same commit
-    repo.reference(
+    // Create a second reference pointing to the exact same commit using identical in-memory signature
+    let c2 = commit_test_tree(
+        &repo,
         "refs/heads/feature",
-        commit.detach(),
-        gix::refs::transaction::PreviousValue::Any,
-        "feature ref pointing to same commit",
-    )
-    .unwrap();
+        "init",
+        tree_id,
+        std::iter::empty::<gix::ObjectId>(),
+    );
+    assert_eq!(
+        c1.detach(),
+        c2.detach(),
+        "refs must point to the identical commit ID"
+    );
 
     let manifests_dir = repo_root.join(".gleon/manifests");
     fs::create_dir_all(&manifests_dir).unwrap();
