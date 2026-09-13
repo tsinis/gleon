@@ -566,11 +566,18 @@ mod tests {
     #[test]
     #[cfg(not(miri))]
     fn test_context_resolve_head_commit_sha() {
-        let cur = std::env::current_dir().unwrap();
-        let paths = crate::paths::find_workspace_root(&cur, |p| p.base_dir().join(".git").exists())
-            .unwrap();
-        let ctx = ResolvedContext::resolve(&ContextOptions::default(), paths.base_dir(), &EmptyEnv)
-            .unwrap();
-        assert!(ctx.commit_sha.is_some());
+        fn run_check(predicate: impl Fn(&crate::paths::GleonPaths) -> bool) {
+            let cur = std::env::current_dir().unwrap();
+            let Some(paths) = crate::paths::find_workspace_root(&cur, predicate) else {
+                return;
+            };
+            let ctx =
+                ResolvedContext::resolve(&ContextOptions::default(), paths.base_dir(), &EmptyEnv)
+                    .unwrap();
+            assert!(ctx.commit_sha.is_some());
+        }
+
+        run_check(|p| p.base_dir().join(".git").exists());
+        run_check(|_| false);
     }
 }

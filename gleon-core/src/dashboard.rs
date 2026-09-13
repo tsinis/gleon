@@ -548,7 +548,7 @@ async fn push_or_save_history(
 
         // Re-read local history immediately before saving to prevent concurrent local runs from overwriting each other
         let mut local_history = load_local_history_or_default(paths)?;
-        local_history.merge(history.clone(), options.truncate_limit);
+        local_history.merge(history, options.truncate_limit);
 
         // Save local history.json
         let serialized_history = serde_json::to_string_pretty(&local_history)?;
@@ -1571,7 +1571,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(not(miri))]
-    async fn test_dashboard_compiler_occ_retry_on_concurrent_modification() {
+    async fn test_dashboard_compiler_retry_on_concurrent_modification() {
         let temp = tempfile::tempdir().unwrap();
         let base_dir = temp.path();
         let paths = GleonPaths::new(base_dir);
@@ -1611,6 +1611,17 @@ mod tests {
         .await;
 
         let _ = handle.await;
-        assert!(res.is_ok());
+        let (total_runs, pushed) = res.expect("push_or_save_history should succeed after retry");
+        assert!(pushed);
+        assert_eq!(total_runs, 0);
+
+        let remote_html = adapter
+            .get_object("dashboard.html")
+            .await
+            .unwrap()
+            .expect("remote dashboard.html must be present in storage");
+        let html_text = std::str::from_utf8(&remote_html.bytes).unwrap();
+        assert_ne!(html_text, "<html>concurrent</html>");
+        assert!(html_text.contains("Gleon History Dashboard"));
     }
 }
