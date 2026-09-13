@@ -257,12 +257,13 @@ fn scan_commit_manifests(
 
     for record in recorder.records {
         if record.mode.is_blob() && record.filepath.ends_with(b".json") {
-            if let Ok(blob) = repo.find_object(record.oid) {
-                if let Ok(m) = serde_json::from_slice::<ManifestHashOnly>(&blob.data) {
-                    referenced_hashes.insert(m.hash);
-                } else {
-                    *scan_failures += 1;
-                }
+            let manifest_opt = repo
+                .find_object(record.oid)
+                .ok()
+                .and_then(|blob| serde_json::from_slice::<ManifestHashOnly>(&blob.data).ok());
+
+            if let Some(m) = manifest_opt {
+                referenced_hashes.insert(m.hash);
             } else {
                 *scan_failures += 1;
             }
@@ -312,12 +313,8 @@ fn scan_all_tracked_refs(
         *scan_failures += 1;
         return 0;
     };
-    let Ok(all_refs) = platform.all() else {
-        *scan_failures += 1;
-        return 0;
-    };
 
-    for reference_res in all_refs {
+    for reference_res in platform.all().into_iter().flatten() {
         let Ok(reference) = reference_res else {
             *scan_failures += 1;
             continue;
@@ -331,17 +328,12 @@ fn scan_all_tracked_refs(
             continue;
         }
 
-        let Ok(id) = reference.into_fully_peeled_id() else {
-            *scan_failures += 1;
-            continue;
-        };
-
-        let Ok(obj) = repo.find_object(id) else {
-            *scan_failures += 1;
-            continue;
-        };
-
-        let Ok(commit) = obj.peel_to_commit() else {
+        let Some(commit) = reference
+            .into_fully_peeled_id()
+            .ok()
+            .and_then(|id| repo.find_object(id).ok())
+            .and_then(|obj| obj.peel_to_commit().ok())
+        else {
             *scan_failures += 1;
             continue;
         };
@@ -441,9 +433,11 @@ pub fn collect_all_referenced_hashes(
         );
     }
 
+    let total_referenced = referenced_hashes.len();
+    let scanned_trees = visited_trees.len();
     info!(
-        total_referenced = referenced_hashes.len(),
-        scanned_trees = visited_trees.len(),
+        total_referenced,
+        scanned_trees,
         unique_commits = unique_commits_count,
         "Collected referenced blob hashes from workspace and Git branches"
     );
@@ -567,4 +561,458 @@ pub async fn garbage_collect(
         bytes_freed,
         orphans,
     })
+}
+
+#[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn commit_test_tree<'a>(
+        repo: &'a gix::Repository,
+        reference: &str,
+        message: &str,
+        tree_id: impl Into<gix::ObjectId>,
+        parents: impl IntoIterator<Item = impl Into<gix::ObjectId>>,
+    ) -> gix::Id<'a> {
+        let sig =
+            gix::actor::SignatureRef::from_bytes(b"Gleon Test <test@gleon.dev> 1700000000 +0000")
+                .expect("valid test signature");
+        repo.commit_as(sig, sig, reference, message, tree_id, parents)
+            .expect("successful commit in test")
+    }
+
+    #[test]
+    fn test_resolve_manifests_git_path_bare_and_outside_workdir() {
+        let temp = tempdir().unwrap();
+        let bare_repo = gix::init_bare(temp.path().join("bare.git")).unwrap();
+        let path = resolve_manifests_git_path(temp.path(), &bare_repo).unwrap();
+        assert_eq!(path, ".gleon/manifests");
+
+        let normal_temp = tempdir().unwrap();
+        let normal_repo = gix::init(normal_temp.path()).unwrap();
+        let fallback_path = resolve_manifests_git_path(
+            &normal_temp.path().join("non_existent_subdir"),
+            &normal_repo,
+        )
+        .unwrap();
+        assert_eq!(fallback_path, "non_existent_subdir/.gleon/manifests");
+
+        let other_temp = tempdir().unwrap();
+        let err = resolve_manifests_git_path(other_temp.path(), &normal_repo).unwrap_err();
+        assert!(matches!(err, GcError::MonorepoResolutionFailed(_)));
+    }
+
+    #[test]
+    fn test_scan_commit_manifests_and_refs_failure_branches() {
+        let temp = tempdir().unwrap();
+        let repo_root = temp.path();
+        let repo = gix::init(repo_root).unwrap();
+
+        let sig =
+            gix::actor::SignatureRef::from_bytes(b"Gleon Test <test@gleon.dev> 1700000000 +0000")
+                .unwrap();
+
+        // 1. Commit with missing tree object (ODB error on commit.tree()) -> lines 223-224
+        let fake_id = gix::ObjectId::from_hex(b"1111111111111111111111111111111111111111").unwrap();
+        let bad_commit_obj = gix::objs::Commit {
+            tree: fake_id,
+            parents: vec![].into(),
+            author: sig.to_owned().expect("signature"),
+            committer: sig.to_owned().expect("signature"),
+            encoding: None,
+            message: "bad tree commit".into(),
+            extra_headers: vec![],
+        };
+        let bad_commit_id = repo.write_object(&bad_commit_obj).unwrap();
+
+        // 2. Tree where .gleon/manifests is a blob instead of a tree -> lines 239-240
+        let blob_data = b"i am a blob, not a tree directory";
+        let blob_id = repo.write_blob(blob_data).unwrap();
+
+        let mut gleon_tree_obj = gix::objs::Tree::empty();
+        gleon_tree_obj.entries.push(gix::objs::tree::Entry {
+            mode: gix::objs::tree::EntryKind::Blob.into(),
+            filename: "manifests".into(),
+            oid: blob_id.detach(),
+        });
+        let gleon_tree_id = repo.write_object(&gleon_tree_obj).unwrap();
+
+        let mut root_tree_obj = gix::objs::Tree::empty();
+        root_tree_obj.entries.push(gix::objs::tree::Entry {
+            mode: gix::objs::tree::EntryKind::Tree.into(),
+            filename: ".gleon".into(),
+            oid: gleon_tree_id.detach(),
+        });
+        let root_tree_id = repo.write_object(&root_tree_obj).unwrap();
+
+        let blob_manifests_commit = commit_test_tree(
+            &repo,
+            "refs/heads/blob-manifests",
+            "blob manifests",
+            root_tree_id,
+            std::iter::empty::<gix::ObjectId>(),
+        );
+
+        // 3. Tree where entry .object() fails because OID does not exist in ODB -> lines 235-236
+        let mut missing_gleon_tree_obj = gix::objs::Tree::empty();
+        missing_gleon_tree_obj.entries.push(gix::objs::tree::Entry {
+            mode: gix::objs::tree::EntryKind::Tree.into(),
+            filename: "manifests".into(),
+            oid: fake_id,
+        });
+        let missing_gleon_tree_id = repo.write_object(&missing_gleon_tree_obj).unwrap();
+
+        let mut missing_root_tree_obj = gix::objs::Tree::empty();
+        missing_root_tree_obj.entries.push(gix::objs::tree::Entry {
+            mode: gix::objs::tree::EntryKind::Tree.into(),
+            filename: ".gleon".into(),
+            oid: missing_gleon_tree_id.detach(),
+        });
+        let missing_root_tree_id = repo.write_object(&missing_root_tree_obj).unwrap();
+
+        let missing_obj_commit = commit_test_tree(
+            &repo,
+            "refs/heads/missing-obj-manifests",
+            "missing obj manifests",
+            missing_root_tree_id,
+            std::iter::empty::<gix::ObjectId>(),
+        );
+
+        // 4. Tree lookup error (corrupt sub-tree in path) -> lines 227-228
+        let mut corrupt_path_root = gix::objs::Tree::empty();
+        corrupt_path_root.entries.push(gix::objs::tree::Entry {
+            mode: gix::objs::tree::EntryKind::Tree.into(),
+            filename: ".gleon".into(),
+            oid: fake_id,
+        });
+        let corrupt_path_root_id = repo.write_object(&corrupt_path_root).unwrap();
+
+        let corrupt_path_commit = commit_test_tree(
+            &repo,
+            "refs/heads/corrupt-path",
+            "corrupt path",
+            corrupt_path_root_id,
+            std::iter::empty::<gix::ObjectId>(),
+        );
+
+        // 5. Corrupt JSON in manifest blob -> lines 264-265 & missing blob in tree -> lines 266-268
+        let bad_json_blob_id = repo.write_blob(b"not valid json").unwrap();
+        let mut manifests_sub_obj = gix::objs::Tree::empty();
+        manifests_sub_obj.entries.push(gix::objs::tree::Entry {
+            mode: gix::objs::tree::EntryKind::Blob.into(),
+            filename: "manifest.json".into(),
+            oid: bad_json_blob_id.detach(),
+        });
+        manifests_sub_obj.entries.push(gix::objs::tree::Entry {
+            mode: gix::objs::tree::EntryKind::Blob.into(),
+            filename: "missing.json".into(),
+            oid: fake_id,
+        });
+        manifests_sub_obj.entries.push(gix::objs::tree::Entry {
+            mode: gix::objs::tree::EntryKind::Blob.into(),
+            filename: "ignored.txt".into(),
+            oid: bad_json_blob_id.detach(),
+        });
+        manifests_sub_obj.entries.sort();
+        let manifests_sub_id = repo.write_object(&manifests_sub_obj).unwrap();
+
+        let mut valid_gleon_obj = gix::objs::Tree::empty();
+        valid_gleon_obj.entries.push(gix::objs::tree::Entry {
+            mode: gix::objs::tree::EntryKind::Tree.into(),
+            filename: "manifests".into(),
+            oid: manifests_sub_id.detach(),
+        });
+        let valid_gleon_id = repo.write_object(&valid_gleon_obj).unwrap();
+
+        let mut valid_root_obj = gix::objs::Tree::empty();
+        valid_root_obj.entries.push(gix::objs::tree::Entry {
+            mode: gix::objs::tree::EntryKind::Tree.into(),
+            filename: ".gleon".into(),
+            oid: valid_gleon_id.detach(),
+        });
+        let valid_root_id = repo.write_object(&valid_root_obj).unwrap();
+
+        let corrupt_json_commit = commit_test_tree(
+            &repo,
+            "refs/heads/corrupt-json",
+            "corrupt json commit",
+            valid_root_id,
+            std::iter::empty::<gix::ObjectId>(),
+        );
+
+        // 6. Manifest tree with corrupt sub-tree causing traverse().breadthfirst() to fail -> lines 254-255
+        let mut traverse_fail_sub = gix::objs::Tree::empty();
+        traverse_fail_sub.entries.push(gix::objs::tree::Entry {
+            mode: gix::objs::tree::EntryKind::Tree.into(),
+            filename: "broken_subdir".into(),
+            oid: fake_id,
+        });
+        let traverse_fail_sub_id = repo.write_object(&traverse_fail_sub).unwrap();
+
+        let mut traverse_fail_gleon = gix::objs::Tree::empty();
+        traverse_fail_gleon.entries.push(gix::objs::tree::Entry {
+            mode: gix::objs::tree::EntryKind::Tree.into(),
+            filename: "manifests".into(),
+            oid: traverse_fail_sub_id.detach(),
+        });
+        let traverse_fail_gleon_id = repo.write_object(&traverse_fail_gleon).unwrap();
+
+        let mut traverse_fail_root = gix::objs::Tree::empty();
+        traverse_fail_root.entries.push(gix::objs::tree::Entry {
+            mode: gix::objs::tree::EntryKind::Tree.into(),
+            filename: ".gleon".into(),
+            oid: traverse_fail_gleon_id.detach(),
+        });
+        let traverse_fail_root_id = repo.write_object(&traverse_fail_root).unwrap();
+
+        let traverse_fail_commit = commit_test_tree(
+            &repo,
+            "refs/heads/traverse-fail",
+            "traverse fail commit",
+            traverse_fail_root_id,
+            std::iter::empty::<gix::ObjectId>(),
+        );
+
+        // Run scan_commit_manifests directly to verify failure counters
+        let mut visited_trees = HashSet::new();
+        let mut referenced_hashes = HashSet::new();
+        let mut scan_failures = 0;
+
+        // Missing tree commit
+        let bad_commit = repo.find_commit(bad_commit_id).unwrap();
+        scan_commit_manifests(
+            &repo,
+            &bad_commit,
+            ".gleon/manifests",
+            &mut visited_trees,
+            &mut referenced_hashes,
+            &mut scan_failures,
+        );
+        assert_eq!(scan_failures, 1);
+
+        // Corrupt path commit
+        let corrupt_c = repo.find_commit(corrupt_path_commit.detach()).unwrap();
+        scan_commit_manifests(
+            &repo,
+            &corrupt_c,
+            ".gleon/manifests",
+            &mut visited_trees,
+            &mut referenced_hashes,
+            &mut scan_failures,
+        );
+        assert_eq!(scan_failures, 2);
+
+        // Missing entry obj commit
+        let missing_c = repo.find_commit(missing_obj_commit.detach()).unwrap();
+        scan_commit_manifests(
+            &repo,
+            &missing_c,
+            ".gleon/manifests",
+            &mut visited_trees,
+            &mut referenced_hashes,
+            &mut scan_failures,
+        );
+        assert_eq!(scan_failures, 3);
+
+        // Blob manifests commit
+        let blob_c = repo.find_commit(blob_manifests_commit.detach()).unwrap();
+        scan_commit_manifests(
+            &repo,
+            &blob_c,
+            ".gleon/manifests",
+            &mut visited_trees,
+            &mut referenced_hashes,
+            &mut scan_failures,
+        );
+        assert_eq!(scan_failures, 4);
+
+        // Traversal failure commit -> lines 254-255
+        let traverse_c = repo.find_commit(traverse_fail_commit.detach()).unwrap();
+        scan_commit_manifests(
+            &repo,
+            &traverse_c,
+            ".gleon/manifests",
+            &mut visited_trees,
+            &mut referenced_hashes,
+            &mut scan_failures,
+        );
+        assert_eq!(scan_failures, 5);
+
+        // Corrupt JSON manifest commit + missing blob record -> lines 264-265 & 266-268
+        let corrupt_json_c = repo.find_commit(corrupt_json_commit.detach()).unwrap();
+        scan_commit_manifests(
+            &repo,
+            &corrupt_json_c,
+            ".gleon/manifests",
+            &mut visited_trees,
+            &mut referenced_hashes,
+            &mut scan_failures,
+        );
+        assert_eq!(scan_failures, 7);
+
+        // 7. Test scan_all_tracked_refs with untracked ref, dangling ref, tree ref, and corrupt loose ref
+        // Untracked ref -> lines 329, 331
+        let _ = commit_test_tree(
+            &repo,
+            "refs/notes/my-note",
+            "note",
+            root_tree_id,
+            std::iter::empty::<gix::ObjectId>(),
+        );
+
+        // Ref pointing directly to tree (non-commit) -> lines 344-347
+        std::fs::write(
+            repo.git_dir().join("refs/heads/tree-ref"),
+            root_tree_id.to_string(),
+        )
+        .unwrap();
+
+        // Dangling ref pointing to non-existent object -> lines 339-342
+        std::fs::write(
+            repo.git_dir().join("refs/heads/dangling-ref"),
+            fake_id.to_string(),
+        )
+        .unwrap();
+
+        // Corrupt loose ref content -> lines 322-323
+        std::fs::write(
+            repo.git_dir().join("refs/heads/corrupt-ref-content"),
+            b"not-a-valid-oid",
+        )
+        .unwrap();
+
+        let mut ref_failures = 0;
+        let count = scan_all_tracked_refs(
+            &repo,
+            ".gleon/manifests",
+            &mut visited_trees,
+            &mut referenced_hashes,
+            &mut ref_failures,
+        );
+        assert!(count > 0);
+        assert!(ref_failures >= 2);
+
+        // 8. Test collect_all_referenced_hashes with scan_failures > 0 -> lines 433-441
+        let err = collect_all_referenced_hashes(repo_root, &GcOptions::default()).unwrap_err();
+        assert!(matches!(err, GcError::UnsafeScan { .. }));
+
+        let force_opts = GcOptions {
+            force: true,
+            ..Default::default()
+        };
+        assert!(collect_all_referenced_hashes(repo_root, &force_opts).is_ok());
+
+        let dry_opts = GcOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        assert!(collect_all_referenced_hashes(repo_root, &dry_opts).is_ok());
+
+        // 9. Packed-refs corruption -> lines 312-313
+        std::fs::write(
+            repo.git_dir().join("packed-refs"),
+            b"garbage header that cannot be parsed as packed-refs",
+        )
+        .unwrap();
+        let mut packed_failures = 0;
+        let res_count = scan_all_tracked_refs(
+            &repo,
+            ".gleon/manifests",
+            &mut visited_trees,
+            &mut referenced_hashes,
+            &mut packed_failures,
+        );
+        assert_eq!(res_count, 0);
+        assert_eq!(packed_failures, 1);
+    }
+
+    #[tokio::test]
+    async fn test_garbage_collect_failed_deletion_warning_branch() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let temp = tempdir().unwrap();
+            let repo_root = temp.path();
+            let repo = gix::init(repo_root).unwrap();
+
+            let empty_tree = gix::objs::Tree::empty();
+            let tree_id = repo.write_object(&empty_tree).unwrap();
+            let _c1 = commit_test_tree(
+                &repo,
+                "refs/heads/main",
+                "init",
+                tree_id,
+                std::iter::empty::<gix::ObjectId>(),
+            );
+            let _c2 = commit_test_tree(
+                &repo,
+                "refs/heads/feature",
+                "feature commit",
+                tree_id,
+                std::iter::empty::<gix::ObjectId>(),
+            );
+
+            let manifests_dir = repo_root.join(".gleon/manifests");
+            std::fs::create_dir_all(&manifests_dir).unwrap();
+
+            let remote_temp = tempdir().unwrap();
+            let remote_dir = remote_temp.path();
+            let url = url::Url::from_directory_path(remote_dir)
+                .unwrap()
+                .to_string();
+            let storage_cfg = StorageConfig::new(url);
+            let adapter = ObjectStoreAdapter::from_config(&storage_cfg).unwrap();
+
+            let dummy_src = repo_root.join("dummy.png");
+            std::fs::write(&dummy_src, b"fake png").unwrap();
+
+            let h_orphan = ImageHash::new(
+                "sha256",
+                "7777777777777777777777777777777777777777777777777777777777777777",
+            )
+            .unwrap();
+            adapter.upload_blob(&h_orphan, &dummy_src).await.unwrap();
+
+            let orphan_path = remote_dir
+                .join("blobs")
+                .join("sha256")
+                .join("7777777777777777777777777777777777777777777777777777777777777777");
+            let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(48 * 3600);
+            let times = std::fs::FileTimes::new().set_modified(old_time);
+            let f = std::fs::File::options()
+                .write(true)
+                .open(&orphan_path)
+                .unwrap();
+            f.set_times(times).unwrap();
+            drop(f);
+
+            let parent_dir = orphan_path.parent().unwrap();
+            let orig_perms = std::fs::metadata(parent_dir).unwrap().permissions();
+            std::fs::set_permissions(parent_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+            let ctx = ResolvedContext::from_options(
+                &crate::context::ContextOptions::default(),
+                repo_root,
+            )
+            .unwrap();
+            let opts = GcOptions::default();
+            let res = garbage_collect(&ctx, Some(&storage_cfg), &opts)
+                .await
+                .unwrap();
+
+            std::fs::set_permissions(parent_dir, orig_perms).unwrap();
+
+            assert_eq!(res.failed_blobs, 1);
+        }
+    }
 }

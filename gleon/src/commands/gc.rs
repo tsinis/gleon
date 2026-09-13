@@ -62,10 +62,12 @@ pub async fn run_gc(
             for blob in &res.orphans {
                 let age = now.signed_duration_since(blob.last_modified);
                 let age_hours = age.num_hours();
+                let size_str = format_bytes(blob.size);
+                let age_str = format!("{age_hours}h");
                 info!(
                     hash = %blob.hash,
-                    size = %format_bytes(blob.size),
-                    age = %format!("{age_hours}h"),
+                    size = %size_str,
+                    age = %age_str,
                     "[DRY RUN] Orphan candidate"
                 );
             }
@@ -77,10 +79,11 @@ pub async fn run_gc(
                     res.referenced_blobs, res.protected_by_grace_period, grace_period_hours
                 );
             } else {
+                let freed_str = format_bytes(res.bytes_freed);
                 info!(
                     "Successfully deleted {} orphan blob(s) ({} freed). {} failed. {} referenced, {} protected by {}-hour grace period.",
                     res.deleted_blobs,
-                    format_bytes(res.bytes_freed),
+                    freed_str,
                     res.failed_blobs,
                     res.referenced_blobs,
                     res.protected_by_grace_period,
@@ -108,6 +111,7 @@ pub async fn run_gc(
 mod tests {
     use super::*;
     use gleon_core::context::ContextOptions;
+    use gleon_core::storage::ObjectStoreAdapter;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -140,6 +144,84 @@ mod tests {
         // 6. Initialized + Storage Configured + Grace Period < 24h fails even with force
         let exit_code_short = run_gc(&ctx, Some(&cfg), false, 12, true).await;
         assert_eq!(exit_code_short, ExitCode::Failure);
+    }
+
+    #[tokio::test]
+    async fn test_run_gc_with_orphan_blobs_dry_run_and_execution() {
+        let temp = tempdir().unwrap();
+        let ctx = ResolvedContext::from_options(&ContextOptions::default(), temp.path()).unwrap();
+        gleon_core::ops::init_workspace(&ctx).unwrap();
+
+        let remote_temp = tempdir().unwrap();
+        let remote_store_path = remote_temp.path();
+        let url_str = url::Url::from_directory_path(remote_store_path)
+            .unwrap()
+            .to_string();
+        let cfg = StorageConfig::new(url_str);
+
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+        let dummy_src = temp.path().join("dummy.png");
+        std::fs::write(&dummy_src, b"fake png").unwrap();
+
+        let h_orphan = gleon_core::manifest::ImageHash::new(
+            "sha256",
+            "9999999999999999999999999999999999999999999999999999999999999999",
+        )
+        .unwrap();
+        adapter.upload_blob(&h_orphan, &dummy_src).await.unwrap();
+
+        // Artificially backdate the blob to 48 hours ago
+        let blob_path = remote_store_path
+            .join("blobs")
+            .join("sha256")
+            .join("9999999999999999999999999999999999999999999999999999999999999999");
+        let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(48 * 3600);
+        let times = std::fs::FileTimes::new().set_modified(old_time);
+        let f = std::fs::File::options()
+            .write(true)
+            .open(&blob_path)
+            .unwrap();
+        f.set_times(times).unwrap();
+        drop(f);
+
+        // 1. Dry Run with orphan -> outputs orphan candidate log (lines 62-71)
+        let exit_code_dry = run_gc(&ctx, Some(&cfg), true, 24, true).await;
+        assert_eq!(exit_code_dry, ExitCode::Success);
+
+        // 2. Executed mode with orphan -> deletes blob (lines 80-88)
+        let exit_code_exec = run_gc(&ctx, Some(&cfg), false, 24, true).await;
+        assert_eq!(exit_code_exec, ExitCode::Success);
+
+        // 3. Failed blob deletion (lines 89-91)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let h_fail = gleon_core::manifest::ImageHash::new(
+                "sha256",
+                "8888888888888888888888888888888888888888888888888888888888888888",
+            )
+            .unwrap();
+            adapter.upload_blob(&h_fail, &dummy_src).await.unwrap();
+            let fail_path = remote_store_path
+                .join("blobs")
+                .join("sha256")
+                .join("8888888888888888888888888888888888888888888888888888888888888888");
+            let f = std::fs::File::options()
+                .write(true)
+                .open(&fail_path)
+                .unwrap();
+            f.set_times(times).unwrap();
+            drop(f);
+
+            let parent_dir = fail_path.parent().unwrap();
+            let orig_perm = std::fs::metadata(parent_dir).unwrap().permissions();
+            std::fs::set_permissions(parent_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+            let exit_code_fail = run_gc(&ctx, Some(&cfg), false, 24, true).await;
+
+            std::fs::set_permissions(parent_dir, orig_perm).unwrap();
+            assert_eq!(exit_code_fail, ExitCode::Failure);
+        }
     }
 
     #[test]
