@@ -4,6 +4,7 @@ pub mod approve;
 pub mod clean;
 pub mod dashboard;
 pub mod diff;
+pub mod gc;
 pub mod init;
 pub mod lint;
 pub mod pull;

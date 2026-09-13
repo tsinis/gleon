@@ -26,6 +26,7 @@ pub mod report;
 /// Results of comparing a captured screenshot against its staged baseline.
 pub mod results;
 pub mod scanner;
+/// Remote storage integration and baseline blob synchronization.
 pub mod storage;
 pub mod ui;
 /// Shared directory-traversal and glob-set construction helpers.

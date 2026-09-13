@@ -10,7 +10,7 @@ use futures::StreamExt as _;
 use object_store::path::Path as ObjPath;
 use object_store::{ObjectStore, ObjectStoreExt, parse_url_opts};
 use tempfile::NamedTempFile;
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, warn};
 
 use super::{BlobMetadata, StorageError, blob_key};
 
@@ -133,12 +133,33 @@ impl fmt::Debug for StorageConfig {
     }
 }
 
+use chrono::{DateTime, Utc};
+
+/// An entry describing a blob present in remote storage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteBlobEntry {
+    /// Parsed and validated content-addressed hash.
+    pub hash: crate::manifest::ImageHash,
+    /// Last modification timestamp on remote storage.
+    pub last_modified: DateTime<Utc>,
+    /// Size of the blob in bytes.
+    pub size: u64,
+}
+
+/// Summary of a batch blob deletion operation.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DeleteSummary {
+    /// Number of blobs successfully deleted (or already deleted / `NotFound`).
+    pub deleted: usize,
+    /// Number of blobs that failed to delete due to an error.
+    pub failed: usize,
+}
+
 /// Unified storage adapter backing baseline and blob operations via `object_store`.
 #[derive(Clone)]
 pub struct ObjectStoreAdapter {
     store: Arc<dyn ObjectStore>,
     signer: Option<Arc<dyn object_store::signer::Signer>>,
-    prefix: object_store::path::Path,
     concurrency: usize,
     supports_attributes: bool,
 }
@@ -198,8 +219,13 @@ impl ObjectStoreAdapter {
                 }
 
                 let s3 = builder.build().map_err(|e| invalid_url(&e))?;
-                let s3_arc = Arc::new(s3);
-                (s3_arc.clone(), Some(s3_arc))
+                if prefix.as_ref().is_empty() {
+                    let s3_arc = Arc::new(s3);
+                    (s3_arc.clone(), Some(s3_arc))
+                } else {
+                    let p_store = Arc::new(object_store::prefix::PrefixStore::new(s3, prefix));
+                    (p_store.clone(), Some(p_store))
+                }
             }
             "gs" => {
                 let mut builder = object_store::gcp::GoogleCloudStorageBuilder::from_env();
@@ -208,8 +234,13 @@ impl ObjectStoreAdapter {
                     builder = builder.with_service_account_key(sec);
                 }
                 let gcs = builder.build().map_err(|e| invalid_url(&e))?;
-                let gcs_arc = Arc::new(gcs);
-                (gcs_arc.clone(), Some(gcs_arc))
+                if prefix.as_ref().is_empty() {
+                    let gcs_arc = Arc::new(gcs);
+                    (gcs_arc.clone(), Some(gcs_arc))
+                } else {
+                    let p_store = Arc::new(object_store::prefix::PrefixStore::new(gcs, prefix));
+                    (p_store.clone(), Some(p_store))
+                }
             }
             _ => {
                 let mut opts = BTreeMap::new();
@@ -238,20 +269,15 @@ impl ObjectStoreAdapter {
                 return Ok(Self {
                     store,
                     signer: None,
-                    prefix: object_store::path::Path::from(""), // Handled internally by PrefixStore
                     concurrency: std::cmp::max(1, config.concurrency),
                     supports_attributes,
                 });
             }
         };
 
-        // Note: AmazonS3Builder and GoogleCloudStorageBuilder already configure the path prefix
-        // internally when constructed via with_url. Therefore, we do NOT wrap store in PrefixStore
-        // here to prevent double-prefixing on S3/GCS operations.
         Ok(Self {
             store,
             signer,
-            prefix,
             concurrency: std::cmp::max(1, config.concurrency),
             supports_attributes,
         })
@@ -265,22 +291,17 @@ impl ObjectStoreAdapter {
         expires_in: std::time::Duration,
     ) -> Option<String> {
         if let Some(signer) = &self.signer {
-            let path_str = if self.prefix.as_ref().is_empty() {
-                relative_path.to_string()
-            } else {
-                format!("{}/{}", self.prefix.as_ref(), relative_path)
-            };
-            let path = object_store::path::Path::from(path_str);
+            let path = object_store::path::Path::parse(relative_path).ok()?;
             match signer
                 .signed_url(http::Method::GET, &path, expires_in)
                 .await
             {
                 Ok(url) => Some(url.to_string()),
                 Err(e) => {
-                    tracing::warn!(
-                        path = %relative_path,
+                    warn!(
                         error = %e,
-                        "Signing URL failed for backend, falling back"
+                        path = %relative_path,
+                        "Failed to generate pre-signed URL for remote blob"
                     );
                     None
                 }
@@ -616,6 +637,119 @@ impl ObjectStoreAdapter {
         }
 
         Ok(hashes)
+    }
+
+    /// Lists all valid remote CAS blobs under the `blobs/` prefix.
+    ///
+    /// Malformed object paths or non-blob items are safely skipped.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if remote object listing fails.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn list_all_blobs(&self) -> Result<Vec<RemoteBlobEntry>, StorageError> {
+        let prefix = ObjPath::from("blobs");
+        let mut list_stream = self.store.list(Some(&prefix));
+
+        let mut entries = Vec::new();
+        while let Some(meta_res) = list_stream.next().await {
+            let meta = meta_res.map_err(|source| StorageError::Store { source })?;
+            let mut parts = meta.location.parts();
+            match (parts.next(), parts.next(), parts.next(), parts.next()) {
+                (Some(p0), Some(p1), Some(p2), None) if p0.as_ref() == "blobs" => {
+                    if let Ok(hash) = crate::manifest::ImageHash::new(p1.as_ref(), p2.as_ref()) {
+                        entries.push(RemoteBlobEntry {
+                            hash,
+                            last_modified: meta.last_modified,
+                            size: meta.size,
+                        });
+                    } else {
+                        warn!(
+                            location = %meta.location,
+                            "Skipping remote object with invalid image hash"
+                        );
+                    }
+                }
+                _ => {
+                    debug!(
+                        location = %meta.location,
+                        "Skipping non-blob remote object under blobs/"
+                    );
+                }
+            }
+        }
+
+        Ok(entries)
+    }
+
+    /// Deletes a single blob from remote storage at `blob_key(hash)`.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if remote deletion fails.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn delete_blob(&self, hash: &crate::manifest::ImageHash) -> Result<(), StorageError> {
+        let key = blob_key(hash);
+        match self.store.delete(&key).await {
+            Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+            Err(source) => Err(StorageError::Store { source }),
+        }
+    }
+
+    /// Batch deletes multiple blobs from remote storage using `delete_stream`.
+    ///
+    /// Tolerates `NotFound` (treating already deleted blobs as successful), aggregates
+    /// failures, and invokes `on_progress` on each yielded result.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if deletion stream fails.
+    #[instrument(skip(self, hashes, on_progress), level = "debug")]
+    pub async fn delete_blobs_with_progress<'a, I, F>(
+        &self,
+        hashes: I,
+        mut on_progress: F,
+    ) -> Result<DeleteSummary, StorageError>
+    where
+        I: IntoIterator<Item = &'a crate::manifest::ImageHash>,
+        F: FnMut(&crate::manifest::ImageHash, bool) + Send,
+    {
+        let hash_refs: Vec<&'a crate::manifest::ImageHash> = hashes.into_iter().collect();
+        if hash_refs.is_empty() {
+            return Ok(DeleteSummary::default());
+        }
+
+        let keys: Vec<Result<ObjPath, object_store::Error>> =
+            hash_refs.iter().map(|h| Ok(blob_key(h))).collect();
+        let stream = futures::stream::iter(keys).boxed();
+        let del_stream = self.store.delete_stream(stream);
+
+        let mut summary = DeleteSummary::default();
+        let mut zipped = futures::stream::iter(hash_refs).zip(del_stream);
+        while let Some((hash, res)) = zipped.next().await {
+            match res {
+                Ok(_) | Err(object_store::Error::NotFound { .. }) => {
+                    summary.deleted += 1;
+                    on_progress(hash, true);
+                }
+                Err(e) => {
+                    warn!(error = %e, hash = %hash, "Failed to delete remote blob");
+                    summary.failed += 1;
+                    on_progress(hash, false);
+                }
+            }
+        }
+
+        Ok(summary)
+    }
+
+    /// Batch deletes multiple blobs from remote storage without progress callbacks.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if deletion stream fails.
+    #[instrument(skip(self, hashes), level = "debug")]
+    pub async fn delete_blobs<'a, I>(&self, hashes: I) -> Result<DeleteSummary, StorageError>
+    where
+        I: IntoIterator<Item = &'a crate::manifest::ImageHash>,
+    {
+        self.delete_blobs_with_progress(hashes, |_, _| {}).await
     }
 
     /// Fetches the raw bytes of an object from remote storage at `relative_path`.

@@ -258,13 +258,86 @@ fn test_push_placeholder() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_gc_placeholder() -> Result<(), Box<dyn std::error::Error>> {
+fn test_gc_local_mode() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
     let mut cmd = Command::cargo_bin("gleon")?;
-    cmd.arg("gc")
+    cmd.current_dir(dir.path())
+        .env_remove("GLEON_STORAGE_URL")
+        .arg("gc")
+        .assert()
+        .success()
+        .stderr(predicates::str::contains(
+            "Operating in local mode. Cloud sync disabled. Please configure storage.",
+        ));
+    Ok(())
+}
+
+#[test]
+fn test_gc_cli_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = init_temp_dir();
+    let remote_dir = tempfile::tempdir()?;
+    let remote_url = url::Url::from_directory_path(remote_dir.path())
+        .expect("valid directory path")
+        .to_string();
+
+    // 1. Run gc in dry-run mode (default 24h grace period)
+    let mut cmd_dry = Command::cargo_bin("gleon")?;
+    cmd_dry
+        .current_dir(dir.path())
+        .env("GLEON_STORAGE_URL", &remote_url)
+        .args(["gc", "--dry-run"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("[DRY RUN]"));
+
+    // 2. Run gc with grace-period 0 without force -> fails with GracePeriodTooShort
+    let mut cmd_zero_grace = Command::cargo_bin("gleon")?;
+    cmd_zero_grace
+        .current_dir(dir.path())
+        .env("GLEON_STORAGE_URL", &remote_url)
+        .args(["gc", "--grace-period-hours", "0"])
         .assert()
         .failure()
         .stderr(predicates::str::contains(
-            "Subcommand 'gc' is not implemented yet",
+            "Grace period must be at least 1 hour",
+        ));
+
+    // 3. Run gc without force in non-git directory -> fails with GitRequired
+    let mut cmd_fail = Command::cargo_bin("gleon")?;
+    cmd_fail
+        .current_dir(dir.path())
+        .env("GLEON_STORAGE_URL", &remote_url)
+        .args(["gc", "--grace-period-hours", "1"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("requires a Git repository"));
+
+    // 4. Run gc with --force
+    let mut cmd_run = Command::cargo_bin("gleon")?;
+    cmd_run
+        .current_dir(dir.path())
+        .env("GLEON_STORAGE_URL", &remote_url)
+        .args(["gc", "--force", "--grace-period-hours", "0"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains(
+            "No orphan blobs eligible for deletion",
+        ));
+
+    Ok(())
+}
+
+#[test]
+fn test_gc_uninitialized_with_storage_fails() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let mut cmd = Command::cargo_bin("gleon")?;
+    cmd.current_dir(dir.path())
+        .env("GLEON_STORAGE_URL", "memory://")
+        .arg("gc")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "gleon workspace is not initialized",
         ));
     Ok(())
 }
@@ -1129,20 +1202,17 @@ fn test_approve_command() {
     );
 }
 
-/// Unimplemented subcommands must not report success: a green pipeline for a command that did
+/// Subcommand 'test' must not report success: a green pipeline for a command that did
 /// nothing is worse than a red one, because CI treats it as a passing visual-regression gate.
 #[test]
-fn test_unimplemented_subcommands_exit_nonzero() {
+fn test_test_subcommand_unimplemented() {
     let dir = init_temp_dir();
-
-    for sub in ["test", "gc"] {
-        let mut cmd = Command::cargo_bin("gleon").unwrap();
-        cmd.current_dir(dir.path())
-            .arg(sub)
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("not implemented"));
-    }
+    let mut cmd = Command::cargo_bin("gleon").unwrap();
+    cmd.current_dir(dir.path())
+        .arg("test")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not implemented"));
 }
 
 /// `--auto-pull` is advertised by the CLI, so it must actually run a pull before diffing
