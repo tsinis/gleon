@@ -94,6 +94,24 @@ impl GleonPaths {
         self.gleon_dir().join("gleon.yaml")
     }
 
+    /// `.gleon/history.json`
+    #[must_use]
+    pub fn history_file(&self) -> PathBuf {
+        self.gleon_dir().join("history.json")
+    }
+
+    /// `.gleon/dashboard.html`
+    #[must_use]
+    pub fn dashboard_file(&self) -> PathBuf {
+        self.gleon_dir().join("dashboard.html")
+    }
+
+    /// `.gleon/runs/latest/gleon-report.json`
+    #[must_use]
+    pub fn report_file(&self) -> PathBuf {
+        self.runs_latest().join("gleon-report.json")
+    }
+
     /// `.gleon/.gitignore`
     #[must_use]
     pub fn gitignore(&self) -> PathBuf {
@@ -167,6 +185,18 @@ mod tests {
         assert_eq!(
             paths.config_file(),
             Path::new("/workspace/.gleon/gleon.yaml")
+        );
+        assert_eq!(
+            paths.history_file(),
+            Path::new("/workspace/.gleon/history.json")
+        );
+        assert_eq!(
+            paths.dashboard_file(),
+            Path::new("/workspace/.gleon/dashboard.html")
+        );
+        assert_eq!(
+            paths.report_file(),
+            Path::new("/workspace/.gleon/runs/latest/gleon-report.json")
         );
         assert_eq!(paths.gitignore(), Path::new("/workspace/.gleon/.gitignore"));
     }

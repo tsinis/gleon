@@ -67,6 +67,8 @@ pub struct ResolvedContext {
     pub target_branch: String,
     /// The resolved repository/configuration root directory.
     pub base_dir: std::path::PathBuf,
+    /// The resolved Git HEAD commit SHA, or `None` if not inside a Git repository or offline.
+    pub commit_sha: Option<String>,
 }
 
 impl Default for ResolvedContext {
@@ -83,6 +85,7 @@ impl Default for ResolvedContext {
             branch: "main".to_string(),
             target_branch: "main".to_string(),
             base_dir: std::path::PathBuf::from("."),
+            commit_sha: None,
         }
     }
 }
@@ -198,6 +201,14 @@ impl ResolvedContext {
             options.target_branch.clone()
         };
 
+        let commit_sha = match crate::git::GitResolver::get_head_commit_sha(&resolved_base_dir) {
+            Ok(sha) => Some(sha),
+            Err(e) => {
+                tracing::debug!("Git commit SHA resolution skipped or failed: {e}");
+                None
+            }
+        };
+
         Ok(Self {
             config,
             platform,
@@ -205,6 +216,7 @@ impl ResolvedContext {
             branch,
             target_branch,
             base_dir: resolved_base_dir,
+            commit_sha,
         })
     }
 }

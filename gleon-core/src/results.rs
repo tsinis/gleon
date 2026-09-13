@@ -89,6 +89,20 @@ impl TestImageResult {
         }
     }
 
+    /// Returns the variant kind name as a static string.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Success { .. } => "Success",
+            Self::Mismatch { .. } => "Mismatch",
+            Self::DimensionMismatch { .. } => "DimensionMismatch",
+            Self::DecodeError { .. } => "DecodeError",
+            Self::MissingBaseline { .. } => "MissingBaseline",
+            Self::IoError { .. } => "IoError",
+            Self::EncodeError { .. } => "EncodeError",
+        }
+    }
+
     /// Returns the baseline image's local blob path, if this result has one.
     ///
     /// Only baselines are content-addressed and uploaded to remote storage, so this is the

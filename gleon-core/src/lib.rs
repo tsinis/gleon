@@ -3,6 +3,8 @@
 pub mod config;
 /// Resolves the effective run context (platform, branch, renderer) from CLI flags, config, and environment.
 pub mod context;
+/// Historical test results logging and static dashboard compiler.
+pub mod dashboard;
 pub mod engine;
 pub mod env;
 pub mod git;

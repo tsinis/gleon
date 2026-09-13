@@ -1,8 +1,11 @@
 //! gleon CLI wrapper binary.
 
+use std::path::Path;
+
 use clap::Parser;
 use cli::{Cli, Commands};
 use exit_code::ExitCode;
+use gleon_core::env::EnvProvider;
 use tracing::{error, info};
 
 mod cli;
@@ -75,7 +78,7 @@ struct MergedEnv {
     dotenv: std::collections::HashMap<String, String>,
 }
 
-impl gleon_core::env::EnvProvider for MergedEnv {
+impl EnvProvider for MergedEnv {
     fn get_var(&self, key: &str) -> Option<String> {
         std::env::var(key)
             .ok()
@@ -83,9 +86,7 @@ impl gleon_core::env::EnvProvider for MergedEnv {
     }
 }
 
-fn get_storage_config(
-    env: &dyn gleon_core::env::EnvProvider,
-) -> Option<gleon_core::storage::StorageConfig> {
+fn get_storage_config(env: &dyn EnvProvider) -> Option<gleon_core::storage::StorageConfig> {
     gleon_core::storage::StorageConfig::from_env(env)
 }
 
@@ -96,8 +97,8 @@ mod commands;
 /// is the one place that does.
 fn resolve_context(
     cli: &Cli,
-    current_dir: &std::path::Path,
-    env: &dyn gleon_core::env::EnvProvider,
+    current_dir: &Path,
+    env: &dyn EnvProvider,
 ) -> anyhow::Result<gleon_core::context::ResolvedContext> {
     gleon_core::context::ResolvedContext::resolve(
         &gleon_core::context::ContextOptions::from(cli),
@@ -107,11 +108,8 @@ fn resolve_context(
     .map_err(|e| anyhow::anyhow!(e))
 }
 
-async fn run(
-    cli: &Cli,
-    current_dir: &std::path::Path,
-    env: &dyn gleon_core::env::EnvProvider,
-) -> anyhow::Result<i32> {
+#[allow(clippy::too_many_lines)]
+async fn run(cli: &Cli, current_dir: &Path, env: &dyn EnvProvider) -> anyhow::Result<i32> {
     let code = match &cli.command {
         Commands::Init => commands::init::run_init(&resolve_context(cli, current_dir, env)?),
         Commands::Status { json } => {
@@ -179,6 +177,23 @@ async fn run(
             let ctx = resolve_context(cli, current_dir, env)?;
             commands::approve::run_approve(&ctx, paths, from.as_ref())
         }
+        Commands::Dashboard {
+            report,
+            out,
+            truncate_history,
+            push,
+        } => {
+            handle_dashboard_command(
+                cli,
+                current_dir,
+                env,
+                report.as_deref(),
+                out.as_deref(),
+                *truncate_history,
+                *push,
+            )
+            .await?
+        }
         Commands::Clean {
             dry_run,
             skip_gitignore,
@@ -204,4 +219,21 @@ async fn run(
     };
 
     Ok(code.into())
+}
+
+async fn handle_dashboard_command(
+    cli: &Cli,
+    current_dir: &Path,
+    env: &dyn EnvProvider,
+    report: Option<&Path>,
+    out: Option<&Path>,
+    truncate_history: Option<std::num::NonZeroUsize>,
+    push: bool,
+) -> anyhow::Result<ExitCode> {
+    let ctx = resolve_context(cli, current_dir, env)?;
+    let storage = get_storage_config(env);
+    Ok(
+        commands::dashboard::run_dashboard(&ctx, storage, report, out, truncate_history, push)
+            .await,
+    )
 }
