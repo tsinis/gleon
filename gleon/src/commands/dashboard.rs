@@ -75,7 +75,7 @@ async fn run_dashboard_inner(
         ctx,
         &effective_report,
         &options,
-        storage_cfg.as_ref(),
+        if push { storage_cfg.as_ref() } else { None },
     )
     .await
     .context("Failed to compile history dashboard")?;

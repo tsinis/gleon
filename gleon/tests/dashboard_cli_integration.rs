@@ -99,6 +99,7 @@ fn test_cli_dashboard_end_to_end() {
     let mut cmd_push_fail = Command::cargo_bin("gleon").unwrap();
     cmd_push_fail
         .current_dir(workspace)
+        .env_remove("GLEON_STORAGE_URL")
         .arg("dashboard")
         .arg("--push")
         .assert()

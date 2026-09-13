@@ -667,6 +667,7 @@ impl ObjectStoreAdapter {
         content_type: Option<&str>,
         expected_e_tag: Option<&str>,
         expected_version: Option<&str>,
+        create_only: bool,
     ) -> Result<(), StorageError> {
         let key = ObjPath::from(relative_path);
         let payload = object_store::PutPayload::from(data);
@@ -683,7 +684,9 @@ impl ObjectStoreAdapter {
 
         let is_conditional = expected_e_tag.is_some() || expected_version.is_some();
 
-        let mode = if self.supports_attributes && is_conditional {
+        let mode = if create_only {
+            object_store::PutMode::Create
+        } else if is_conditional {
             object_store::PutMode::Update(object_store::UpdateVersion {
                 e_tag: expected_e_tag.map(ToString::to_string),
                 version: expected_version.map(ToString::to_string),
@@ -709,7 +712,7 @@ impl ObjectStoreAdapter {
                     },
                 })
             }
-            Err(object_store::Error::AlreadyExists { source, .. }) if is_conditional => {
+            Err(object_store::Error::AlreadyExists { source, .. }) => {
                 Err(StorageError::PreconditionFailed {
                     path: relative_path.to_string(),
                     source: object_store::Error::AlreadyExists {
@@ -718,7 +721,21 @@ impl ObjectStoreAdapter {
                     },
                 })
             }
-            Err(e) if self.supports_attributes && !is_conditional => {
+            Err(
+                object_store::Error::NotImplemented { .. }
+                | object_store::Error::NotSupported { .. },
+            ) if is_conditional => {
+                tracing::warn!(
+                    "Storage backend does not support conditional update for '{}'; falling back to overwrite",
+                    relative_path
+                );
+                self.store
+                    .put(&key, payload)
+                    .await
+                    .map_err(|source| StorageError::Store { source })?;
+                Ok(())
+            }
+            Err(e) if self.supports_attributes && !is_conditional && !create_only => {
                 tracing::warn!(
                     "put_opts failed for '{}' ({e}); falling back to basic put",
                     relative_path
@@ -744,7 +761,7 @@ impl ObjectStoreAdapter {
         data: bytes::Bytes,
         content_type: Option<&str>,
     ) -> Result<(), StorageError> {
-        self.put_object_conditional(relative_path, data, content_type, None, None)
+        self.put_object_conditional(relative_path, data, content_type, None, None, false)
             .await
     }
 }
@@ -1077,9 +1094,53 @@ mod tests {
                 Some("application/json"),
                 Some("mismatched_etag"),
                 None,
+                false,
             )
             .await;
 
         assert!(matches!(err, Err(StorageError::PreconditionFailed { .. })));
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_put_object_conditional_create_only_already_exists() {
+        let cfg = StorageConfig::new("memory://");
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+
+        let content = bytes::Bytes::from_static(b"{\"schema_version\":1,\"runs\":[]}");
+        adapter
+            .put_object("history.json", content.clone(), Some("application/json"))
+            .await
+            .unwrap();
+
+        // Calling with create_only=true when the file exists must return PreconditionFailed
+        let err = adapter
+            .put_object_conditional(
+                "history.json",
+                content,
+                Some("application/json"),
+                None,
+                None,
+                true,
+            )
+            .await;
+
+        assert!(matches!(err, Err(StorageError::PreconditionFailed { .. })));
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_put_object_conditional_fallback_on_unsupported_backend() {
+        let temp = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", temp.path().display());
+        let cfg = StorageConfig::new(url);
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+
+        let content = bytes::Bytes::from_static(b"data");
+        let res = adapter
+            .put_object_conditional("test.json", content, None, Some("etag1"), None, false)
+            .await;
+
+        assert!(res.is_ok());
     }
 }

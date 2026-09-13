@@ -488,54 +488,77 @@ impl DashboardCompiler {
 
             // Clone base_history for this merge attempt
             let mut history = base_history.clone();
-            let mut expected_etag = None;
-            let mut expected_version = None;
+            let mut expected_history_etag = None;
+            let mut expected_history_version = None;
+            let mut history_create_only = false;
+
+            let mut expected_dashboard_etag = None;
+            let mut expected_dashboard_version = None;
+            let mut dashboard_create_only = false;
 
             if options.push_to_storage
                 && let Some(ad) = &adapter
-                && let Some(remote_obj) = ad.get_object("history.json").await?
             {
-                expected_etag = remote_obj.e_tag;
-                expected_version = remote_obj.version;
-                let text = std::str::from_utf8(&remote_obj.bytes).map_err(|e| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("invalid UTF-8 in remote history.json: {e}"),
-                    )
-                })?;
-                let remote_history = DashboardHistory::parse_or_empty(text)?;
-                history.merge(remote_history, options.truncate_limit);
+                if let Some(remote_obj) = ad.get_object("history.json").await? {
+                    expected_history_etag = remote_obj.e_tag;
+                    expected_history_version = remote_obj.version;
+                    let text = std::str::from_utf8(&remote_obj.bytes).map_err(|e| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("invalid UTF-8 in remote history.json: {e}"),
+                        )
+                    })?;
+                    let remote_history = DashboardHistory::parse_or_empty(text)?;
+                    history.merge(remote_history, options.truncate_limit);
+                } else {
+                    history_create_only = true;
+                }
+
+                if let Some(remote_html) = ad.get_object("dashboard.html").await? {
+                    expected_dashboard_etag = remote_html.e_tag;
+                    expected_dashboard_version = remote_html.version;
+                } else {
+                    dashboard_create_only = true;
+                }
             }
 
+            // Re-read local history immediately before saving to prevent concurrent local runs from overwriting each other
+            let mut local_history = load_local_history_or_default(paths)?;
+            local_history.merge(history.clone(), options.truncate_limit);
+
             // Save local history.json
-            let serialized_history = serde_json::to_string_pretty(&history)?;
+            let serialized_history = serde_json::to_string_pretty(&local_history)?;
             crate::io::save_file_atomically(&history_path, serialized_history.as_bytes())?;
 
             // Compile dashboard.html and save locally
-            let html_content = Self::compile_dashboard(&history)?;
+            let html_content = Self::compile_dashboard(&local_history)?;
             crate::io::save_file_atomically(&target_html_path, html_content.as_bytes())?;
 
             let Some(ad) = &adapter else {
-                break (history.runs.len(), false);
+                break (local_history.runs.len(), false);
             };
             if !options.push_to_storage {
-                break (history.runs.len(), false);
+                break (local_history.runs.len(), false);
             }
 
             let upload_res = upload_history_and_dashboard(
                 ad,
                 serialized_history.into_bytes(),
                 html_content.into_bytes(),
-                expected_etag.as_deref(),
-                expected_version.as_deref(),
+                expected_history_etag.as_deref(),
+                expected_history_version.as_deref(),
+                history_create_only,
+                expected_dashboard_etag.as_deref(),
+                expected_dashboard_version.as_deref(),
+                dashboard_create_only,
             )
             .await;
 
             match upload_res {
-                Ok(()) => break (history.runs.len(), true),
+                Ok(()) => break (local_history.runs.len(), true),
                 Err(StorageError::PreconditionFailed { .. }) if attempt < MAX_PUSH_RETRIES => {
                     tracing::warn!(
-                        "Concurrent modification on remote history.json; retrying merge (attempt {attempt}/{MAX_PUSH_RETRIES})..."
+                        "Concurrent modification on remote history or dashboard; retrying merge (attempt {attempt}/{MAX_PUSH_RETRIES})..."
                     );
                 }
                 Err(e) => return Err(DashboardError::Storage(e)),
@@ -562,28 +585,37 @@ fn load_report_test_cases(report_path: &Path) -> Result<Vec<TestCaseResult>, Das
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn upload_history_and_dashboard(
     adapter: &ObjectStoreAdapter,
     history_json: Vec<u8>,
     html_content: Vec<u8>,
-    expected_etag: Option<&str>,
-    expected_version: Option<&str>,
+    expected_history_etag: Option<&str>,
+    expected_history_version: Option<&str>,
+    history_create_only: bool,
+    expected_dashboard_etag: Option<&str>,
+    expected_dashboard_version: Option<&str>,
+    dashboard_create_only: bool,
 ) -> Result<(), StorageError> {
+    adapter
+        .put_object_conditional(
+            "dashboard.html",
+            bytes::Bytes::from(html_content),
+            Some("text/html; charset=utf-8"),
+            expected_dashboard_etag,
+            expected_dashboard_version,
+            dashboard_create_only,
+        )
+        .await?;
+
     adapter
         .put_object_conditional(
             "history.json",
             bytes::Bytes::from(history_json),
             Some("application/json"),
-            expected_etag,
-            expected_version,
-        )
-        .await?;
-
-    adapter
-        .put_object(
-            "dashboard.html",
-            bytes::Bytes::from(html_content),
-            Some("text/html; charset=utf-8"),
+            expected_history_etag,
+            expected_history_version,
+            history_create_only,
         )
         .await
 }
@@ -1246,5 +1278,146 @@ mod tests {
         )
         .await;
         assert!(matches!(err_parse, Err(DashboardError::ReportParse { .. })));
+    }
+
+    #[test]
+    fn test_from_test_results_all_variants_and_error_display() {
+        let test_cases = vec![
+            TestCaseResult {
+                name: "test_success".to_string(),
+                result: TestImageResult::Success {
+                    relative_path: PathBuf::from("success.png"),
+                },
+            },
+            TestCaseResult {
+                name: "test_ssim".to_string(),
+                result: TestImageResult::Mismatch {
+                    relative_path: PathBuf::from("ssim.png"),
+                    detail: crate::engine::MismatchDetail::Ssim { ssim_score: 0.8542 },
+                    diff_path: PathBuf::from("diff.png"),
+                    baseline_path: PathBuf::from("base.png"),
+                    actual_path: PathBuf::from("act.png"),
+                },
+            },
+            TestCaseResult {
+                name: "test_ssim_fallback".to_string(),
+                result: TestImageResult::Mismatch {
+                    relative_path: PathBuf::from("fallback.png"),
+                    detail: crate::engine::MismatchDetail::SsimFallback { diff_count: 55 },
+                    diff_path: PathBuf::from("diff.png"),
+                    baseline_path: PathBuf::from("base.png"),
+                    actual_path: PathBuf::from("act.png"),
+                },
+            },
+            TestCaseResult {
+                name: "test_decode_error".to_string(),
+                result: TestImageResult::DecodeError {
+                    relative_path: PathBuf::from("decode.png"),
+                    error: "corrupt png".to_string(),
+                },
+            },
+            TestCaseResult {
+                name: "test_missing_baseline".to_string(),
+                result: TestImageResult::MissingBaseline {
+                    relative_path: PathBuf::from("missing.png"),
+                    reason: "no baseline staged".to_string(),
+                },
+            },
+            TestCaseResult {
+                name: "test_io_error".to_string(),
+                result: TestImageResult::IoError {
+                    relative_path: PathBuf::from("io.png"),
+                    error: "disk failure".to_string(),
+                },
+            },
+            TestCaseResult {
+                name: "test_encode_error".to_string(),
+                result: TestImageResult::EncodeError {
+                    relative_path: PathBuf::from("encode.png"),
+                    actual_path: PathBuf::from("act.png"),
+                    error: "encoder out of memory".to_string(),
+                },
+            },
+            TestCaseResult {
+                name: "test_dimension_mismatch".to_string(),
+                result: TestImageResult::DimensionMismatch {
+                    relative_path: PathBuf::from("dim.png"),
+                    baseline_size: (100, 100),
+                    actual_size: (200, 200),
+                    baseline_path: PathBuf::from("base.png"),
+                    actual_path: PathBuf::from("act.png"),
+                },
+            },
+        ];
+
+        let entry = RunHistoryEntry::from_test_results(
+            "run-variants",
+            Utc::now(),
+            "main",
+            "macos-aarch64",
+            Some("abcdef123456".to_string()),
+            &test_cases,
+        );
+
+        assert_eq!(entry.summary.total, 8);
+        assert_eq!(entry.summary.passed, 1);
+        assert_eq!(entry.summary.failed, 7);
+        assert_eq!(entry.tests.len(), 8);
+
+        // Verify status Display implementation
+        let statuses = [
+            TestHistoryStatus::Success,
+            TestHistoryStatus::Mismatch,
+            TestHistoryStatus::DimensionMismatch,
+            TestHistoryStatus::DecodeError,
+            TestHistoryStatus::MissingBaseline,
+            TestHistoryStatus::IoError,
+            TestHistoryStatus::EncodeError,
+        ];
+        for s in statuses {
+            assert!(!format!("{s}").is_empty());
+        }
+
+        // Test error displays and From impls
+        let io_err = crate::io::IoError::Io(std::io::Error::other("io err"));
+        let dash_io: DashboardError = io_err.into();
+        assert!(format!("{dash_io}").contains("io err"));
+
+        let parse_err =
+            crate::io::IoError::JsonParse(serde_json::from_str::<String>("bad").unwrap_err());
+        let dash_parse: DashboardError = parse_err.into();
+        assert!(format!("{dash_parse}").contains("JSON error"));
+
+        let unsupp = DashboardError::UnsupportedSchemaVersion {
+            found: 10,
+            supported: 1,
+        };
+        assert!(format!("{unsupp}").contains("Unsupported history schema version 10"));
+
+        let not_cfg = DashboardError::StorageNotConfigured;
+        assert!(format!("{not_cfg}").contains("GLEON_STORAGE_URL"));
+    }
+
+    #[test]
+    fn test_compile_dashboard_empty_runs_and_zero_tests() {
+        let history = DashboardHistory::new();
+        let html = DashboardCompiler::compile_dashboard(&history).unwrap();
+        assert!(html.contains("No historical test runs recorded"));
+
+        let mut history_with_empty_run = DashboardHistory::new();
+        history_with_empty_run.append_run(
+            RunHistoryEntry {
+                id: "run-empty".to_string(),
+                timestamp: Utc::now(),
+                branch: "main".to_string(),
+                platform: "macos-aarch64".to_string(),
+                commit_sha: None,
+                summary: RunSummary::default(),
+                tests: vec![],
+            },
+            None,
+        );
+        let html_empty = DashboardCompiler::compile_dashboard(&history_with_empty_run).unwrap();
+        assert!(html_empty.contains("—")); // Pass rates are None, rendered as dash
     }
 }

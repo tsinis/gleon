@@ -562,4 +562,17 @@ mod tests {
             ResolvedContext::resolve(&make_options("develop"), root_dir, &EmptyEnv).unwrap();
         assert_eq!(ctx_develop.target_branch, "develop");
     }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn test_context_resolve_head_commit_sha() {
+        let mut dir = std::env::current_dir().unwrap();
+        while !dir.join(".git").exists() {
+            if !dir.pop() {
+                return;
+            }
+        }
+        let ctx = ResolvedContext::resolve(&ContextOptions::default(), &dir, &EmptyEnv).unwrap();
+        assert!(ctx.commit_sha.is_some());
+    }
 }

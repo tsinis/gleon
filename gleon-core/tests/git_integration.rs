@@ -185,3 +185,25 @@ fn test_get_commit_author_real_repo() {
         assert!(!author_str.is_empty(), "Author string should not be empty");
     }
 }
+
+#[test]
+#[cfg(not(miri))]
+fn test_resolve_context_real_repo_commit_sha() {
+    let repo_root = if let Some(root) = find_repo_root() {
+        root
+    } else {
+        eprintln!("Skipping test: not running inside a git repository");
+        return;
+    };
+
+    let options = gleon_core::context::ContextOptions::default();
+    let ctx = gleon_core::context::ResolvedContext::resolve(
+        &options,
+        &repo_root,
+        &gleon_core::env::OsEnv,
+    )
+    .unwrap();
+
+    assert!(ctx.commit_sha.is_some());
+    assert!(!ctx.commit_sha.unwrap().is_empty());
+}
