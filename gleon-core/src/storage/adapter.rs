@@ -735,17 +735,6 @@ impl ObjectStoreAdapter {
                     .map_err(|source| StorageError::Store { source })?;
                 Ok(())
             }
-            Err(e) if self.supports_attributes && !is_conditional && !create_only => {
-                tracing::warn!(
-                    "put_opts failed for '{}' ({e}); falling back to basic put",
-                    relative_path
-                );
-                self.store
-                    .put(&key, payload)
-                    .await
-                    .map_err(|source| StorageError::Store { source })?;
-                Ok(())
-            }
             Err(source) => Err(StorageError::Store { source }),
         }
     }
@@ -1071,7 +1060,13 @@ mod tests {
             .unwrap();
 
         let retrieved = adapter.get_object("history.json").await.unwrap();
-        assert_eq!(retrieved.map(|r| r.bytes), Some(content));
+        assert_eq!(retrieved.map(|r| r.bytes), Some(content.clone()));
+
+        // 3. Put object with empty/invalid content-type filters it out cleanly
+        adapter
+            .put_object("empty_ct.json", content, Some(""))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1142,5 +1137,55 @@ mod tests {
             .await;
 
         assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_put_object_conditional_store_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", temp.path().display());
+        let cfg = StorageConfig::new(url);
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+
+        let conflict = temp.path().join("conflict_dir_file");
+        std::fs::write(&conflict, b"file not dir").unwrap();
+
+        let content = bytes::Bytes::from_static(b"test");
+        let res = adapter
+            .put_object_conditional(
+                "conflict_dir_file/nested.json",
+                content,
+                None,
+                None,
+                None,
+                false,
+            )
+            .await;
+        assert!(matches!(res, Err(StorageError::Store { .. })));
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_put_object_conditional_fallback_store_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", temp.path().display());
+        let cfg = StorageConfig::new(url);
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+
+        let conflict = temp.path().join("conflict_fb_file");
+        std::fs::write(&conflict, b"file not dir").unwrap();
+
+        let content = bytes::Bytes::from_static(b"test");
+        let res = adapter
+            .put_object_conditional(
+                "conflict_fb_file/nested.json",
+                content,
+                None,
+                Some("etag"),
+                None,
+                false,
+            )
+            .await;
+        assert!(matches!(res, Err(StorageError::Store { .. })));
     }
 }

@@ -480,90 +480,15 @@ impl DashboardCompiler {
         );
         base_history.append_run(run_entry, options.truncate_limit);
 
-        const MAX_PUSH_RETRIES: usize = 3;
-        let mut attempt = 0;
-
-        let (total_runs, pushed) = loop {
-            attempt += 1;
-
-            // Clone base_history for this merge attempt
-            let mut history = base_history.clone();
-            let mut expected_history_etag = None;
-            let mut expected_history_version = None;
-            let mut history_create_only = false;
-
-            let mut expected_dashboard_etag = None;
-            let mut expected_dashboard_version = None;
-            let mut dashboard_create_only = false;
-
-            if options.push_to_storage
-                && let Some(ad) = &adapter
-            {
-                if let Some(remote_obj) = ad.get_object("history.json").await? {
-                    expected_history_etag = remote_obj.e_tag;
-                    expected_history_version = remote_obj.version;
-                    let text = std::str::from_utf8(&remote_obj.bytes).map_err(|e| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("invalid UTF-8 in remote history.json: {e}"),
-                        )
-                    })?;
-                    let remote_history = DashboardHistory::parse_or_empty(text)?;
-                    history.merge(remote_history, options.truncate_limit);
-                } else {
-                    history_create_only = true;
-                }
-
-                if let Some(remote_html) = ad.get_object("dashboard.html").await? {
-                    expected_dashboard_etag = remote_html.e_tag;
-                    expected_dashboard_version = remote_html.version;
-                } else {
-                    dashboard_create_only = true;
-                }
-            }
-
-            // Re-read local history immediately before saving to prevent concurrent local runs from overwriting each other
-            let mut local_history = load_local_history_or_default(paths)?;
-            local_history.merge(history.clone(), options.truncate_limit);
-
-            // Save local history.json
-            let serialized_history = serde_json::to_string_pretty(&local_history)?;
-            crate::io::save_file_atomically(&history_path, serialized_history.as_bytes())?;
-
-            // Compile dashboard.html and save locally
-            let html_content = Self::compile_dashboard(&local_history)?;
-            crate::io::save_file_atomically(&target_html_path, html_content.as_bytes())?;
-
-            let Some(ad) = &adapter else {
-                break (local_history.runs.len(), false);
-            };
-            if !options.push_to_storage {
-                break (local_history.runs.len(), false);
-            }
-
-            let upload_res = upload_history_and_dashboard(
-                ad,
-                serialized_history.into_bytes(),
-                html_content.into_bytes(),
-                expected_history_etag.as_deref(),
-                expected_history_version.as_deref(),
-                history_create_only,
-                expected_dashboard_etag.as_deref(),
-                expected_dashboard_version.as_deref(),
-                dashboard_create_only,
-            )
-            .await;
-
-            match upload_res {
-                Ok(()) => break (local_history.runs.len(), true),
-                Err(StorageError::PreconditionFailed { .. }) if attempt < MAX_PUSH_RETRIES => {
-                    tracing::warn!(
-                        "Concurrent modification on remote history or dashboard; retrying merge (attempt {attempt}/{MAX_PUSH_RETRIES})..."
-                    );
-                }
-                Err(e) => return Err(DashboardError::Storage(e)),
-            }
-        };
+        let (total_runs, pushed) = push_or_save_history(
+            paths,
+            options,
+            adapter.as_ref(),
+            &base_history,
+            &history_path,
+            &target_html_path,
+        )
+        .await?;
 
         Ok(DashboardExecutionResult {
             total_runs,
@@ -571,6 +496,94 @@ impl DashboardCompiler {
             html_path: target_html_path,
             pushed,
         })
+    }
+}
+
+async fn push_or_save_history(
+    paths: &GleonPaths,
+    options: &DashboardOptions<'_>,
+    adapter: Option<&ObjectStoreAdapter>,
+    base_history: &DashboardHistory,
+    history_path: &Path,
+    target_html_path: &Path,
+) -> Result<(usize, bool), DashboardError> {
+    const MAX_PUSH_RETRIES: usize = 3;
+    let mut attempt = 0;
+
+    loop {
+        attempt += 1;
+
+        let mut history = base_history.clone();
+        let mut expected_history_etag = None;
+        let mut expected_history_version = None;
+        let mut history_create_only = false;
+
+        let mut expected_dashboard_etag = None;
+        let mut expected_dashboard_version = None;
+        let mut dashboard_create_only = false;
+
+        if let Some(ad) = adapter.filter(|_| options.push_to_storage) {
+            if let Some(remote_obj) = ad.get_object("history.json").await? {
+                expected_history_etag = remote_obj.e_tag;
+                expected_history_version = remote_obj.version;
+                let text = std::str::from_utf8(&remote_obj.bytes).map_err(|e| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("invalid UTF-8 in remote history.json: {e}"),
+                    )
+                })?;
+                let remote_history = DashboardHistory::parse_or_empty(text)?;
+                history.merge(remote_history, options.truncate_limit);
+            } else {
+                history_create_only = true;
+            }
+
+            if let Some(remote_html) = ad.get_object("dashboard.html").await? {
+                expected_dashboard_etag = remote_html.e_tag;
+                expected_dashboard_version = remote_html.version;
+            } else {
+                dashboard_create_only = true;
+            }
+        }
+
+        // Re-read local history immediately before saving to prevent concurrent local runs from overwriting each other
+        let mut local_history = load_local_history_or_default(paths)?;
+        local_history.merge(history.clone(), options.truncate_limit);
+
+        // Save local history.json
+        let serialized_history = serde_json::to_string_pretty(&local_history)?;
+        crate::io::save_file_atomically(history_path, serialized_history.as_bytes())?;
+
+        // Compile dashboard.html and save locally
+        let html_content = DashboardCompiler::compile_dashboard(&local_history)?;
+        crate::io::save_file_atomically(target_html_path, html_content.as_bytes())?;
+
+        let Some(ad) = adapter.filter(|_| options.push_to_storage) else {
+            return Ok((local_history.runs.len(), false));
+        };
+
+        let upload_res = upload_history_and_dashboard(
+            ad,
+            serialized_history.into_bytes(),
+            html_content.into_bytes(),
+            expected_history_etag.as_deref(),
+            expected_history_version.as_deref(),
+            history_create_only,
+            expected_dashboard_etag.as_deref(),
+            expected_dashboard_version.as_deref(),
+            dashboard_create_only,
+        )
+        .await;
+
+        match upload_res {
+            Ok(()) => return Ok((local_history.runs.len(), true)),
+            Err(StorageError::PreconditionFailed { .. }) if attempt < MAX_PUSH_RETRIES => {
+                tracing::warn!(
+                    "Concurrent modification on remote history or dashboard; retrying merge (attempt {attempt}/{MAX_PUSH_RETRIES})..."
+                );
+            }
+            Err(e) => return Err(DashboardError::Storage(e)),
+        }
     }
 }
 
@@ -597,7 +610,7 @@ async fn upload_history_and_dashboard(
     expected_dashboard_version: Option<&str>,
     dashboard_create_only: bool,
 ) -> Result<(), StorageError> {
-    adapter
+    let res_html = adapter
         .put_object_conditional(
             "dashboard.html",
             bytes::Bytes::from(html_content),
@@ -606,18 +619,23 @@ async fn upload_history_and_dashboard(
             expected_dashboard_version,
             dashboard_create_only,
         )
-        .await?;
+        .await;
 
-    adapter
-        .put_object_conditional(
-            "history.json",
-            bytes::Bytes::from(history_json),
-            Some("application/json"),
-            expected_history_etag,
-            expected_history_version,
-            history_create_only,
-        )
-        .await
+    match res_html {
+        Ok(()) => {
+            adapter
+                .put_object_conditional(
+                    "history.json",
+                    bytes::Bytes::from(history_json),
+                    Some("application/json"),
+                    expected_history_etag,
+                    expected_history_version,
+                    history_create_only,
+                )
+                .await
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Result summary of the dashboard execution.
@@ -1278,6 +1296,52 @@ mod tests {
         )
         .await;
         assert!(matches!(err_parse, Err(DashboardError::ReportParse { .. })));
+
+        // 7. Verify DashboardExecutionResult derived traits
+        assert_eq!(res_merged, res_merged.clone());
+        let _ = format!("{res_merged:?}");
+
+        // 8. Remote history with invalid UTF-8 returns error
+        adapter
+            .put_object("history.json", bytes::Bytes::from_static(b"\xFF\xFF"), None)
+            .await
+            .unwrap();
+        let err_utf8 =
+            DashboardCompiler::execute(&paths, &ctx, &report_path, &opts_merge, Some(&storage_cfg))
+                .await;
+        assert!(matches!(err_utf8, Err(DashboardError::Io(_))));
+
+        // 9. Local history with corrupt JSON returns error
+        std::fs::write(paths.history_file(), b"corrupted local json").unwrap();
+        let err_local = DashboardCompiler::execute(
+            &paths,
+            &ctx,
+            &report_path,
+            &DashboardOptions::default(),
+            None,
+        )
+        .await;
+        assert!(matches!(err_local, Err(DashboardError::Json(_))));
+        std::fs::remove_file(paths.history_file()).unwrap();
+
+        // 10. Storage upload failure returns DashboardError::Storage
+        let read_only_dir = temp.path().join("read_only_remote");
+        std::fs::create_dir_all(&read_only_dir).unwrap();
+        let bad_storage_cfg = StorageConfig::new(format!("file://{}", read_only_dir.display()));
+        let dash_dir = read_only_dir.join("dashboard.html");
+        std::fs::create_dir_all(&dash_dir).unwrap();
+        let err_upload = DashboardCompiler::execute(
+            &paths,
+            &ctx,
+            &report_path,
+            &DashboardOptions {
+                push_to_storage: true,
+                ..Default::default()
+            },
+            Some(&bad_storage_cfg),
+        )
+        .await;
+        assert!(matches!(err_upload, Err(DashboardError::Storage(_))));
     }
 
     #[test]
@@ -1378,7 +1442,7 @@ mod tests {
             assert!(!format!("{s}").is_empty());
         }
 
-        // Test error displays and From impls
+        // Test error displays and From implementations
         let io_err = crate::io::IoError::Io(std::io::Error::other("io err"));
         let dash_io: DashboardError = io_err.into();
         assert!(format!("{dash_io}").contains("io err"));
@@ -1388,14 +1452,23 @@ mod tests {
         let dash_parse: DashboardError = parse_err.into();
         assert!(format!("{dash_parse}").contains("JSON error"));
 
-        let unsupp = DashboardError::UnsupportedSchemaVersion {
+        let unsupported_err = DashboardError::UnsupportedSchemaVersion {
             found: 10,
             supported: 1,
         };
-        assert!(format!("{unsupp}").contains("Unsupported history schema version 10"));
+        assert!(format!("{unsupported_err}").contains("Unsupported history schema version 10"));
 
         let not_cfg = DashboardError::StorageNotConfigured;
         assert!(format!("{not_cfg}").contains("GLEON_STORAGE_URL"));
+
+        let stor_err = DashboardError::Storage(StorageError::PreconditionFailed {
+            path: "history.json".to_string(),
+            source: object_store::Error::AlreadyExists {
+                path: "history.json".to_string(),
+                source: "already exists".into(),
+            },
+        });
+        assert!(format!("{stor_err}").contains("Storage error"));
     }
 
     #[test]
@@ -1419,5 +1492,125 @@ mod tests {
         );
         let html_empty = DashboardCompiler::compile_dashboard(&history_with_empty_run).unwrap();
         assert!(html_empty.contains("—")); // Pass rates are None, rendered as dash
+    }
+
+    #[tokio::test]
+    async fn test_upload_history_and_dashboard_precondition_failures() {
+        let cfg = StorageConfig::new("memory://");
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+
+        // 1. Initial successful upload with create_only=true
+        let res = upload_history_and_dashboard(
+            &adapter,
+            b"{}".to_vec(),
+            b"<html></html>".to_vec(),
+            None,
+            None,
+            true,
+            None,
+            None,
+            true,
+        )
+        .await;
+        assert!(res.is_ok());
+
+        // 2. Second upload with create_only=true fails with PreconditionFailed (already exists)
+        let res_already_exists = upload_history_and_dashboard(
+            &adapter,
+            b"{}".to_vec(),
+            b"<html></html>".to_vec(),
+            None,
+            None,
+            true,
+            None,
+            None,
+            true,
+        )
+        .await;
+        assert!(matches!(
+            res_already_exists,
+            Err(StorageError::PreconditionFailed { .. })
+        ));
+
+        // 3. Upload with mismatched ETag fails with PreconditionFailed
+        let res_bad_etag = upload_history_and_dashboard(
+            &adapter,
+            b"{}".to_vec(),
+            b"<html></html>".to_vec(),
+            Some("bad_etag"),
+            None,
+            false,
+            Some("bad_etag"),
+            None,
+            false,
+        )
+        .await;
+        assert!(matches!(
+            res_bad_etag,
+            Err(StorageError::PreconditionFailed { .. })
+        ));
+
+        // 4. First upload (dashboard.html) succeeds, second (history.json with mismatched etag) fails
+        let res_second_fail = upload_history_and_dashboard(
+            &adapter,
+            b"{}".to_vec(),
+            b"<html></html>".to_vec(),
+            Some("mismatched_history_etag"),
+            None,
+            false,
+            None,
+            None,
+            false,
+        )
+        .await;
+        assert!(matches!(
+            res_second_fail,
+            Err(StorageError::PreconditionFailed { .. })
+        ));
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_dashboard_compiler_occ_retry_on_concurrent_modification() {
+        let temp = tempfile::tempdir().unwrap();
+        let base_dir = temp.path();
+        let paths = GleonPaths::new(base_dir);
+
+        let remote_store_dir = base_dir.join("remote_store_retry");
+        std::fs::create_dir_all(&remote_store_dir).unwrap();
+        let storage_cfg = StorageConfig::new(format!("file://{}", remote_store_dir.display()));
+        let adapter = ObjectStoreAdapter::from_config(&storage_cfg).unwrap();
+
+        let history_path = paths.history_file();
+        let target_html_path = paths.dashboard_file();
+        let base_history = DashboardHistory::new();
+        let options = DashboardOptions {
+            push_to_storage: true,
+            ..Default::default()
+        };
+
+        // Spawn a task that waits for local history.json to be written,
+        // then creates remote dashboard.html to trigger an AlreadyExists (PreconditionFailed) collision on attempt 1.
+        let remote_dash = remote_store_dir.join("dashboard.html");
+        let hist_watch = history_path.clone();
+        let handle = tokio::spawn(async move {
+            while !hist_watch.exists() {
+                tokio::task::yield_now().await;
+            }
+            let _ = std::fs::write(&remote_dash, b"<html>concurrent</html>");
+        });
+
+        let res = push_or_save_history(
+            &paths,
+            &options,
+            Some(&adapter),
+            &base_history,
+            &history_path,
+            &target_html_path,
+        )
+        .await;
+
+        let _ = handle.await;
+        assert!(res.is_ok());
     }
 }
