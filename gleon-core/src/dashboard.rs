@@ -507,6 +507,30 @@ async fn push_or_save_history(
     history_path: &Path,
     target_html_path: &Path,
 ) -> Result<(usize, bool), DashboardError> {
+    push_or_save_history_with_hook(
+        paths,
+        options,
+        adapter,
+        base_history,
+        history_path,
+        target_html_path,
+        |_| {},
+    )
+    .await
+}
+
+async fn push_or_save_history_with_hook<F>(
+    paths: &GleonPaths,
+    options: &DashboardOptions<'_>,
+    adapter: Option<&ObjectStoreAdapter>,
+    base_history: &DashboardHistory,
+    history_path: &Path,
+    target_html_path: &Path,
+    mut on_before_upload: F,
+) -> Result<(usize, bool), DashboardError>
+where
+    F: FnMut(usize),
+{
     const MAX_PUSH_RETRIES: usize = 3;
     let mut attempt = 0;
 
@@ -561,6 +585,9 @@ async fn push_or_save_history(
         let Some(ad) = adapter.filter(|_| options.push_to_storage) else {
             return Ok((local_history.runs.len(), false));
         };
+
+        // Notify hook at the upload boundary before attempting upload
+        on_before_upload(attempt);
 
         let upload_res = upload_history_and_dashboard(
             ad,
@@ -1589,31 +1616,33 @@ mod tests {
             ..Default::default()
         };
 
-        // Spawn a task that waits for local history.json to be written,
-        // then creates remote dashboard.html to trigger an AlreadyExists (PreconditionFailed) collision on attempt 1.
         let remote_dash = remote_store_dir.join("dashboard.html");
-        let hist_watch = history_path.clone();
-        let handle = tokio::spawn(async move {
-            while !hist_watch.exists() {
-                tokio::task::yield_now().await;
-            }
-            if let Ok(mut file) = std::fs::File::create_new(&remote_dash) {
-                use std::io::Write as _;
-                let _ = file.write_all(b"<html>concurrent</html>");
-            }
-        });
+        let mut collision_injected = false;
 
-        let res = push_or_save_history(
+        let res = push_or_save_history_with_hook(
             &paths,
             &options,
             Some(&adapter),
             &base_history,
             &history_path,
             &target_html_path,
+            |attempt| {
+                if attempt == 1 {
+                    use std::io::Write as _;
+                    let mut file = std::fs::File::create_new(&remote_dash)
+                        .expect("collision file must be created successfully on attempt 1");
+                    file.write_all(b"<html>concurrent</html>")
+                        .expect("writing collision file should succeed");
+                    collision_injected = true;
+                }
+            },
         )
         .await;
 
-        let _ = handle.await;
+        assert!(
+            collision_injected,
+            "collision injection must occur before attempt 1 upload"
+        );
         let (total_runs, pushed) = res.expect("push_or_save_history should succeed after retry");
         assert!(pushed);
         assert_eq!(total_runs, 0);

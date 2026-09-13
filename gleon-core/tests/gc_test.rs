@@ -38,6 +38,19 @@ fn make_sha256(char: char) -> ImageHash {
     ImageHash::new("sha256", &hex).unwrap()
 }
 
+fn commit_test_tree<'a>(
+    repo: &'a gix::Repository,
+    reference: &str,
+    message: &str,
+    tree_id: impl Into<gix::ObjectId>,
+    parents: impl IntoIterator<Item = impl Into<gix::ObjectId>>,
+) -> gix::Id<'a> {
+    let sig = gix::actor::SignatureRef::from_bytes(b"Gleon Test <test@gleon.dev> 1700000000 +0000")
+        .expect("valid test signature");
+    repo.commit_as(sig, sig, reference, message, tree_id, parents)
+        .expect("successful commit in test")
+}
+
 #[test]
 fn test_filter_orphans_to_delete_grace_period() {
     let now = Utc::now();
@@ -268,22 +281,20 @@ async fn test_gc_integration_real_data_mtime() {
 
     let empty_tree = gix::objs::Tree::empty();
     let tree_id = repo.write_object(&empty_tree).unwrap();
-    let _c1 = repo
-        .commit(
-            "refs/heads/main",
-            "init main",
-            tree_id,
-            std::iter::empty::<gix::ObjectId>(),
-        )
-        .unwrap();
-    let _c2 = repo
-        .commit(
-            "refs/heads/feature",
-            "init feature",
-            tree_id,
-            std::iter::empty::<gix::ObjectId>(),
-        )
-        .unwrap();
+    let _c1 = commit_test_tree(
+        &repo,
+        "refs/heads/main",
+        "init main",
+        tree_id,
+        std::iter::empty::<gix::ObjectId>(),
+    );
+    let _c2 = commit_test_tree(
+        &repo,
+        "refs/heads/feature",
+        "init feature",
+        tree_id,
+        std::iter::empty::<gix::ObjectId>(),
+    );
 
     let ctx = ResolvedContext::from_options(&ContextOptions::default(), repo_root).unwrap();
     init_workspace(&ctx).unwrap();
@@ -467,24 +478,22 @@ fn test_collect_all_referenced_hashes_git_branches() {
     });
     let root_tree_id = repo.write_object(&root_tree).unwrap();
 
-    let _commit_id = repo
-        .commit(
-            "refs/heads/feature-1",
-            "add feature manifest",
-            root_tree_id,
-            std::iter::empty::<gix::ObjectId>(),
-        )
-        .unwrap();
+    let _commit_id = commit_test_tree(
+        &repo,
+        "refs/heads/feature-1",
+        "add feature manifest",
+        root_tree_id,
+        std::iter::empty::<gix::ObjectId>(),
+    );
 
     // Add a second ref (main branch) so tracked refs > 1
-    let _main_commit = repo
-        .commit(
-            "refs/heads/main",
-            "initial main commit",
-            root_tree_id,
-            std::iter::empty::<gix::ObjectId>(),
-        )
-        .unwrap();
+    let _main_commit = commit_test_tree(
+        &repo,
+        "refs/heads/main",
+        "initial main commit",
+        root_tree_id,
+        std::iter::empty::<gix::ObjectId>(),
+    );
 
     // 3. Setup a distinct manifest on local disk (not yet committed to git)
     let h_local = make_sha256('a');
@@ -525,14 +534,13 @@ fn test_collect_all_referenced_hashes_insufficient_refs_fails_without_force() {
     // Only 1 ref
     let empty_tree = gix::objs::Tree::empty();
     let tree_id = repo.write_object(&empty_tree).unwrap();
-    let _commit = repo
-        .commit(
-            "refs/heads/main",
-            "init",
-            tree_id,
-            std::iter::empty::<gix::ObjectId>(),
-        )
-        .unwrap();
+    let _commit = commit_test_tree(
+        &repo,
+        "refs/heads/main",
+        "init",
+        tree_id,
+        std::iter::empty::<gix::ObjectId>(),
+    );
 
     let manifests_dir = repo_root.join(".gleon/manifests");
     fs::create_dir_all(&manifests_dir).unwrap();
@@ -553,6 +561,41 @@ fn test_collect_all_referenced_hashes_insufficient_refs_fails_without_force() {
 }
 
 #[test]
+fn test_collect_all_referenced_hashes_multiple_refs_same_commit_fails_without_force() {
+    let temp = tempdir().unwrap();
+    let repo_root = temp.path();
+    let repo = gix::init(repo_root).unwrap();
+
+    let empty_tree = gix::objs::Tree::empty();
+    let tree_id = repo.write_object(&empty_tree).unwrap();
+    let commit = commit_test_tree(
+        &repo,
+        "refs/heads/main",
+        "init",
+        tree_id,
+        std::iter::empty::<gix::ObjectId>(),
+    );
+
+    // Create a second reference pointing to the exact same commit
+    repo.reference(
+        "refs/heads/feature",
+        commit.detach(),
+        gix::refs::transaction::PreviousValue::Any,
+        "feature ref pointing to same commit",
+    )
+    .unwrap();
+
+    let manifests_dir = repo_root.join(".gleon/manifests");
+    fs::create_dir_all(&manifests_dir).unwrap();
+
+    let err = collect_all_referenced_hashes(repo_root, &GcOptions::default()).unwrap_err();
+    assert!(
+        matches!(err, GcError::InsufficientRefs(1)),
+        "Must fail closed when multiple refs point to only 1 unique commit"
+    );
+}
+
+#[test]
 fn test_collect_all_referenced_hashes_shallow_clone_fails_without_force() {
     let temp = tempdir().unwrap();
     let repo_root = temp.path();
@@ -560,22 +603,20 @@ fn test_collect_all_referenced_hashes_shallow_clone_fails_without_force() {
 
     let empty_tree = gix::objs::Tree::empty();
     let tree_id = repo.write_object(&empty_tree).unwrap();
-    let _c1 = repo
-        .commit(
-            "refs/heads/main",
-            "init",
-            tree_id,
-            std::iter::empty::<gix::ObjectId>(),
-        )
-        .unwrap();
-    let _c2 = repo
-        .commit(
-            "refs/heads/branch2",
-            "b2",
-            tree_id,
-            std::iter::empty::<gix::ObjectId>(),
-        )
-        .unwrap();
+    let _c1 = commit_test_tree(
+        &repo,
+        "refs/heads/main",
+        "init",
+        tree_id,
+        std::iter::empty::<gix::ObjectId>(),
+    );
+    let _c2 = commit_test_tree(
+        &repo,
+        "refs/heads/branch2",
+        "b2",
+        tree_id,
+        std::iter::empty::<gix::ObjectId>(),
+    );
 
     let manifests_dir = repo_root.join(".gleon/manifests");
     fs::create_dir_all(&manifests_dir).unwrap();
@@ -665,23 +706,21 @@ fn test_collect_all_referenced_hashes_monorepo_subfolder() {
     });
     let packages_tree_id = repo.write_object(&packages_tree).unwrap();
 
-    let _commit_id = repo
-        .commit(
-            "refs/heads/feature-monorepo",
-            "monorepo commit",
-            packages_tree_id,
-            std::iter::empty::<gix::ObjectId>(),
-        )
-        .unwrap();
+    let _commit_id = commit_test_tree(
+        &repo,
+        "refs/heads/feature-monorepo",
+        "monorepo commit",
+        packages_tree_id,
+        std::iter::empty::<gix::ObjectId>(),
+    );
 
-    let _c2 = repo
-        .commit(
-            "refs/heads/main",
-            "main commit",
-            packages_tree_id,
-            std::iter::empty::<gix::ObjectId>(),
-        )
-        .unwrap();
+    let _c2 = commit_test_tree(
+        &repo,
+        "refs/heads/main",
+        "main commit",
+        packages_tree_id,
+        std::iter::empty::<gix::ObjectId>(),
+    );
 
     let collected = collect_all_referenced_hashes(&subproject_dir, &GcOptions::default()).unwrap();
     assert!(
@@ -731,23 +770,21 @@ fn test_collect_all_referenced_hashes_tags() {
     });
     let root_tree_id = repo.write_object(&root_tree).unwrap();
 
-    let _commit_id = repo
-        .commit(
-            "refs/tags/v1.0.0",
-            "release tag v1.0.0",
-            root_tree_id,
-            std::iter::empty::<gix::ObjectId>(),
-        )
-        .unwrap();
+    let _commit_id = commit_test_tree(
+        &repo,
+        "refs/tags/v1.0.0",
+        "release tag v1.0.0",
+        root_tree_id,
+        std::iter::empty::<gix::ObjectId>(),
+    );
 
-    let _main = repo
-        .commit(
-            "refs/heads/main",
-            "main branch",
-            root_tree_id,
-            std::iter::empty::<gix::ObjectId>(),
-        )
-        .unwrap();
+    let _main = commit_test_tree(
+        &repo,
+        "refs/heads/main",
+        "main branch",
+        root_tree_id,
+        std::iter::empty::<gix::ObjectId>(),
+    );
 
     let collected = collect_all_referenced_hashes(repo_root, &GcOptions::default()).unwrap();
     assert!(
@@ -793,23 +830,21 @@ fn test_scan_commit_manifests_resilient_to_unknown_schema_version() {
     });
     let root_tree_id = repo.write_object(&root_tree).unwrap();
 
-    let _commit_id = repo
-        .commit(
-            "refs/heads/future-branch",
-            "future schema version",
-            root_tree_id,
-            std::iter::empty::<gix::ObjectId>(),
-        )
-        .unwrap();
+    let _commit_id = commit_test_tree(
+        &repo,
+        "refs/heads/future-branch",
+        "future schema version",
+        root_tree_id,
+        std::iter::empty::<gix::ObjectId>(),
+    );
 
-    let _main = repo
-        .commit(
-            "refs/heads/main",
-            "main branch",
-            root_tree_id,
-            std::iter::empty::<gix::ObjectId>(),
-        )
-        .unwrap();
+    let _main = commit_test_tree(
+        &repo,
+        "refs/heads/main",
+        "main branch",
+        root_tree_id,
+        std::iter::empty::<gix::ObjectId>(),
+    );
 
     let collected = collect_all_referenced_hashes(repo_root, &GcOptions::default()).unwrap();
     assert!(

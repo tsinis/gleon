@@ -80,7 +80,7 @@ pub struct GcOptions {
     pub dry_run: bool,
     /// Minimum age required before an unreferenced blob is eligible for deletion.
     pub grace_period: Duration,
-    /// When true, bypasses safety checks (shallow clone, single ref, 0-hour grace period, non-git).
+    /// When true, bypasses safety checks (shallow clone, single ref, git traversal errors, non-git).
     pub force: bool,
 }
 
@@ -307,7 +307,7 @@ fn scan_all_tracked_refs(
     referenced_hashes: &mut HashSet<ImageHash>,
     scan_failures: &mut usize,
 ) -> usize {
-    let mut tracked_refs_count = 0;
+    let mut seen_commits = HashSet::new();
     let Ok(platform) = repo.references() else {
         *scan_failures += 1;
         return 0;
@@ -330,27 +330,36 @@ fn scan_all_tracked_refs(
         if !is_tracked {
             continue;
         }
-        tracked_refs_count += 1;
 
-        if let Ok(id) = reference.into_fully_peeled_id() {
-            let commit_opt = repo.find_commit(id).ok().or_else(|| {
-                repo.find_object(id)
-                    .ok()
-                    .and_then(|obj| obj.peel_to_commit().ok())
-            });
-            if let Some(commit) = commit_opt {
-                scan_commit_manifests(
-                    repo,
-                    &commit,
-                    manifests_git_path,
-                    visited_trees,
-                    referenced_hashes,
-                    scan_failures,
-                );
-            }
+        let Ok(id) = reference.into_fully_peeled_id() else {
+            *scan_failures += 1;
+            continue;
+        };
+
+        let Ok(obj) = repo.find_object(id) else {
+            *scan_failures += 1;
+            continue;
+        };
+
+        let Ok(commit) = obj.peel_to_commit() else {
+            *scan_failures += 1;
+            continue;
+        };
+
+        if !seen_commits.insert(commit.id().detach()) {
+            continue;
         }
+
+        scan_commit_manifests(
+            repo,
+            &commit,
+            manifests_git_path,
+            visited_trees,
+            referenced_hashes,
+            scan_failures,
+        );
     }
-    tracked_refs_count
+    seen_commits.len()
 }
 
 /// Collects all image hashes referenced across local workspace manifests
@@ -408,7 +417,7 @@ pub fn collect_all_referenced_hashes(
         );
     }
 
-    let tracked_refs_count = scan_all_tracked_refs(
+    let unique_commits_count = scan_all_tracked_refs(
         &repo,
         &manifests_git_path,
         &mut visited_trees,
@@ -416,8 +425,8 @@ pub fn collect_all_referenced_hashes(
         &mut scan_failures,
     );
 
-    if tracked_refs_count <= 1 && !options.force && !options.dry_run {
-        return Err(GcError::InsufficientRefs(tracked_refs_count));
+    if unique_commits_count <= 1 && !options.force && !options.dry_run {
+        return Err(GcError::InsufficientRefs(unique_commits_count));
     }
 
     if scan_failures > 0 {
@@ -435,7 +444,7 @@ pub fn collect_all_referenced_hashes(
     info!(
         total_referenced = referenced_hashes.len(),
         scanned_trees = visited_trees.len(),
-        tracked_refs = tracked_refs_count,
+        unique_commits = unique_commits_count,
         "Collected referenced blob hashes from workspace and Git branches"
     );
 
