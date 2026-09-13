@@ -67,6 +67,8 @@ pub struct ResolvedContext {
     pub target_branch: String,
     /// The resolved repository/configuration root directory.
     pub base_dir: std::path::PathBuf,
+    /// The resolved Git HEAD commit SHA, or `None` if not inside a Git repository or offline.
+    pub commit_sha: Option<String>,
 }
 
 impl Default for ResolvedContext {
@@ -83,6 +85,7 @@ impl Default for ResolvedContext {
             branch: "main".to_string(),
             target_branch: "main".to_string(),
             base_dir: std::path::PathBuf::from("."),
+            commit_sha: None,
         }
     }
 }
@@ -198,6 +201,14 @@ impl ResolvedContext {
             options.target_branch.clone()
         };
 
+        let commit_sha = match crate::git::GitResolver::get_head_commit_sha(&resolved_base_dir) {
+            Ok(sha) => Some(sha),
+            Err(e) => {
+                tracing::debug!("Git commit SHA resolution skipped or failed: {e}");
+                None
+            }
+        };
+
         Ok(Self {
             config,
             platform,
@@ -205,6 +216,7 @@ impl ResolvedContext {
             branch,
             target_branch,
             base_dir: resolved_base_dir,
+            commit_sha,
         })
     }
 }
@@ -549,5 +561,23 @@ mod tests {
         let ctx_develop =
             ResolvedContext::resolve(&make_options("develop"), root_dir, &EmptyEnv).unwrap();
         assert_eq!(ctx_develop.target_branch, "develop");
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn test_context_resolve_head_commit_sha() {
+        fn run_check(predicate: impl Fn(&crate::paths::GleonPaths) -> bool) {
+            let cur = std::env::current_dir().unwrap();
+            let Some(paths) = crate::paths::find_workspace_root(&cur, predicate) else {
+                return;
+            };
+            let ctx =
+                ResolvedContext::resolve(&ContextOptions::default(), paths.base_dir(), &EmptyEnv)
+                    .unwrap();
+            assert!(ctx.commit_sha.is_some());
+        }
+
+        run_check(|p| p.base_dir().join(".git").exists());
+        run_check(|_| false);
     }
 }

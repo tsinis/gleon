@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gleon History Dashboard</title>
+    <style>
+        :root {
+            --bg-color: #0f1115;
+            --surface-color: #1a1d24;
+            --surface-hover: #222630;
+            --border-color: #2e323a;
+            --text-primary: #e2e8f0;
+            --text-secondary: #94a3b8;
+            --accent: #3b82f6;
+            --danger: #ef4444;
+            --success: #10b981;
+            --warning: #f59e0b;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            margin: 0;
+            padding: 2rem;
+            line-height: 1.5;
+        }
+
+        .dashboard-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-bottom: 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+
+        .title-group h1 {
+            margin: 0 0 0.25rem 0;
+            font-size: 1.75rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .title-group .meta {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        /* KPI Cards */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .kpi-card {
+            background-color: var(--surface-color);
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+            padding: 1.25rem;
+        }
+
+        .kpi-title {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+        }
+
+        .kpi-value {
+            font-size: 1.75rem;
+            font-weight: 700;
+        }
+
+        .kpi-value.success { color: var(--success); }
+        .kpi-value.danger { color: var(--danger); }
+        .kpi-value.accent { color: var(--accent); }
+
+        /* Chart Section */
+        .chart-container {
+            background-color: var(--surface-color);
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .chart-title {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .svg-chart {
+            width: 100%;
+            height: 120px;
+            overflow: visible;
+        }
+
+        /* Filter Controls */
+        .filter-bar {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .filter-select, .filter-input {
+            background-color: var(--surface-color);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 0.5rem 0.75rem;
+            border-radius: 0.375rem;
+            font-size: 0.875rem;
+            outline: none;
+        }
+
+        .filter-select:focus, .filter-input:focus {
+            border-color: var(--accent);
+        }
+
+        /* Run List */
+        .run-list {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        details.run-card {
+            background-color: var(--surface-color);
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+            overflow: hidden;
+            transition: border-color 0.15s ease;
+        }
+
+        details.run-card:hover {
+            border-color: #3f4450;
+        }
+
+        summary.run-summary {
+            padding: 1rem 1.5rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+            flex-wrap: wrap;
+            gap: 1rem;
+            list-style: none;
+        }
+
+        summary.run-summary::-webkit-details-marker {
+            display: none;
+        }
+
+        summary.run-summary:hover {
+            background-color: var(--surface-hover);
+        }
+
+        .run-left {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .badge {
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 0.25rem 0.6rem;
+            border-radius: 9999px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .badge-success { background: rgba(16, 185, 129, 0.15); color: var(--success); }
+        .badge-danger { background: rgba(239, 68, 68, 0.15); color: var(--danger); }
+        .badge-neutral { background: rgba(148, 163, 184, 0.12); color: var(--text-secondary); }
+
+        .run-branch {
+            font-weight: 600;
+            font-size: 0.95rem;
+        }
+
+        .run-platform {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+        }
+
+        .run-time {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+        }
+
+        .run-stats {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            font-size: 0.9rem;
+        }
+
+        .run-details {
+            padding: 1rem 1.5rem;
+            border-top: 1px solid var(--border-color);
+            background-color: rgba(0, 0, 0, 0.15);
+        }
+
+        .test-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.875rem;
+        }
+
+        .test-table th, .test-table td {
+            padding: 0.6rem 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .test-table th {
+            color: var(--text-secondary);
+            font-weight: 500;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.05em;
+        }
+
+        .test-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1rem;
+            color: var(--text-secondary);
+            background-color: var(--surface-color);
+            border: 1px dashed var(--border-color);
+            border-radius: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <header class="dashboard-header">
+        <div class="title-group">
+            <h1>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                    <line x1="3" y1="9" x2="21" y2="9"></line>
+                    <line x1="9" y1="21" x2="9" y2="9"></line>
+                </svg>
+                Gleon Regression History
+            </h1>
+            <div class="meta">Generated: {{ generated_at }}</div>
+        </div>
+    </header>
+
+    <section class="kpi-grid">
+        <div class="kpi-card">
+            <div class="kpi-title">Total Runs</div>
+            <div class="kpi-value accent">{{ total_runs }}</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">Passed Runs</div>
+            <div class="kpi-value success">{{ passed_runs }}</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">Failed Runs</div>
+            <div class="kpi-value danger">{{ failed_runs }}</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">Run Pass Rate</div>
+            <div class="kpi-value {% if run_pass_rate is not defined or run_pass_rate is none %}accent{% elif run_pass_rate >= 90.0 %}success{% elif run_pass_rate >= 70.0 %}accent{% else %}danger{% endif %}">
+                {% if run_pass_rate is defined and run_pass_rate is not none %}{{ "%.1f"|format(run_pass_rate) }}%{% else %}—{% endif %}
+            </div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">Test Pass Rate</div>
+            <div class="kpi-value {% if test_pass_rate is not defined or test_pass_rate is none %}accent{% elif test_pass_rate >= 90.0 %}success{% elif test_pass_rate >= 70.0 %}accent{% else %}danger{% endif %}">
+                {% if test_pass_rate is defined and test_pass_rate is not none %}{{ "%.1f"|format(test_pass_rate) }}%{% else %}—{% endif %}
+            </div>
+        </div>
+    </section>
+
+    {% if chart_runs %}
+    <section class="chart-container">
+        <div class="chart-title">
+            <span>Recent Run Trends</span>
+            <span style="font-size: 0.8rem; color: var(--text-secondary);">Last {{ chart_runs|length }} runs</span>
+        </div>
+        <svg class="svg-chart" preserveAspectRatio="none" viewBox="0 0 {{ [chart_runs|length * 24, 240]|max }} 100">
+            {% for run in chart_runs %}
+            {% set x = loop.index0 * 24 + 10 %}
+            {% set h = 70 %}
+            {% set passed_h = (run.summary.passed / [run.summary.total, 1]|max * h)|round %}
+            {% set failed_h = h - passed_h %}
+            
+            {% if run.summary.failed > 0 %}
+            <rect x="{{ x }}" y="{{ 15 }}" width="14" height="{{ failed_h }}" rx="2" fill="#ef4444">
+                <title>{{ run.branch }} ({{ run.platform }}): {{ run.summary.failed }} failed</title>
+            </rect>
+            {% endif %}
+            
+            {% if run.summary.passed > 0 %}
+            <rect x="{{ x }}" y="{{ 15 + failed_h }}" width="14" height="{{ passed_h }}" rx="2" fill="#10b981">
+                <title>{{ run.branch }} ({{ run.platform }}): {{ run.summary.passed }} passed</title>
+            </rect>
+            {% endif %}
+            
+            <circle cx="{{ x + 7 }}" cy="93" r="3" fill="{% if run.summary.failed == 0 %}#10b981{% else %}#ef4444{% endif %}"/>
+            {% endfor %}
+        </svg>
+    </section>
+    {% endif %}
+
+    <div class="filter-bar">
+        <select id="branch-filter" class="filter-select" onchange="applyFilters()">
+            <option value="">All Branches</option>
+            {% for b in branches %}
+            <option value="{{ b }}">{{ b }}</option>
+            {% endfor %}
+        </select>
+
+        <select id="platform-filter" class="filter-select" onchange="applyFilters()">
+            <option value="">All Platforms</option>
+            {% for p in platforms %}
+            <option value="{{ p }}">{{ p }}</option>
+            {% endfor %}
+        </select>
+
+        <select id="status-filter" class="filter-select" onchange="applyFilters()">
+            <option value="">All Statuses</option>
+            <option value="passed">Passed</option>
+            <option value="failed">Failed</option>
+        </select>
+
+        <input type="text" id="search-filter" class="filter-input" placeholder="Search branch or commit..." aria-label="Search branch or commit" oninput="applyFilters()">
+    </div>
+
+    <section class="run-list" id="run-list-container">
+        {% if runs %}
+            {% for run in runs|reverse %}
+            <details class="run-card" data-branch="{{ run.branch }}" data-platform="{{ run.platform }}" data-status="{% if run.summary.failed == 0 %}passed{% else %}failed{% endif %}" data-commit="{{ run.commit_sha|default('') }}">
+                <summary class="run-summary">
+                    <div class="run-left">
+                        <span class="badge {% if run.summary.failed == 0 %}badge-success{% else %}badge-danger{% endif %}">
+                            {% if run.summary.failed == 0 %}PASSED{% else %}FAILED{% endif %}
+                        </span>
+                        <span class="run-branch">{{ run.branch }}</span>
+                        <span class="badge badge-neutral">{{ run.platform }}</span>
+                        {% if run.commit_sha %}
+                        <span class="badge badge-neutral" style="font-family: monospace;">{{ run.commit_sha[:7] }}</span>
+                        {% endif %}
+                        <span class="run-time">{{ run.timestamp }}</span>
+                    </div>
+                    <div class="run-stats">
+                        <span><strong>{{ run.summary.passed }}</strong> / {{ run.summary.total }} passed</span>
+                        {% if run.summary.failed > 0 %}
+                        <span style="color: var(--danger);"><strong>{{ run.summary.failed }}</strong> failed</span>
+                        {% endif %}
+                    </div>
+                </summary>
+                <div class="run-details">
+                    {% if run.tests %}
+                    <table class="test-table">
+                        <thead>
+                            <tr>
+                                <th>Test Case</th>
+                                <th>Status</th>
+                                <th>Details</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for t in run.tests %}
+                            <tr>
+                                <td><code>{{ t.name }}</code></td>
+                                <td>
+                                    <span class="badge {% if t.status == 'Success' %}badge-success{% else %}badge-danger{% endif %}">
+                                        {{ t.status }}
+                                    </span>
+                                </td>
+                                <td>
+                                    {% set has_diff = t.diff_count is defined and t.diff_count is not none %}
+                                    {% set has_error = t.error is defined and t.error is not none %}
+                                    {% if has_diff and has_error %}
+                                    <div>Diff pixels: {{ t.diff_count }}</div>
+                                    <div style="color: var(--warning); font-size: 0.8rem;">{{ t.error }}</div>
+                                    {% elif has_diff %}
+                                    <span>Diff pixels: {{ t.diff_count }}</span>
+                                    {% elif has_error %}
+                                    <span style="color: var(--danger);">{{ t.error }}</span>
+                                    {% else %}
+                                    <span style="color: var(--text-secondary);">-</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    {% else %}
+                    <p style="color: var(--text-secondary); margin: 0.25rem 0; font-size: 0.85rem;">No test case details recorded for this run.</p>
+                    {% endif %}
+                </div>
+            </details>
+            {% endfor %}
+        {% else %}
+            <div class="empty-state">
+                <h3>No historical test runs recorded</h3>
+                <p>Execute tests and run <code>gleon dashboard</code> to populate history.</p>
+            </div>
+        {% endif %}
+    </section>
+
+    <script>
+        function applyFilters() {
+            const branch = document.getElementById('branch-filter').value.toLowerCase();
+            const platform = document.getElementById('platform-filter').value.toLowerCase();
+            const status = document.getElementById('status-filter').value.toLowerCase();
+            const search = document.getElementById('search-filter').value.toLowerCase();
+
+            const cards = document.querySelectorAll('.run-card');
+            cards.forEach(card => {
+                const cardBranch = (card.getAttribute('data-branch') || '').toLowerCase();
+                const cardPlatform = (card.getAttribute('data-platform') || '').toLowerCase();
+                const cardStatus = (card.getAttribute('data-status') || '').toLowerCase();
+                const cardCommit = (card.getAttribute('data-commit') || '').toLowerCase();
+
+                const matchBranch = !branch || cardBranch === branch;
+                const matchPlatform = !platform || cardPlatform === platform;
+                const matchStatus = !status || cardStatus === status;
+                const matchSearch = !search || cardBranch.includes(search) || cardCommit.includes(search);
+
+                if (matchBranch && matchPlatform && matchStatus && matchSearch) {
+                    card.style.display = 'block';
+                } else {
+                    card.style.display = 'none';
+                }
+            });
+        }
+    </script>
+</body>
+</html>

@@ -512,6 +512,17 @@ fn build_blob_attributes(metadata: Option<&BlobMetadata>) -> object_store::Attri
     attributes
 }
 
+/// Returned object payload with version and `ETag` from remote storage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteObject {
+    /// Object binary contents.
+    pub bytes: bytes::Bytes,
+    /// `ETag` identifier from remote storage, if supported.
+    pub e_tag: Option<String>,
+    /// Version identifier from remote storage, if supported.
+    pub version: Option<String>,
+}
+
 impl ObjectStoreAdapter {
     /// Checks if a blob exists on remote storage without downloading it.
     ///
@@ -605,6 +616,142 @@ impl ObjectStoreAdapter {
         }
 
         Ok(hashes)
+    }
+
+    /// Fetches the raw bytes of an object from remote storage at `relative_path`.
+    ///
+    /// Returns `Ok(None)` if the object does not exist on remote storage.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if reading from remote storage fails for reasons other than `NotFound`.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn get_object(
+        &self,
+        relative_path: &str,
+    ) -> Result<Option<RemoteObject>, StorageError> {
+        let key = ObjPath::from(relative_path);
+        match self.store.get(&key).await {
+            Ok(res) => {
+                let e_tag = res.meta.e_tag.clone();
+                let version = res.meta.version.clone();
+                let bytes = res
+                    .bytes()
+                    .await
+                    .map_err(|source| StorageError::Store { source })?;
+                Ok(Some(RemoteObject {
+                    bytes,
+                    e_tag,
+                    version,
+                }))
+            }
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(source) => Err(StorageError::Store { source }),
+        }
+    }
+
+    /// Uploads raw bytes to remote storage at `relative_path` with optional optimistic concurrency check.
+    ///
+    /// If `expected_e_tag` or `expected_version` is provided and the storage adapter supports conditional put,
+    /// an atomic conditional update is performed (`PutMode::Update`).
+    /// If a precondition failure occurs, returns [`StorageError::PreconditionFailed`].
+    /// For storage schemes that do not support conditional updates (such as `file://`), falls back to overwrite.
+    ///
+    /// # Errors
+    /// Returns [`StorageError::PreconditionFailed`] if optimistic concurrency check fails.
+    /// Returns [`StorageError::Store`] on other storage errors.
+    #[instrument(skip(self, data), level = "debug")]
+    pub async fn put_object_conditional(
+        &self,
+        relative_path: &str,
+        data: bytes::Bytes,
+        content_type: Option<&str>,
+        expected_e_tag: Option<&str>,
+        expected_version: Option<&str>,
+        create_only: bool,
+    ) -> Result<(), StorageError> {
+        let key = ObjPath::from(relative_path);
+        let payload = object_store::PutPayload::from(data);
+
+        let mut attributes = object_store::Attributes::new();
+        if self.supports_attributes
+            && let Some(ct) = content_type.filter(|ct| is_valid_meta_value(ct))
+        {
+            attributes.insert(
+                object_store::Attribute::ContentType,
+                object_store::AttributeValue::from((*ct).to_string()),
+            );
+        }
+
+        let is_conditional = expected_e_tag.is_some() || expected_version.is_some();
+
+        let mode = if create_only {
+            object_store::PutMode::Create
+        } else if is_conditional {
+            object_store::PutMode::Update(object_store::UpdateVersion {
+                e_tag: expected_e_tag.map(ToString::to_string),
+                version: expected_version.map(ToString::to_string),
+            })
+        } else {
+            object_store::PutMode::Overwrite
+        };
+
+        let put_opts = object_store::PutOptions {
+            mode,
+            attributes,
+            ..Default::default()
+        };
+
+        match self.store.put_opts(&key, payload.clone(), put_opts).await {
+            Ok(_) => Ok(()),
+            Err(object_store::Error::Precondition { source, .. }) => {
+                Err(StorageError::PreconditionFailed {
+                    path: relative_path.to_string(),
+                    source: object_store::Error::Precondition {
+                        path: relative_path.to_string(),
+                        source,
+                    },
+                })
+            }
+            Err(object_store::Error::AlreadyExists { source, .. }) => {
+                Err(StorageError::PreconditionFailed {
+                    path: relative_path.to_string(),
+                    source: object_store::Error::AlreadyExists {
+                        path: relative_path.to_string(),
+                        source,
+                    },
+                })
+            }
+            Err(
+                object_store::Error::NotImplemented { .. }
+                | object_store::Error::NotSupported { .. },
+            ) if is_conditional => {
+                tracing::warn!(
+                    "Storage backend does not support conditional update for '{}'; falling back to overwrite",
+                    relative_path
+                );
+                self.store
+                    .put(&key, payload)
+                    .await
+                    .map_err(|source| StorageError::Store { source })?;
+                Ok(())
+            }
+            Err(source) => Err(StorageError::Store { source }),
+        }
+    }
+
+    /// Uploads raw bytes to remote storage at `relative_path`.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if writing to remote storage fails.
+    #[instrument(skip(self, data), level = "debug")]
+    pub async fn put_object(
+        &self,
+        relative_path: &str,
+        data: bytes::Bytes,
+        content_type: Option<&str>,
+    ) -> Result<(), StorageError> {
+        self.put_object_conditional(relative_path, data, content_type, None, None, false)
+            .await
     }
 }
 
@@ -892,6 +1039,153 @@ mod tests {
         .unwrap();
 
         let res = adapter.upload_blob(&hash, &src_file).await;
+        assert!(matches!(res, Err(StorageError::Store { .. })));
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_get_and_put_object_round_trip() {
+        let cfg = StorageConfig::new("memory://");
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+
+        // 1. Missing object returns None
+        let missing = adapter.get_object("history.json").await.unwrap();
+        assert!(missing.is_none());
+
+        // 2. Put object and verify get
+        let content = bytes::Bytes::from_static(b"{\"schema_version\":1,\"runs\":[]}");
+        adapter
+            .put_object("history.json", content.clone(), Some("application/json"))
+            .await
+            .unwrap();
+
+        let retrieved = adapter.get_object("history.json").await.unwrap();
+        assert_eq!(retrieved.map(|r| r.bytes), Some(content.clone()));
+
+        // 3. Put object with empty/invalid content-type filters it out cleanly
+        adapter
+            .put_object("empty_ct.json", content, Some(""))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_put_object_conditional_precondition_failure() {
+        let cfg = StorageConfig::new("memory://");
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+
+        let content = bytes::Bytes::from_static(b"{\"schema_version\":1,\"runs\":[]}");
+        adapter
+            .put_object("history.json", content.clone(), Some("application/json"))
+            .await
+            .unwrap();
+
+        // Intentionally mismatched ETag must fail with PreconditionFailed
+        let err = adapter
+            .put_object_conditional(
+                "history.json",
+                content,
+                Some("application/json"),
+                Some("mismatched_etag"),
+                None,
+                false,
+            )
+            .await;
+
+        assert!(matches!(err, Err(StorageError::PreconditionFailed { .. })));
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_put_object_conditional_create_only_already_exists() {
+        let cfg = StorageConfig::new("memory://");
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+
+        let content = bytes::Bytes::from_static(b"{\"schema_version\":1,\"runs\":[]}");
+        adapter
+            .put_object("history.json", content.clone(), Some("application/json"))
+            .await
+            .unwrap();
+
+        // Calling with create_only=true when the file exists must return PreconditionFailed
+        let err = adapter
+            .put_object_conditional(
+                "history.json",
+                content,
+                Some("application/json"),
+                None,
+                None,
+                true,
+            )
+            .await;
+
+        assert!(matches!(err, Err(StorageError::PreconditionFailed { .. })));
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_put_object_conditional_fallback_on_unsupported_backend() {
+        let temp = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", temp.path().display());
+        let cfg = StorageConfig::new(url);
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+
+        let content = bytes::Bytes::from_static(b"data");
+        let res = adapter
+            .put_object_conditional("test.json", content, None, Some("etag1"), None, false)
+            .await;
+
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_put_object_conditional_store_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", temp.path().display());
+        let cfg = StorageConfig::new(url);
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+
+        let conflict = temp.path().join("conflict_dir_file");
+        std::fs::write(&conflict, b"file not dir").unwrap();
+
+        let content = bytes::Bytes::from_static(b"test");
+        let res = adapter
+            .put_object_conditional(
+                "conflict_dir_file/nested.json",
+                content,
+                None,
+                None,
+                None,
+                false,
+            )
+            .await;
+        assert!(matches!(res, Err(StorageError::Store { .. })));
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn test_put_object_conditional_fallback_store_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", temp.path().display());
+        let cfg = StorageConfig::new(url);
+        let adapter = ObjectStoreAdapter::from_config(&cfg).unwrap();
+
+        let conflict = temp.path().join("conflict_fb_file");
+        std::fs::write(&conflict, b"file not dir").unwrap();
+
+        let content = bytes::Bytes::from_static(b"test");
+        let res = adapter
+            .put_object_conditional(
+                "conflict_fb_file/nested.json",
+                content,
+                None,
+                Some("etag"),
+                None,
+                false,
+            )
+            .await;
         assert!(matches!(res, Err(StorageError::Store { .. })));
     }
 }

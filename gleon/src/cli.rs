@@ -206,6 +206,24 @@ pub enum Commands {
         #[arg(long = "from")]
         from: Option<std::path::PathBuf>,
     },
+    /// Compile static visual regression history dashboard
+    Dashboard {
+        /// Path to the JSON report file (defaults to latest test run report in .gleon)
+        #[arg(long)]
+        report: Option<std::path::PathBuf>,
+
+        /// Output file path for compiled dashboard HTML
+        #[arg(short = 'o', long)]
+        out: Option<std::path::PathBuf>,
+
+        /// Limit the maximum number of historical runs kept in history.json
+        #[arg(long = "truncate-history", value_name = "NUM")]
+        truncate_history: Option<std::num::NonZeroUsize>,
+
+        /// Upload history.json and dashboard.html to remote storage
+        #[arg(long)]
+        push: bool,
+    },
 }
 
 #[cfg(test)]
@@ -449,6 +467,22 @@ mod tests {
             Commands::Approve {
                 paths: vec![],
                 from: None,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_dashboard_command() -> Result<(), clap::Error> {
+        let args = ["gleon", "dashboard", "--truncate-history", "5", "--push"];
+        let cli = Cli::try_parse_from(args)?;
+        assert_eq!(
+            cli.command,
+            Commands::Dashboard {
+                report: None,
+                out: None,
+                truncate_history: std::num::NonZeroUsize::new(5),
+                push: true,
             }
         );
         Ok(())

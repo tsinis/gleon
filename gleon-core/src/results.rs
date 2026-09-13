@@ -89,6 +89,20 @@ impl TestImageResult {
         }
     }
 
+    /// Returns the variant kind name as a static string.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Success { .. } => "Success",
+            Self::Mismatch { .. } => "Mismatch",
+            Self::DimensionMismatch { .. } => "DimensionMismatch",
+            Self::DecodeError { .. } => "DecodeError",
+            Self::MissingBaseline { .. } => "MissingBaseline",
+            Self::IoError { .. } => "IoError",
+            Self::EncodeError { .. } => "EncodeError",
+        }
+    }
+
     /// Returns the baseline image's local blob path, if this result has one.
     ///
     /// Only baselines are content-addressed and uploaded to remote storage, so this is the
@@ -183,5 +197,88 @@ mod tests {
         ] {
             assert_eq!(without_baseline.baseline_path(), None);
         }
+    }
+
+    #[test]
+    fn test_result_kind_and_relative_path() {
+        let results = [
+            (
+                TestImageResult::Success {
+                    relative_path: PathBuf::from("a.png"),
+                },
+                "Success",
+            ),
+            (
+                TestImageResult::Mismatch {
+                    relative_path: PathBuf::from("b.png"),
+                    detail: MismatchDetail::Pixel { diff_count: 1 },
+                    diff_path: PathBuf::from("diff.png"),
+                    baseline_path: PathBuf::from("base.png"),
+                    actual_path: PathBuf::from("act.png"),
+                },
+                "Mismatch",
+            ),
+            (
+                TestImageResult::DimensionMismatch {
+                    relative_path: PathBuf::from("c.png"),
+                    baseline_size: (1, 1),
+                    actual_size: (2, 2),
+                    baseline_path: PathBuf::from("base.png"),
+                    actual_path: PathBuf::from("act.png"),
+                },
+                "DimensionMismatch",
+            ),
+            (
+                TestImageResult::DecodeError {
+                    relative_path: PathBuf::from("d.png"),
+                    error: "err".to_string(),
+                },
+                "DecodeError",
+            ),
+            (
+                TestImageResult::MissingBaseline {
+                    relative_path: PathBuf::from("e.png"),
+                    reason: "none".to_string(),
+                },
+                "MissingBaseline",
+            ),
+            (
+                TestImageResult::IoError {
+                    relative_path: PathBuf::from("f.png"),
+                    error: "err".to_string(),
+                },
+                "IoError",
+            ),
+            (
+                TestImageResult::EncodeError {
+                    relative_path: PathBuf::from("g.png"),
+                    actual_path: PathBuf::from("act.png"),
+                    error: "err".to_string(),
+                },
+                "EncodeError",
+            ),
+        ];
+
+        for (res, expected_kind) in results {
+            assert_eq!(res.kind(), expected_kind);
+            assert!(!res.relative_path().as_os_str().is_empty());
+        }
+
+        let passed_case = TestCaseResult {
+            name: "test_pass".to_string(),
+            result: TestImageResult::Success {
+                relative_path: PathBuf::from("a.png"),
+            },
+        };
+        assert!(passed_case.passed());
+
+        let failed_case = TestCaseResult {
+            name: "test_fail".to_string(),
+            result: TestImageResult::DecodeError {
+                relative_path: PathBuf::from("d.png"),
+                error: "err".to_string(),
+            },
+        };
+        assert!(!failed_case.passed());
     }
 }

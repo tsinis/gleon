@@ -58,6 +58,8 @@ pub fn init_workspace(context: &crate::context::ResolvedContext) -> Result<InitR
             ".env".to_string(),
             ".env.local".to_string(),
             "credentials".to_string(),
+            "dashboard.html".to_string(),
+            "history.json".to_string(),
         ],
     )?;
 
@@ -122,6 +124,8 @@ mod tests {
         assert!(gitignore.contains("runs/"));
         assert!(gitignore.contains(".env.local"));
         assert!(gitignore.contains("credentials"));
+        assert!(gitignore.contains("dashboard.html"));
+        assert!(gitignore.contains("history.json"));
 
         let env_template = res.gleon_dir.join(".env.template");
         assert!(env_template.exists());

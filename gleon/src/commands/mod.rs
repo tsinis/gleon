@@ -2,6 +2,7 @@
 
 pub mod approve;
 pub mod clean;
+pub mod dashboard;
 pub mod diff;
 pub mod init;
 pub mod lint;

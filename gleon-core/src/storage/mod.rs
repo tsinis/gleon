@@ -2,7 +2,7 @@
 
 pub mod adapter;
 
-pub use adapter::{ObjectStoreAdapter, StorageConfig};
+pub use adapter::{ObjectStoreAdapter, RemoteObject, StorageConfig};
 use object_store::path::Path as ObjPath;
 
 /// Optional metadata attached to an uploaded blob in cloud storage.
@@ -47,6 +47,16 @@ pub enum StorageError {
     Store {
         /// Source error from `object_store`.
         #[from]
+        source: object_store::Error,
+    },
+
+    /// Optimistic concurrency check failed (`ETag` or version mismatch).
+    #[error("Storage precondition failed for '{path}'")]
+    PreconditionFailed {
+        /// Relative storage path.
+        path: String,
+        /// Underlying source error from `object_store`.
+        #[source]
         source: object_store::Error,
     },
 
