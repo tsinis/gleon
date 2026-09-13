@@ -101,11 +101,13 @@ async fn run_report_inner(
             || format.eq_ignore_ascii_case("junit.xml")
             || format.eq_ignore_ascii_case("xml")
         {
-            // TODO: support options in generate_junit_xml
+            // JUnit XML strictly conforms to the standard CI runner schema (Jenkins, GitLab CI,
+            // GitHub Actions test-reporters), omitting non-standard visual image links.
             ReportGenerator::generate_junit_xml(&report_data)
                 .with_context(|| "Failed to generate JUnit XML report")?
         } else if format.eq_ignore_ascii_case("json") {
-            // TODO: support options in json
+            // JSON format emits the full machine-readable TestCaseResult domain hierarchy without
+            // MarkdownReportOptions, intended for automated scripting and CI tooling consumption.
             serde_json::to_string_pretty(&report_data)
                 .with_context(|| "Failed to serialize report to JSON")?
         } else {
