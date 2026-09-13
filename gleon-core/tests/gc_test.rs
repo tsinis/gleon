@@ -202,8 +202,20 @@ async fn test_gc_full_lifecycle_with_storage() {
     assert!(adapter.blob_exists(&h1).await.unwrap());
     assert!(adapter.blob_exists(&h2).await.unwrap());
 
-    // 3. Dry-run GC with grace_period = 0 and force = true
-    let dry_run_opts = GcOptions::new(true, 0, true);
+    // Backdate h2 on disk so it is older than the 24-hour grace period
+    let h2_file = remote_temp
+        .path()
+        .join("blobs")
+        .join(h2.scheme())
+        .join(h2.value());
+    let file = fs::File::open(&h2_file).unwrap();
+    let forty_eight_hours_ago =
+        std::time::SystemTime::now() - std::time::Duration::from_secs(48 * 3600);
+    file.set_times(fs::FileTimes::new().set_modified(forty_eight_hours_ago))
+        .unwrap();
+
+    // 3. Dry-run GC with grace_period = 24 and force = true
+    let dry_run_opts = GcOptions::new(true, 24, true);
     let dry_res = garbage_collect(&ctx, Some(&storage_cfg), &dry_run_opts)
         .await
         .unwrap();
@@ -219,8 +231,8 @@ async fn test_gc_full_lifecycle_with_storage() {
     assert!(adapter.blob_exists(&h1).await.unwrap());
     assert!(adapter.blob_exists(&h2).await.unwrap());
 
-    // 4. Real GC with grace_period = 0 and force = true -> deletes h2, keeps h1
-    let real_opts = GcOptions::new(false, 0, true);
+    // 4. Real GC with grace_period = 24 and force = true -> deletes h2, keeps h1
+    let real_opts = GcOptions::new(false, 24, true);
     let real_res = garbage_collect(&ctx, Some(&storage_cfg), &real_opts)
         .await
         .unwrap();
@@ -359,7 +371,7 @@ async fn test_gc_integration_real_data_mtime() {
 }
 
 #[tokio::test]
-async fn test_gc_grace_period_zero_fails_without_force() {
+async fn test_gc_grace_period_under_24h_fails_even_with_force() {
     let workspace_temp = tempdir().unwrap();
     let remote_temp = tempdir().unwrap();
 
@@ -368,12 +380,28 @@ async fn test_gc_grace_period_zero_fails_without_force() {
         ResolvedContext::from_options(&ContextOptions::default(), workspace_temp.path()).unwrap();
     init_workspace(&ctx).unwrap();
 
+    // 0h fails
     let opts = GcOptions::new(false, 0, false);
     let res = garbage_collect(&ctx, Some(&storage_cfg), &opts).await;
-
     assert!(
         matches!(res, Err(GcError::GracePeriodTooShort)),
         "Must fail with GracePeriodTooShort when 0h grace period is passed without --force"
+    );
+
+    // 12h fails
+    let opts_12 = GcOptions::new(false, 12, false);
+    let res_12 = garbage_collect(&ctx, Some(&storage_cfg), &opts_12).await;
+    assert!(
+        matches!(res_12, Err(GcError::GracePeriodTooShort)),
+        "Must fail with GracePeriodTooShort when 12h grace period is passed"
+    );
+
+    // 0h fails even with --force (24-hour minimum strictly enforced)
+    let opts_force = GcOptions::new(false, 0, true);
+    let res_force = garbage_collect(&ctx, Some(&storage_cfg), &opts_force).await;
+    assert!(
+        matches!(res_force, Err(GcError::GracePeriodTooShort)),
+        "Must fail with GracePeriodTooShort even with --force when grace period is < 24h"
     );
 }
 
@@ -796,8 +824,8 @@ async fn test_gc_s3_prefix_isolation() {
     let root = temp.path();
 
     // Two project configs sharing the same underlying storage folder with distinct prefixes
-    let url_a = file_url(&root.join("projA"));
-    let url_b = file_url(&root.join("projB"));
+    let url_a = file_url(&root.join("project_a"));
+    let url_b = file_url(&root.join("project_b"));
 
     let cfg_a = StorageConfig::new(url_a);
     let cfg_b = StorageConfig::new(url_b);
@@ -853,5 +881,7 @@ async fn test_delete_blobs_batch_with_not_found() {
 
     assert_eq!(summary.deleted, 2);
     assert_eq!(summary.failed, 0);
+    assert!(summary.deleted_hashes.contains(&h1));
+    assert!(summary.deleted_hashes.contains(&h2));
     assert!(!adapter.blob_exists(&h1).await.unwrap());
 }

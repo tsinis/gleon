@@ -290,7 +290,7 @@ fn test_gc_cli_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
         .success()
         .stderr(predicates::str::contains("[DRY RUN]"));
 
-    // 2. Run gc with grace-period 0 without force -> fails with GracePeriodTooShort
+    // 2. Run gc with grace-period < 24 without force -> fails with GracePeriodTooShort
     let mut cmd_zero_grace = Command::cargo_bin("gleon")?;
     cmd_zero_grace
         .current_dir(dir.path())
@@ -299,7 +299,19 @@ fn test_gc_cli_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
         .assert()
         .failure()
         .stderr(predicates::str::contains(
-            "Grace period must be at least 1 hour",
+            "Grace period must be at least 24 hours",
+        ));
+
+    // Also fails with force when grace-period < 24
+    let mut cmd_force_short_grace = Command::cargo_bin("gleon")?;
+    cmd_force_short_grace
+        .current_dir(dir.path())
+        .env("GLEON_STORAGE_URL", &remote_url)
+        .args(["gc", "--force", "--grace-period-hours", "12"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "Grace period must be at least 24 hours",
         ));
 
     // 3. Run gc without force in non-git directory -> fails with GitRequired
@@ -307,17 +319,17 @@ fn test_gc_cli_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
     cmd_fail
         .current_dir(dir.path())
         .env("GLEON_STORAGE_URL", &remote_url)
-        .args(["gc", "--grace-period-hours", "1"])
+        .args(["gc", "--grace-period-hours", "24"])
         .assert()
         .failure()
         .stderr(predicates::str::contains("requires a Git repository"));
 
-    // 4. Run gc with --force
+    // 4. Run gc with --force and valid grace period (24 hours)
     let mut cmd_run = Command::cargo_bin("gleon")?;
     cmd_run
         .current_dir(dir.path())
         .env("GLEON_STORAGE_URL", &remote_url)
-        .args(["gc", "--force", "--grace-period-hours", "0"])
+        .args(["gc", "--force", "--grace-period-hours", "24"])
         .assert()
         .success()
         .stderr(predicates::str::contains(

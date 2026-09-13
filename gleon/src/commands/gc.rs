@@ -136,6 +136,10 @@ mod tests {
         // 5. Initialized + Storage Configured + Dry Run (allowed without force) -> Success
         let exit_code_dry = run_gc(&ctx, Some(&cfg), true, 24, false).await;
         assert_eq!(exit_code_dry, ExitCode::Success);
+
+        // 6. Initialized + Storage Configured + Grace Period < 24h fails even with force
+        let exit_code_short = run_gc(&ctx, Some(&cfg), false, 12, true).await;
+        assert_eq!(exit_code_short, ExitCode::Failure);
     }
 
     #[test]

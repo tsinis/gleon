@@ -42,9 +42,9 @@ pub enum GcError {
     )]
     InsufficientRefs(usize),
 
-    /// Grace period specified is less than the 1-hour minimum.
+    /// Grace period specified is less than the 24-hour minimum.
     #[error(
-        "Grace period must be at least 1 hour to prevent race conditions with concurrent uploads. Use --force to override."
+        "Grace period must be at least 24 hours to prevent race conditions with concurrent uploads."
     )]
     GracePeriodTooShort,
 
@@ -65,7 +65,7 @@ pub enum GcError {
 /// Operating mode of a completed garbage collection run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GcMode {
-    /// Local flat mode; remote storage is unconfigured so no remote operations occurred.
+    /// Local flat mode; remote storage is not configured so no remote operations occurred.
     LocalMode,
     /// Dry-run mode; orphan blobs were identified and reported without deletion.
     DryRun,
@@ -209,7 +209,7 @@ struct ManifestHashOnly {
     hash: ImageHash,
 }
 
-/// Scans the manifest directory in the given commit's tree, recording all
+/// Scans the manifest directory in the tree of the given commit, recording all
 /// referenced `ImageHash` values.
 fn scan_commit_manifests(
     repo: &gix::Repository,
@@ -444,8 +444,8 @@ pub fn collect_all_referenced_hashes(
 
 /// Orchestrates remote storage garbage collection.
 ///
-/// 1. Verifies storage configuration (returns early with `mode = LocalMode` if unconfigured).
-/// 2. Enforces safety guardrails (grace period >= 1h, uninitialized workspace check).
+/// 1. Verifies storage configuration (returns early with `mode = LocalMode` if not configured).
+/// 2. Enforces safety guardrails (grace period >= 24h, uninitialized workspace check).
 /// 3. Captures current timestamp `now` before querying remote storage.
 /// 4. Lists all remote CAS blobs under `blobs/`.
 /// 5. Collects referenced hashes across local workspace and Git branches.
@@ -471,7 +471,7 @@ pub async fn garbage_collect(
     ensure_initialized(&context.base_dir)?;
 
     // Enforce grace period guardrail
-    if options.grace_period < Duration::hours(1) && !options.force {
+    if options.grace_period < Duration::hours(24) {
         return Err(GcError::GracePeriodTooShort);
     }
 
@@ -492,7 +492,7 @@ pub async fn garbage_collect(
     let (orphans, protected_by_grace_period, referenced_blobs) =
         partition_remote_blobs(remote_blobs, &referenced_hashes, now, options.grace_period);
 
-    let bytes_freed: u64 = orphans.iter().map(|b| b.size).sum();
+    let orphan_bytes: u64 = orphans.iter().map(|b| b.size).sum();
     let orphan_count = orphans.len();
 
     if options.dry_run {
@@ -501,7 +501,7 @@ pub async fn garbage_collect(
             referenced = referenced_blobs,
             protected = protected_by_grace_period,
             orphans = orphan_count,
-            bytes = bytes_freed,
+            bytes = orphan_bytes,
             "[DRY RUN] Identified orphan blobs for deletion"
         );
         return Ok(GcResult {
@@ -511,14 +511,14 @@ pub async fn garbage_collect(
             protected_by_grace_period,
             deleted_blobs: orphan_count,
             failed_blobs: 0,
-            bytes_freed,
+            bytes_freed: orphan_bytes,
             orphans,
         });
     }
 
-    // 5. Perform batch deletion via delete_stream
-    let (deleted_count, failed_count) = if orphans.is_empty() {
-        (0, 0)
+    // 5. Perform batch deletion via delete_blobs_with_progress
+    let (deleted_count, failed_count, bytes_freed) = if orphans.is_empty() {
+        (0, 0, 0)
     } else {
         let summary = adapter
             .delete_blobs_with_progress(orphans.iter().map(|b| &b.hash), |hash, success| {
@@ -528,7 +528,14 @@ pub async fn garbage_collect(
             })
             .await
             .map_err(GcError::Storage)?;
-        (summary.deleted, summary.failed)
+
+        let bytes_freed: u64 = orphans
+            .iter()
+            .filter(|b| summary.deleted_hashes.contains(&b.hash))
+            .map(|b| b.size)
+            .sum();
+
+        (summary.deleted, summary.failed, bytes_freed)
     };
 
     info!(

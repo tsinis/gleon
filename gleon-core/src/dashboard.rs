@@ -1569,7 +1569,7 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     #[cfg(not(miri))]
     async fn test_dashboard_compiler_retry_on_concurrent_modification() {
         let temp = tempfile::tempdir().unwrap();
@@ -1597,7 +1597,10 @@ mod tests {
             while !hist_watch.exists() {
                 tokio::task::yield_now().await;
             }
-            let _ = std::fs::write(&remote_dash, b"<html>concurrent</html>");
+            if let Ok(mut file) = std::fs::File::create_new(&remote_dash) {
+                use std::io::Write as _;
+                let _ = file.write_all(b"<html>concurrent</html>");
+            }
         });
 
         let res = push_or_save_history(

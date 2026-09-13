@@ -168,11 +168,11 @@ pub enum Commands {
         #[arg(long)]
         dry_run: bool,
 
-        /// Grace period in hours (blobs modified within this window are preserved, minimum 1 hour)
+        /// Grace period in hours (blobs modified within this window are preserved, minimum 24 hours)
         #[arg(long, default_value = "24")]
         grace_period_hours: u32,
 
-        /// Force execution bypassing safety checks (shallow clones, single ref, 0-hour grace period)
+        /// Force execution bypassing safety checks (shallow clones, single ref, git traversal errors)
         #[arg(long)]
         force: bool,
     },

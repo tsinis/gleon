@@ -1,6 +1,6 @@
 //! Object store storage adapter implementing baseline and blob synchronization.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::io::Write as _;
 use std::path::Path;
@@ -153,6 +153,8 @@ pub struct DeleteSummary {
     pub deleted: usize,
     /// Number of blobs that failed to delete due to an error.
     pub failed: usize,
+    /// Hashes of blobs successfully deleted (or already deleted / `NotFound`).
+    pub deleted_hashes: HashSet<crate::manifest::ImageHash>,
 }
 
 /// Unified storage adapter backing baseline and blob operations via `object_store`.
@@ -716,17 +718,26 @@ impl ObjectStoreAdapter {
             return Ok(DeleteSummary::default());
         }
 
-        let keys: Vec<Result<ObjPath, object_store::Error>> =
-            hash_refs.iter().map(|h| Ok(blob_key(h))).collect();
-        let stream = futures::stream::iter(keys).boxed();
-        let del_stream = self.store.delete_stream(stream);
+        let store = Arc::clone(&self.store);
+        let concurrency = self.concurrency.max(1);
+
+        let mut results_stream = futures::stream::iter(hash_refs)
+            .map(|hash| {
+                let store = Arc::clone(&store);
+                let key = blob_key(hash);
+                async move {
+                    let res = store.delete(&key).await;
+                    (hash, res)
+                }
+            })
+            .buffer_unordered(concurrency);
 
         let mut summary = DeleteSummary::default();
-        let mut zipped = futures::stream::iter(hash_refs).zip(del_stream);
-        while let Some((hash, res)) = zipped.next().await {
+        while let Some((hash, res)) = results_stream.next().await {
             match res {
-                Ok(_) | Err(object_store::Error::NotFound { .. }) => {
+                Ok(()) | Err(object_store::Error::NotFound { .. }) => {
                     summary.deleted += 1;
+                    summary.deleted_hashes.insert(hash.clone());
                     on_progress(hash, true);
                 }
                 Err(e) => {
