@@ -12,7 +12,7 @@ use base64::Engine;
 use clap::{Parser, Subcommand};
 use ed25519_dalek::SigningKey;
 use gleon_core::license::{LicenseGate, LicensePayload, generate_license_token};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// CLI arguments for the standalone `keygen` binary.
 #[derive(Parser, Debug)]
@@ -169,12 +169,12 @@ fn parse_secret_key(raw: &str) -> anyhow::Result<SigningKey> {
 
 fn generate_keypair(out: &std::path::Path) -> anyhow::Result<()> {
     let mut secret_bytes = [0u8; 32];
-    getrandom::getrandom(&mut secret_bytes)
+    getrandom::fill(&mut secret_bytes)
         .map_err(|e| anyhow::anyhow!("Failed to read secure random bytes from OS: {e}"))?;
     let signing_key = SigningKey::from_bytes(&secret_bytes);
     let public_key = signing_key.verifying_key();
 
-    let mut secret_hex = hex::encode(secret_bytes);
+    let mut secret_hex = Zeroizing::new(hex::encode(secret_bytes));
     let public_hex = hex::encode(public_key.to_bytes());
 
     secret_bytes.zeroize();
@@ -200,8 +200,9 @@ fn generate_keypair(out: &std::path::Path) -> anyhow::Result<()> {
         .open(out)
         .map_err(|e| anyhow::anyhow!("Failed to open output file: {e}"))?;
 
-    writeln!(file, "{secret_hex}")?;
+    let write_res = writeln!(file, "{}", secret_hex.as_str());
     secret_hex.zeroize();
+    write_res?;
 
     file.sync_all()
         .map_err(|e| anyhow::anyhow!("Failed to sync output file to disk: {e}"))?;
@@ -285,7 +286,7 @@ fn sign(opts: SignOptions<'_>) -> anyhow::Result<()> {
         id.to_string()
     } else {
         let mut buf = [0u8; 4];
-        getrandom::getrandom(&mut buf).map_err(|e| {
+        getrandom::fill(&mut buf).map_err(|e| {
             anyhow::anyhow!("Failed to generate secure random license ID suffix: {e}")
         })?;
         let rand_suffix = u32::from_le_bytes(buf);

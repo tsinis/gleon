@@ -267,6 +267,27 @@ fn test_keygen_generate_keypair() {
 
 #[test]
 #[cfg(not(miri))]
+fn test_keygen_generate_keypair_write_failure() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let blocked_file = temp_dir.path().join("blocked");
+    fs::write(&blocked_file, "blocking").unwrap();
+    let invalid_key_file = blocked_file.join("sub").join("secret.key");
+
+    let mut cmd = Command::cargo_bin("keygen").unwrap();
+    cmd.args([
+        "generate-keypair",
+        "--out",
+        invalid_key_file.to_str().unwrap(),
+    ])
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains(
+        "Failed to create parent directory",
+    ));
+}
+
+#[test]
+#[cfg(not(miri))]
 fn test_keygen_secret_key_from_stdin_fails_self_check() {
     let secret = [66u8; 32];
     let secret_hex = hex::encode(secret);
