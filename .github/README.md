@@ -15,7 +15,7 @@ Follow these 5 steps to add visual regression testing to any codebase (Flutter, 
 Ensure you have stable Rust installed (Edition 2024, Rust 1.97+), then install `gleon`:
 
 ```bash
-cargo install --path gleon --force
+cargo install --path gleon --bin gleon --force
 ```
 
 ### 2. Initialize your Project
@@ -337,7 +337,7 @@ When a golden test is removed from the codebase:
 cargo build --release --workspace
 
 # Install binary into local cargo bin (~/.cargo/bin)
-cargo install --path gleon --force
+cargo install --path gleon --bin gleon --force
 
 # Run full test suite
 cargo test --workspace

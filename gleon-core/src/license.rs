@@ -2,41 +2,56 @@ use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use globset::Glob;
+use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-#[cfg(not(test))]
-const PUBLIC_KEY_BYTES: &[u8; 32] = &[
-    198, 122, 238, 222, 114, 183, 214, 45, 12, 191, 109, 14, 127, 240, 71, 98, 250, 48, 199, 168,
-    86, 17, 219, 195, 33, 114, 88, 143, 221, 62, 131, 23,
+const OFFICIAL_PUBLIC_KEYS: &[(u8, [u8; 32])] = &[(
+    1,
+    [
+        186, 132, 188, 52, 188, 5, 242, 79, 251, 253, 13, 9, 176, 13, 22, 216, 150, 171, 163, 233,
+        208, 202, 87, 244, 75, 108, 20, 228, 50, 141, 108, 27,
+    ],
+)];
+
+const OFFICIAL_SECRET_HASH: [u8; 32] = [
+    0xa4, 0x9c, 0x93, 0x96, 0x4b, 0x0c, 0x70, 0x7c, 0x82, 0x8a, 0xa3, 0xf4, 0x09, 0x11, 0xb8, 0xf5,
+    0x17, 0x99, 0xcc, 0xd9, 0x91, 0x80, 0x30, 0xa4, 0xb3, 0x7e, 0x23, 0xb0, 0x0c, 0x93, 0xe6, 0xfc,
 ];
+
+#[cfg(not(test))]
+/// Get the public key for a given kid.
+#[must_use]
+pub fn get_public_key(kid: u8) -> Option<[u8; 32]> {
+    OFFICIAL_PUBLIC_KEYS
+        .iter()
+        .find(|(k, _)| *k == kid)
+        .map(|(_, bytes)| *bytes)
+}
 
 #[cfg(test)]
 std::thread_local! {
-    /// Test-only mutable override of the embedded Ed25519 public key, used so the test suite
+    /// Test-only mutable override of the embedded Ed25519 public keys, used so the test suite
     /// can sign license tokens with a key it controls.
-    pub static PUBLIC_KEY_BYTES: std::cell::RefCell<[u8; 32]> = const {
-        std::cell::RefCell::new([
-            198, 122, 238, 222, 114, 183, 214, 45, 12, 191, 109, 14, 127, 240, 71, 98, 250, 48, 199, 168,
-            86, 17, 219, 195, 33, 114, 88, 143, 221, 62, 131, 23,
-        ])
-    };
-}
-
-#[cfg(not(test))]
-const fn get_public_key_bytes() -> [u8; 32] {
-    *PUBLIC_KEY_BYTES
+    pub static PUBLIC_KEYS: std::cell::RefCell<Vec<(u8, [u8; 32])>> = std::cell::RefCell::new(OFFICIAL_PUBLIC_KEYS.to_vec());
 }
 
 #[cfg(test)]
-fn get_public_key_bytes() -> [u8; 32] {
-    PUBLIC_KEY_BYTES.with(|b| *b.borrow())
+/// Get the public key for a given kid.
+#[must_use]
+pub fn get_public_key(kid: u8) -> Option<[u8; 32]> {
+    PUBLIC_KEYS.with(|keys| {
+        keys.borrow()
+            .iter()
+            .find(|(k, _)| *k == kid)
+            .map(|(_, bytes)| *bytes)
+    })
 }
 
 /// The signed payload embedded in a license key, containing ownership and validity details.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct LicensePayload {
+    /// Schema version (expected 1).
+    pub v: u8,
     /// The name or organization the license was issued to.
     pub owner: String,
     /// Glob pattern matching the repositories this license is valid for.
@@ -47,10 +62,16 @@ pub struct LicensePayload {
     pub license_id: String,
 }
 
-#[derive(Debug)]
-enum LicenseValidity {
+/// Validity status of a cryptographic license key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LicenseValidity {
+    /// The license is valid and active.
     Valid,
-    GracePeriod { reason: String },
+    /// The license expired within the last 14 days and is in grace period.
+    GracePeriod {
+        /// Reason for grace period.
+        reason: String,
+    },
 }
 
 /// Outcome of license/compliance verification for the current execution context.
@@ -61,16 +82,80 @@ pub enum LicenseStatus {
     /// The environment is a public repository or otherwise granted use, not requiring a
     /// commercial license.
     PublicOrGrantedUse,
-    /// Unlicensed use was detected but is only soft-enforced (e.g. grace period, or
-    /// non-strict mode).
+    /// A commercial license expired within the last 14 days and is in the grace period.
+    GracePeriod {
+        /// Human-readable explanation of the grace period.
+        reason: String,
+    },
+    /// Unlicensed use was detected but is only soft-enforced (e.g. non-strict mode in private CI).
     UnlicensedSoft {
-        /// Human-readable explanation of why the license was rejected or is in grace period.
+        /// Human-readable explanation of why the license was rejected.
         reason: String,
     },
     /// A self-compiled (non-official) binary is running in a private CI without a valid license.
-    UnofficialBuildInPrivateCI,
+    UnofficialBuildInPrivateCI {
+        /// Reason for license failure.
+        reason: String,
+    },
     /// An official binary older than the enforcement window is running unlicensed in private CI.
-    ExpiredUnlicensedBinary,
+    ExpiredUnlicensedBinary {
+        /// Reason for license failure.
+        reason: String,
+    },
+}
+
+/// Detailed error conditions encountered during license token processing.
+#[derive(Debug, thiserror::Error)]
+pub enum LicenseError {
+    /// The token string is larger than the 8192 byte limit.
+    #[error("License token exceeds maximum allowed length")]
+    TokenTooLong,
+    /// The base64 token could not be parsed using any common base64 engine.
+    #[error("Invalid base64 encoding")]
+    InvalidBase64,
+    /// The parsed binary token is smaller than a 1-byte kid + 64-byte signature.
+    #[error("License key payload too short")]
+    PayloadTooShort,
+    /// The 64-byte signature tail is not a valid Ed25519 signature format.
+    #[error("Invalid Ed25519 signature format")]
+    InvalidSignatureFormat,
+    /// The kid byte is not recognized among the official keys.
+    #[error("Unknown key ID (kid: {0})")]
+    UnknownKeyId(u8),
+    /// The embedded official public key is corrupt.
+    #[error("Invalid embedded public key")]
+    InvalidEmbeddedPublicKey,
+    /// The token's signature does not match its contents.
+    #[error("Cryptographic signature verification failed")]
+    SignatureVerificationFailed(#[source] ed25519_dalek::SignatureError),
+    /// The JSON payload could not be parsed.
+    #[error("Invalid license payload JSON")]
+    InvalidPayloadJson(#[source] serde_json::Error),
+    /// The schema version of the token is not supported.
+    #[error("Unsupported license version: {0}")]
+    UnsupportedVersion(u8),
+    /// The repository pattern contained in the token is an invalid glob.
+    #[error("Invalid license repo pattern")]
+    InvalidRepoPattern(#[source] globset::Error),
+    /// A generic CI provider was detected but the repository could not be identified.
+    #[error(
+        "Repository name could not be automatically detected for this CI. Please set GLEON_PROJECT_PATH environment variable."
+    )]
+    MissingCiRepo,
+    /// The repository glob pattern does not match the execution context.
+    #[error("License pattern '{pattern}' does not match repository '{repo}'")]
+    PatternMismatch {
+        /// The glob pattern from the token.
+        pattern: String,
+        /// The repository name from the context.
+        repo: String,
+    },
+    /// The license has passed its expiration and grace period.
+    #[error("License has expired")]
+    Expired,
+    /// The `GLEON_LICENSE_KEY` environment variable was not found or was empty.
+    #[error("No GLEON_LICENSE_KEY environment variable provided")]
+    MissingKeyEnv,
 }
 
 /// Identifies the environment gleon is currently executing in, for license enforcement purposes.
@@ -182,7 +267,11 @@ pub struct LicenseGate;
 impl LicenseGate {
     /// Verifies the license/compliance status for the current process environment.
     pub fn verify(env_provider: &dyn crate::env::EnvProvider) -> LicenseStatus {
-        let is_official = option_env!("GLEON_OFFICIAL_SECRET").is_some();
+        let is_official = option_env!("GLEON_OFFICIAL_SECRET").is_some_and(|secret| {
+            use sha2::{Digest, Sha256};
+            let digest = Sha256::digest(secret.as_bytes());
+            digest.as_slice() == OFFICIAL_SECRET_HASH
+        });
         let build_timestamp_str = option_env!("GLEON_BUILD_TIMESTAMP").unwrap_or("0");
         let build_timestamp: u64 = build_timestamp_str.trim().parse().unwrap_or(0);
 
@@ -224,75 +313,154 @@ impl LicenseGate {
             .get_var("GLEON_LICENSE_KEY")
             .filter(|k| !k.trim().is_empty())
             .map_or_else(
-                || Err("No GLEON_LICENSE_KEY environment variable provided".to_string()),
+                || Err(LicenseError::MissingKeyEnv),
                 |key| Self::verify_key(&key, &context, now),
             );
 
         match has_valid_license {
             Ok(LicenseValidity::Valid) => LicenseStatus::Valid,
-            Ok(LicenseValidity::GracePeriod { reason }) => LicenseStatus::UnlicensedSoft { reason },
+            Ok(LicenseValidity::GracePeriod { reason }) => LicenseStatus::GracePeriod { reason },
             Err(e) => {
+                let e_msg = e.to_string();
                 // An official binary MUST have both the official secret and a valid timestamp (not 0 and not in far future).
                 let is_valid_official_build =
                     is_official && build_timestamp > 0 && build_timestamp <= now + 86400;
 
                 if !is_valid_official_build && is_private_ci {
-                    return LicenseStatus::UnofficialBuildInPrivateCI;
+                    return LicenseStatus::UnofficialBuildInPrivateCI { reason: e_msg };
                 }
 
                 // Time-bomb check: > 90 days old (approx 90 * 24 * 60 * 60 = 7_776_000 seconds)
                 if is_valid_official_build && is_private_ci && now > build_timestamp + 7_776_000 {
-                    return LicenseStatus::ExpiredUnlicensedBinary;
+                    return LicenseStatus::ExpiredUnlicensedBinary { reason: e_msg };
                 }
 
-                LicenseStatus::UnlicensedSoft { reason: e }
+                LicenseStatus::UnlicensedSoft { reason: e_msg }
             }
         }
     }
 
-    fn verify_key(
+    fn verify_token_integrity_internal(
+        key: &str,
+        resolve_pubkey: impl FnOnce(u8) -> Result<[u8; 32], LicenseError>,
+    ) -> Result<(u8, LicensePayload), LicenseError> {
+        if key.len() > 8192 {
+            return Err(LicenseError::TokenTooLong);
+        }
+        let (kid, message, signature) = Self::decode_and_parse_token(key)?;
+
+        let pub_key_bytes = resolve_pubkey(kid)?;
+        let pub_key = VerifyingKey::from_bytes(&pub_key_bytes)
+            .map_err(|_| LicenseError::InvalidEmbeddedPublicKey)?;
+
+        pub_key
+            .verify_strict(&message, &signature)
+            .map_err(LicenseError::SignatureVerificationFailed)?;
+
+        let payload_bytes = &message[1..];
+        let payload: LicensePayload =
+            serde_json::from_slice(payload_bytes).map_err(LicenseError::InvalidPayloadJson)?;
+
+        if payload.v != 1 {
+            return Err(LicenseError::UnsupportedVersion(payload.v));
+        }
+
+        globset::GlobBuilder::new(&payload.repo_pattern)
+            .case_insensitive(true)
+            .build()
+            .map_err(LicenseError::InvalidRepoPattern)?;
+
+        Ok((kid, payload))
+    }
+
+    /// Verifies the cryptographic integrity and schema of a token against official public keys.
+    ///
+    /// Returns `(u8, LicensePayload)` if signature and payload are cryptographically valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`LicenseError`] if token is oversized, base64 is invalid, kid is unknown,
+    /// signature is invalid, JSON payload is corrupted, or schema version is unsupported.
+    pub fn verify_token_integrity(key: &str) -> Result<(u8, LicensePayload), LicenseError> {
+        Self::verify_token_integrity_internal(key, |kid| {
+            get_public_key(kid).ok_or(LicenseError::UnknownKeyId(kid))
+        })
+    }
+
+    /// Verifies the cryptographic integrity and schema of a token against an explicit public key.
+    ///
+    /// Returns `(u8, LicensePayload)` if signature and payload are cryptographically valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`LicenseError`] if token is oversized, base64 is invalid,
+    /// signature is invalid, JSON payload is corrupted, or schema version is unsupported.
+    pub fn verify_token_integrity_with_public_key(
+        key: &str,
+        public_key: &[u8; 32],
+    ) -> Result<(u8, LicensePayload), LicenseError> {
+        Self::verify_token_integrity_internal(key, |_kid| Ok(*public_key))
+    }
+
+    /// Verifies a raw Base64 license token against the given execution context and timestamp.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`LicenseError`] if decoding, cryptographic signature, JSON payload parsing,
+    /// repository pattern matching, or expiration validation fails.
+    pub fn verify_key(
         key: &str,
         context: &ExecutionContext,
         now: u64,
-    ) -> Result<LicenseValidity, String> {
-        let mut decoded = None;
-        let engines = [
-            base64::engine::general_purpose::STANDARD,
-            base64::engine::general_purpose::URL_SAFE,
-            base64::engine::general_purpose::STANDARD_NO_PAD,
-            base64::engine::general_purpose::URL_SAFE_NO_PAD,
-        ];
-        for engine in engines {
-            if let Ok(d) = engine.decode(key) {
-                decoded = Some(d);
-                break;
-            }
+    ) -> Result<LicenseValidity, LicenseError> {
+        let (_kid, payload) = Self::verify_token_integrity(key)?;
+        Self::verify_parsed_payload(&payload, context, now)
+    }
+
+    /// Verifies a raw Base64 license token against an explicit public key, execution context, and timestamp.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`LicenseError`] if decoding, cryptographic signature, JSON payload parsing,
+    /// repository pattern matching, or expiration validation fails.
+    pub fn verify_key_with_public_key(
+        key: &str,
+        context: &ExecutionContext,
+        now: u64,
+        public_key: &[u8; 32],
+    ) -> Result<LicenseValidity, LicenseError> {
+        let (_kid, payload) = Self::verify_token_integrity_with_public_key(key, public_key)?;
+        Self::verify_parsed_payload(&payload, context, now)
+    }
+
+    fn decode_and_parse_token(key: &str) -> Result<(u8, Vec<u8>, Signature), LicenseError> {
+        let mut decoded = decode_base64_flexible(key).ok_or(LicenseError::InvalidBase64)?;
+        if decoded.len() <= 65 {
+            return Err(LicenseError::PayloadTooShort);
         }
-        let decoded = decoded.ok_or_else(|| "Invalid base64 encoding".to_string())?;
-        if decoded.len() <= 64 {
-            return Err("License key payload too short".to_string());
+
+        let signature_bytes = decoded.split_off(decoded.len() - 64);
+        let signature = Signature::from_slice(&signature_bytes)
+            .map_err(|_| LicenseError::InvalidSignatureFormat)?;
+
+        let kid = decoded[0];
+        Ok((kid, decoded, signature))
+    }
+
+    fn verify_parsed_payload(
+        payload: &LicensePayload,
+        context: &ExecutionContext,
+        now: u64,
+    ) -> Result<LicenseValidity, LicenseError> {
+        if payload.v != 1 {
+            return Err(LicenseError::UnsupportedVersion(payload.v));
         }
-
-        let (payload_bytes, signature_bytes) = decoded.split_at(decoded.len() - 64);
-
-        let signature = Signature::from_slice(signature_bytes)
-            .map_err(|_| "Invalid Ed25519 signature format")?;
-        let pub_key_bytes = get_public_key_bytes();
-        let pub_key =
-            VerifyingKey::from_bytes(&pub_key_bytes).map_err(|_| "Invalid embedded public key")?;
-
-        pub_key
-            .verify(payload_bytes, &signature)
-            .map_err(|_| "Cryptographic signature verification failed")?;
-
-        let payload: LicensePayload =
-            serde_json::from_slice(payload_bytes).map_err(|_| "Invalid license payload JSON")?;
 
         let repo_to_check = match context {
             ExecutionContext::GitHubActions { repo, .. } => Some(repo),
             ExecutionContext::GenericCI { repo } => {
                 if repo.trim().is_empty() {
-                    return Err("Repository name could not be automatically detected for this CI. Please set GLEON_PROJECT_PATH environment variable.".to_string());
+                    return Err(LicenseError::MissingCiRepo);
                 }
                 Some(repo)
             }
@@ -300,29 +468,78 @@ impl LicenseGate {
         };
 
         if let Some(repo) = repo_to_check {
-            let matcher = Glob::new(&payload.repo_pattern)
-                .map_err(|_| "Invalid license repo pattern")?
+            let matcher = globset::GlobBuilder::new(&payload.repo_pattern)
+                .case_insensitive(true)
+                .build()
+                .map_err(LicenseError::InvalidRepoPattern)?
                 .compile_matcher();
             if !matcher.is_match(repo) {
-                return Err(format!(
-                    "License pattern '{}' does not match repository '{}'",
-                    payload.repo_pattern, repo
-                ));
+                return Err(LicenseError::PatternMismatch {
+                    pattern: payload.repo_pattern.clone(),
+                    repo: repo.clone(),
+                });
             }
         }
 
         let fourteen_days = 14 * 24 * 60 * 60;
         if now > payload.expires_at {
-            if now <= payload.expires_at + fourteen_days {
+            if now <= payload.expires_at.saturating_add(fourteen_days) {
                 return Ok(LicenseValidity::GracePeriod {
                     reason: "License expired within the last 14 days (grace period)".to_string(),
                 });
             }
-            return Err("License has expired".to_string());
+            return Err(LicenseError::Expired);
         }
 
         Ok(LicenseValidity::Valid)
     }
+}
+
+/// Serializes the given payload, signs it using the provided Ed25519 signing key,
+/// and returns the Base64-encoded license token (1-byte kid followed by JSON payload bytes followed by 64 signature bytes).
+///
+/// # Errors
+///
+/// Returns an error if JSON serialization fails.
+#[cfg(any(feature = "keygen", test))]
+pub fn generate_license_token(
+    kid: u8,
+    payload: &LicensePayload,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> Result<String, serde_json::Error> {
+    use ed25519_dalek::Signer;
+    let payload_bytes = serde_json::to_vec(payload)?;
+
+    let mut message = Vec::with_capacity(1 + payload_bytes.len() + 64);
+    message.push(kid);
+    message.extend_from_slice(&payload_bytes);
+
+    let signature = signing_key.sign(&message);
+
+    let mut combined = message;
+    combined.extend_from_slice(&signature.to_bytes());
+
+    Ok(base64::engine::general_purpose::STANDARD.encode(combined))
+}
+
+/// Decodes a Base64 string trying `STANDARD`, `URL_SAFE`, `STANDARD_NO_PAD`, and `URL_SAFE_NO_PAD` engines.
+///
+/// Returns `None` if all decoders fail or input is invalid.
+#[must_use]
+fn decode_base64_flexible(raw: &str) -> Option<Vec<u8>> {
+    let trimmed = raw.trim();
+    let engines = [
+        base64::engine::general_purpose::STANDARD,
+        base64::engine::general_purpose::URL_SAFE,
+        base64::engine::general_purpose::STANDARD_NO_PAD,
+        base64::engine::general_purpose::URL_SAFE_NO_PAD,
+    ];
+    for engine in engines {
+        if let Ok(d) = engine.decode(trimmed) {
+            return Some(d);
+        }
+    }
+    None
 }
 
 /// Outcome of enforcing licensing policy.
@@ -367,6 +584,23 @@ pub fn enforce_policy(
             message: Vec::new(),
             gha_annotation: None,
         },
+        LicenseStatus::GracePeriod { reason } => {
+            let message = vec![
+                "====================================================".to_string(),
+                "[GLEON COMPLIANCE NOTICE] License is in 14-day grace period.".to_string(),
+                format!("Reason: {reason}"),
+                "Please renew your commercial license at https://gleon.rs".to_string(),
+                "====================================================".to_string(),
+            ];
+            let gha_annotation = env_provider.has_var("GITHUB_ACTIONS").then(|| {
+                format!("::warning title=Gleon Compliance::License in grace period ({reason}).")
+            });
+            PolicyDecision {
+                action: EnforcementAction::Warn,
+                message,
+                gha_annotation,
+            }
+        }
         LicenseStatus::UnlicensedSoft { reason } => {
             let message = vec![
                 "====================================================".to_string(),
@@ -395,12 +629,14 @@ pub fn enforce_policy(
                 gha_annotation,
             }
         }
-        LicenseStatus::UnofficialBuildInPrivateCI | LicenseStatus::ExpiredUnlicensedBinary => {
+        LicenseStatus::UnofficialBuildInPrivateCI { reason }
+        | LicenseStatus::ExpiredUnlicensedBinary { reason } => {
             let message = vec![
                 "====================================================".to_string(),
                 "[GLEON COMPLIANCE ERROR] Execution blocked.".to_string(),
                 "Self-compiled or expired official binaries (>3 months) cannot run in unlicensed private CI."
                     .to_string(),
+                format!("Reason: {}", reason),
                 "Get a valid commercial license at https://gleon.rs".to_string(),
                 "====================================================".to_string(),
             ];
@@ -646,22 +882,17 @@ mod tests {
         };
         let res_empty = LicenseGate::verify_key(&token, &empty_ctx, 100);
         assert!(res_empty.is_err());
-        assert!(
-            res_empty
-                .unwrap_err()
-                .contains("Repository name could not be automatically detected")
-        );
+        assert!(matches!(
+            res_empty.unwrap_err(),
+            LicenseError::MissingCiRepo
+        ));
 
         let whitespace_ctx = ExecutionContext::GenericCI {
             repo: "   ".to_string(),
         };
         let res_ws = LicenseGate::verify_key(&token, &whitespace_ctx, 100);
         assert!(res_ws.is_err());
-        assert!(
-            res_ws
-                .unwrap_err()
-                .contains("Repository name could not be automatically detected")
-        );
+        assert!(matches!(res_ws.unwrap_err(), LicenseError::MissingCiRepo));
     }
 
     #[test]
@@ -722,27 +953,22 @@ mod tests {
     }
 
     fn generate_test_license(repo_pattern: &str, expires_at: u64) -> String {
-        use ed25519_dalek::{Signer, SigningKey};
+        use ed25519_dalek::SigningKey;
         let secret = [42u8; 32];
         let signing_key = SigningKey::from_bytes(&secret);
         let public_key = signing_key.verifying_key();
 
-        PUBLIC_KEY_BYTES.with(|b| *b.borrow_mut() = public_key.to_bytes());
+        PUBLIC_KEYS.with(|keys| *keys.borrow_mut() = vec![(1, public_key.to_bytes())]);
 
         let payload = LicensePayload {
+            v: 1,
             owner: "test".to_string(),
             repo_pattern: repo_pattern.to_string(),
             expires_at,
             license_id: "test-id".to_string(),
         };
 
-        let payload_bytes = serde_json::to_vec(&payload).unwrap();
-        let signature = signing_key.sign(&payload_bytes);
-
-        let mut combined = payload_bytes;
-        combined.extend_from_slice(&signature.to_bytes());
-
-        base64::engine::general_purpose::STANDARD.encode(combined)
+        generate_license_token(1, &payload, &signing_key).unwrap()
     }
 
     #[test]
@@ -802,13 +1028,16 @@ mod tests {
         // 1. Invalid base64
         let err_b64 = LicenseGate::verify_key("not_valid_b64!@#$", &ctx, 1000);
         assert!(err_b64.is_err());
-        assert!(err_b64.unwrap_err().contains("Invalid base64 encoding"));
+        assert!(matches!(err_b64.unwrap_err(), LicenseError::InvalidBase64));
 
         // 2. Payload too short (<= 64 bytes)
         let short_b64 = base64::engine::general_purpose::STANDARD.encode([0u8; 32]);
         let err_short = LicenseGate::verify_key(&short_b64, &ctx, 1000);
         assert!(err_short.is_err());
-        assert!(err_short.unwrap_err().contains("payload too short"));
+        assert!(matches!(
+            err_short.unwrap_err(),
+            LicenseError::PayloadTooShort
+        ));
 
         // 3. Cryptographic signature verification failed & Invalid license payload JSON
         // Initialize PUBLIC_KEY_BYTES for current thread
@@ -816,6 +1045,7 @@ mod tests {
 
         // Signature mismatch with valid signature format (signed with a different key)
         let payload = LicensePayload {
+            v: 1,
             owner: "test".to_string(),
             repo_pattern: "foo/*".to_string(),
             expires_at: 2000,
@@ -823,42 +1053,49 @@ mod tests {
         };
         let payload_bytes = serde_json::to_vec(&payload).unwrap();
         let other_key = SigningKey::from_bytes(&[99u8; 32]);
-        let sig = other_key.sign(&payload_bytes);
-        let mut invalid_sig_payload = payload_bytes;
+
+        let mut message = Vec::with_capacity(1 + payload_bytes.len());
+        message.push(1);
+        message.extend_from_slice(&payload_bytes);
+
+        let sig = other_key.sign(&message);
+        let mut invalid_sig_payload = message;
         invalid_sig_payload.extend_from_slice(&sig.to_bytes());
         let invalid_token = base64::engine::general_purpose::STANDARD.encode(invalid_sig_payload);
         let err_sig_verify = LicenseGate::verify_key(&invalid_token, &ctx, 1000);
         assert!(err_sig_verify.is_err());
-        assert!(
-            err_sig_verify
-                .unwrap_err()
-                .contains("Cryptographic signature verification failed")
-        );
+        assert!(matches!(
+            err_sig_verify.unwrap_err(),
+            LicenseError::SignatureVerificationFailed(_)
+        ));
 
         // Invalid license payload JSON (signed with matching key but bad JSON)
         let matching_key = SigningKey::from_bytes(&[42u8; 32]);
         let bad_json = b"{ not valid json }";
-        let bad_json_sig = matching_key.sign(bad_json);
-        let mut bad_json_payload = bad_json.to_vec();
+
+        let mut message = Vec::with_capacity(1 + bad_json.len());
+        message.push(1);
+        message.extend_from_slice(bad_json);
+
+        let bad_json_sig = matching_key.sign(&message);
+        let mut bad_json_payload = message;
         bad_json_payload.extend_from_slice(&bad_json_sig.to_bytes());
         let bad_json_token = base64::engine::general_purpose::STANDARD.encode(bad_json_payload);
         let err_json = LicenseGate::verify_key(&bad_json_token, &ctx, 1000);
         assert!(err_json.is_err());
-        assert!(
-            err_json
-                .unwrap_err()
-                .contains("Invalid license payload JSON")
-        );
+        assert!(matches!(
+            err_json.unwrap_err(),
+            LicenseError::InvalidPayloadJson(_)
+        ));
 
         // 4. Invalid glob pattern in repo_pattern
         let token_bad_glob = generate_test_license("[invalid", 2000);
         let err_glob = LicenseGate::verify_key(&token_bad_glob, &ctx, 1000);
         assert!(err_glob.is_err());
-        assert!(
-            err_glob
-                .unwrap_err()
-                .contains("Invalid license repo pattern")
-        );
+        assert!(matches!(
+            err_glob.unwrap_err(),
+            LicenseError::InvalidRepoPattern(_)
+        ));
     }
 
     #[test]
@@ -903,12 +1140,25 @@ mod tests {
             Some("::error title=Gleon Compliance::Unlicensed usage detected (strict test).")
         );
 
-        let unofficial = enforce_policy(LicenseStatus::UnofficialBuildInPrivateCI, false, &env);
+        let unofficial = enforce_policy(
+            LicenseStatus::UnofficialBuildInPrivateCI {
+                reason: "test reason".to_string(),
+            },
+            false,
+            &env,
+        );
         assert_eq!(unofficial.action, EnforcementAction::Block);
         assert!(unofficial.gha_annotation.is_some());
 
         assert_eq!(
-            enforce_policy(LicenseStatus::ExpiredUnlicensedBinary, false, &env).action,
+            enforce_policy(
+                LicenseStatus::ExpiredUnlicensedBinary {
+                    reason: "test reason".to_string()
+                },
+                false,
+                &env
+            )
+            .action,
             EnforcementAction::Block
         );
 
@@ -928,7 +1178,9 @@ mod tests {
         assert!(soft_non_gh.gha_annotation.is_none());
 
         let unofficial_non_gh = enforce_policy(
-            LicenseStatus::UnofficialBuildInPrivateCI,
+            LicenseStatus::UnofficialBuildInPrivateCI {
+                reason: "test reason".to_string(),
+            },
             false,
             &env_non_gh,
         );
@@ -976,7 +1228,10 @@ mod tests {
         let env = MockEnv { vars };
 
         let status = LicenseGate::verify_internal(&env, false, 0); // is_official = false
-        assert_eq!(status, LicenseStatus::UnofficialBuildInPrivateCI);
+        assert!(matches!(
+            status,
+            LicenseStatus::UnofficialBuildInPrivateCI { .. }
+        ));
     }
 
     #[test]
@@ -1012,7 +1267,10 @@ mod tests {
         let build_timestamp = now.saturating_sub(100 * 24 * 60 * 60);
 
         let status = LicenseGate::verify_internal(&env, true, build_timestamp);
-        assert_eq!(status, LicenseStatus::ExpiredUnlicensedBinary);
+        assert!(matches!(
+            status,
+            LicenseStatus::ExpiredUnlicensedBinary { .. }
+        ));
     }
 
     #[test]
@@ -1030,7 +1288,10 @@ mod tests {
         let build_timestamp = now + 48 * 3600;
 
         let status = LicenseGate::verify_internal(&env, true, build_timestamp);
-        assert_eq!(status, LicenseStatus::UnofficialBuildInPrivateCI);
+        assert!(matches!(
+            status,
+            LicenseStatus::UnofficialBuildInPrivateCI { .. }
+        ));
     }
 
     #[test]
@@ -1041,5 +1302,55 @@ mod tests {
         // Verify public LicenseGate::verify entrypoint
         let status = LicenseGate::verify(&env);
         assert_eq!(status, LicenseStatus::Valid);
+    }
+
+    #[test]
+    fn test_generate_license_token_and_verify_key() {
+        use ed25519_dalek::SigningKey;
+        let secret = [99u8; 32];
+        let signing_key = SigningKey::from_bytes(&secret);
+        let public_key = signing_key.verifying_key();
+
+        PUBLIC_KEYS.with(|keys| *keys.borrow_mut() = vec![(1, public_key.to_bytes())]);
+
+        let now = 5000;
+        let payload = LicensePayload {
+            v: 1,
+            owner: "acme".to_string(),
+            repo_pattern: "acme/*".to_string(),
+            expires_at: now + 86400,
+            license_id: "lic-123".to_string(),
+        };
+
+        let token = generate_license_token(1, &payload, &signing_key).unwrap();
+        let ctx = ExecutionContext::GenericCI {
+            repo: "acme/web".to_string(),
+        };
+
+        let result = LicenseGate::verify_key(&token, &ctx, now).unwrap();
+        assert_eq!(result, LicenseValidity::Valid);
+    }
+
+    #[test]
+    fn test_decode_base64_flexible() {
+        let sample = b"hello ed25519 world";
+        let std_b64 = base64::engine::general_purpose::STANDARD.encode(sample);
+        let url_b64 = base64::engine::general_purpose::URL_SAFE.encode(sample);
+        let std_no_pad = base64::engine::general_purpose::STANDARD_NO_PAD.encode(sample);
+        let url_no_pad = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sample);
+
+        assert_eq!(decode_base64_flexible(&std_b64).unwrap(), sample);
+        assert_eq!(decode_base64_flexible(&url_b64).unwrap(), sample);
+        assert_eq!(decode_base64_flexible(&std_no_pad).unwrap(), sample);
+        assert_eq!(decode_base64_flexible(&url_no_pad).unwrap(), sample);
+        assert!(decode_base64_flexible("not valid @#$ b64").is_none());
+    }
+
+    #[test]
+    fn test_embedded_public_key_is_valid_ed25519_curve_point() {
+        // Test that the production public key embedded in the binary is a mathematically valid Edwards curve point
+        for (_, bytes) in OFFICIAL_PUBLIC_KEYS {
+            assert!(VerifyingKey::from_bytes(bytes).is_ok());
+        }
     }
 }

@@ -9,6 +9,8 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+keygen = []
 
 [dependencies]
 bytemuck = { workspace = true }
