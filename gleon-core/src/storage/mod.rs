@@ -1,8 +1,12 @@
-//! Storage module backed by `object_store` for cloud and local baseline synchronization.
-
 pub mod adapter;
 
-pub use adapter::{ObjectStoreAdapter, RemoteObject, StorageConfig};
+pub use crate::ops::gc::{
+    GcError, GcMode, GcOptions, GcResult, collect_all_referenced_hashes, filter_orphans_to_delete,
+    garbage_collect,
+};
+pub use adapter::{
+    DeleteSummary, ObjectStoreAdapter, RemoteBlobEntry, RemoteObject, StorageConfig,
+};
 use object_store::path::Path as ObjPath;
 
 /// Optional metadata attached to an uploaded blob in cloud storage.

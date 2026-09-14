@@ -210,11 +210,21 @@ async fn run(cli: &Cli, current_dir: &Path, env: &dyn EnvProvider) -> anyhow::Re
             );
             ExitCode::Failure
         }
-        Commands::Gc => {
-            error!(
-                "Subcommand 'gc' is not implemented yet; unreferenced blobs must be pruned manually for now."
-            );
-            ExitCode::Failure
+        Commands::Gc {
+            dry_run,
+            grace_period_hours,
+            force,
+        } => {
+            let ctx = resolve_context(cli, current_dir, env)?;
+            let storage = get_storage_config(env);
+            commands::gc::run_gc(
+                &ctx,
+                storage.as_ref(),
+                *dry_run,
+                *grace_period_hours,
+                *force,
+            )
+            .await
         }
     };
 

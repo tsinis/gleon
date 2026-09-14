@@ -408,3 +408,60 @@ async fn test_upload_blob_with_custom_content_type_and_sanitization() {
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn test_adapter_delete_blob_lifecycle() {
+    let config = StorageConfig::new("memory://");
+    let adapter = ObjectStoreAdapter::from_config(&config).expect("valid memory url");
+
+    let dir = tempdir().expect("tempdir creation");
+    let src_file = dir.path().join("sample_blob.png");
+    std::fs::write(&src_file, b"png_file_bytes").expect("write src file");
+
+    let blob_hash = gleon_core::manifest::ImageHash::new(
+        "sha256",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    )
+    .unwrap();
+
+    // 1. Upload blob
+    adapter
+        .upload_blob(&blob_hash, &src_file)
+        .await
+        .expect("upload blob ok");
+
+    // 2. Delete existing blob
+    let del_res = adapter.delete_blob(&blob_hash).await;
+    assert!(del_res.is_ok(), "delete_blob must succeed on existing blob");
+
+    // 3. Delete non-existent blob (idempotent NotFound tolerance)
+    let del_missing = adapter.delete_blob(&blob_hash).await;
+    assert!(
+        del_missing.is_ok(),
+        "delete_blob must tolerate NotFound and return Ok"
+    );
+}
+
+#[test]
+fn test_adapter_r2_s3_gcs_construction_and_default_concurrency() {
+    let mut config_r2 = StorageConfig::new("r2://my-bucket/custom-prefix");
+    config_r2.aws_access_key_id = Some("test_key".to_string());
+    config_r2.aws_secret_access_key = Some("test_secret".to_string());
+    config_r2.aws_endpoint = Some("https://12345.r2.cloudflarestorage.com".to_string());
+    config_r2.aws_region = Some("auto".to_string());
+
+    let adapter = ObjectStoreAdapter::from_config(&config_r2).unwrap();
+    assert_eq!(adapter.concurrency(), 8);
+
+    let mut config_s3 = StorageConfig::new("s3://my-bucket/sub/prefix");
+    config_s3.aws_access_key_id = Some("test_key".to_string());
+    config_s3.aws_secret_access_key = Some("test_secret".to_string());
+    config_s3.aws_region = Some("us-west-2".to_string());
+
+    let adapter_s3 = ObjectStoreAdapter::from_config(&config_s3).unwrap();
+    assert_eq!(adapter_s3.concurrency(), 8);
+
+    let config_gs = StorageConfig::new("gs://my-bucket/custom-prefix");
+    let adapter_gs = ObjectStoreAdapter::from_config(&config_gs).unwrap();
+    assert_eq!(adapter_gs.concurrency(), 8);
+}

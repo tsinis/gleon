@@ -162,8 +162,20 @@ pub enum Commands {
         #[arg(short = 'p', long = "platform")]
         platform: Option<String>,
     },
-    /// Clean up unreferenced baseline blobs
-    Gc,
+    /// Clean up unreferenced baseline blobs from remote storage
+    Gc {
+        /// Preview orphan blobs that would be deleted without actually deleting them
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Grace period in hours (blobs modified within this window are preserved, minimum 24 hours)
+        #[arg(long, default_value = "24")]
+        grace_period_hours: u32,
+
+        /// Force execution bypassing safety checks (shallow clones, single ref, git traversal errors)
+        #[arg(long)]
+        force: bool,
+    },
     /// Clean local screenshot files, untrack them from Git, and update .gitignore
     Clean {
         /// Preview changes without deleting files or modifying Git state
