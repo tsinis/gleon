@@ -288,6 +288,25 @@ fn test_keygen_generate_keypair_write_failure() {
 
 #[test]
 #[cfg(not(miri))]
+fn test_keygen_generate_keypair_already_exists_fails() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let existing_key = temp_dir.path().join("secret.key");
+    fs::write(&existing_key, "existing-content").unwrap();
+
+    let mut cmd = Command::cargo_bin("keygen").unwrap();
+    cmd.args(["generate-keypair", "--out", existing_key.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Failed to open output file"));
+
+    assert_eq!(
+        fs::read_to_string(&existing_key).unwrap(),
+        "existing-content"
+    );
+}
+
+#[test]
+#[cfg(not(miri))]
 fn test_keygen_secret_key_from_stdin_fails_self_check() {
     let secret = [66u8; 32];
     let secret_hex = hex::encode(secret);

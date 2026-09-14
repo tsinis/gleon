@@ -188,7 +188,7 @@ fn generate_keypair(out: &std::path::Path) -> anyhow::Result<()> {
     }
 
     let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true).create_new(true);
 
     #[cfg(unix)]
     {
@@ -558,6 +558,14 @@ mod tests {
         std::fs::write(&blocked, "data").unwrap();
         let invalid_key = blocked.join("sub").join("key.txt");
         assert!(generate_keypair(&invalid_key).is_err());
+    }
+
+    #[test]
+    fn test_generate_keypair_already_exists() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let existing_key = temp_dir.path().join("existing.key");
+        std::fs::write(&existing_key, "data").unwrap();
+        assert!(generate_keypair(&existing_key).is_err());
     }
 
     #[test]
