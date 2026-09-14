@@ -443,7 +443,7 @@ async fn test_adapter_delete_blob_lifecycle() {
 }
 
 #[test]
-fn test_adapter_r2_and_s3_prefix_construction() {
+fn test_adapter_r2_s3_gcs_construction_and_default_concurrency() {
     let mut config_r2 = StorageConfig::new("r2://my-bucket/custom-prefix");
     config_r2.aws_access_key_id = Some("test_key".to_string());
     config_r2.aws_secret_access_key = Some("test_secret".to_string());

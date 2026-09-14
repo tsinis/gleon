@@ -547,7 +547,7 @@ fn test_collect_all_referenced_hashes_insufficient_refs_fails_without_force() {
 
     let err = collect_all_referenced_hashes(repo_root, &GcOptions::default()).unwrap_err();
     assert!(
-        matches!(err, GcError::InsufficientRefs(1)),
+        matches!(err, GcError::InsufficientCommits(1)),
         "Must fail closed when repo has only 1 ref and --force is not set"
     );
 
@@ -595,7 +595,7 @@ fn test_collect_all_referenced_hashes_multiple_refs_same_commit_fails_without_fo
 
     let err = collect_all_referenced_hashes(repo_root, &GcOptions::default()).unwrap_err();
     assert!(
-        matches!(err, GcError::InsufficientRefs(1)),
+        matches!(err, GcError::InsufficientCommits(1)),
         "Must fail closed when multiple refs point to only 1 unique commit"
     );
 }

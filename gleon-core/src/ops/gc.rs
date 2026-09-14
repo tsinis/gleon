@@ -36,11 +36,11 @@ pub enum GcError {
     )]
     ShallowClone,
 
-    /// Repository contains too few references to guarantee safe branch discovery.
+    /// Repository contains too few unique commits across tracked references to guarantee safe branch discovery.
     #[error(
-        "Repository contains only {0} tracked reference(s). Remote branches may not be fetched, risking baseline data loss. Fetch all branches or pass --force."
+        "Repository contains only {0} unique commit(s) across tracked references. Remote branches may not be fetched, risking baseline data loss. Fetch all branches or pass --force."
     )]
-    InsufficientRefs(usize),
+    InsufficientCommits(usize),
 
     /// Grace period specified is less than the 24-hour minimum.
     #[error(
@@ -314,7 +314,12 @@ fn scan_all_tracked_refs(
         return 0;
     };
 
-    for reference_res in platform.all().into_iter().flatten() {
+    let Ok(all_refs) = platform.all() else {
+        *scan_failures += 1;
+        return 0;
+    };
+
+    for reference_res in all_refs {
         let Ok(reference) = reference_res else {
             *scan_failures += 1;
             continue;
@@ -418,7 +423,7 @@ pub fn collect_all_referenced_hashes(
     );
 
     if unique_commits_count <= 1 && !options.force && !options.dry_run {
-        return Err(GcError::InsufficientRefs(unique_commits_count));
+        return Err(GcError::InsufficientCommits(unique_commits_count));
     }
 
     if scan_failures > 0 {
@@ -934,6 +939,25 @@ mod tests {
         );
         assert_eq!(res_count, 0);
         assert_eq!(packed_failures, 1);
+
+        // 10. Platform.all() failure when packed-refs contains invalid secondary header
+        let repo_refs_temp = tempdir().unwrap();
+        let repo_refs = gix::init(repo_refs_temp.path()).unwrap();
+        std::fs::write(
+            repo_refs.git_dir().join("packed-refs"),
+            b"# pack-refs with: sorted\n# invalid-header-format\n",
+        )
+        .unwrap();
+        let mut refs_fail_count = 0;
+        let c = scan_all_tracked_refs(
+            &repo_refs,
+            ".gleon/manifests",
+            &mut visited_trees,
+            &mut referenced_hashes,
+            &mut refs_fail_count,
+        );
+        assert_eq!(c, 0);
+        assert_eq!(refs_fail_count, 1);
     }
 
     #[tokio::test]
