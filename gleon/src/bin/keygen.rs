@@ -282,16 +282,17 @@ fn sign(opts: SignOptions<'_>) -> anyhow::Result<()> {
 
     let expires_at = now.saturating_add(expires_days.saturating_mul(86_400));
 
-    let final_license_id = if let Some(id) = license_id {
-        id.to_string()
-    } else {
-        let mut buf = [0u8; 4];
-        getrandom::fill(&mut buf).map_err(|e| {
-            anyhow::anyhow!("Failed to generate secure random license ID suffix: {e}")
-        })?;
-        let rand_suffix = u32::from_le_bytes(buf);
-        format!("lic_{now}_{rand_suffix:08x}")
-    };
+    let final_license_id = license_id.map_or_else(
+        || -> anyhow::Result<String> {
+            let mut buf = [0u8; 4];
+            getrandom::fill(&mut buf).map_err(|e| {
+                anyhow::anyhow!("Failed to generate secure random license ID suffix: {e}")
+            })?;
+            let rand_suffix = u32::from_le_bytes(buf);
+            Ok(format!("lic_{now}_{rand_suffix:08x}"))
+        },
+        |id| Ok(id.to_string()),
+    )?;
 
     let payload = LicensePayload {
         v: 1,
@@ -381,9 +382,7 @@ fn write_audit_log(
     Ok(())
 }
 
-fn main() -> anyhow::Result<()> {
-    let args = KeygenArgs::parse();
-
+fn run(args: KeygenArgs) -> anyhow::Result<()> {
     match args.command {
         Commands::GenerateKeypair { out } => generate_keypair(&out),
         Commands::Sign {
@@ -405,5 +404,177 @@ fn main() -> anyhow::Result<()> {
             audit_log: audit_log.as_deref(),
             test_pubkey: test_pubkey.as_deref(),
         }),
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    run(KeygenArgs::parse())
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery
+)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_run_dispatch() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let key_file = temp_dir.path().join("dispatch.key");
+
+        // 1. GenerateKeypair
+        let args_gen = KeygenArgs {
+            command: Commands::GenerateKeypair {
+                out: key_file.clone(),
+            },
+        };
+        assert!(run(args_gen).is_ok());
+
+        // 2. Sign
+        let secret_content = std::fs::read_to_string(&key_file).unwrap();
+        let raw_hex = secret_content.trim();
+        let signing_key = parse_secret_key(raw_hex).unwrap();
+        let pub_hex = hex::encode(signing_key.verifying_key().to_bytes());
+
+        let args_sign = KeygenArgs {
+            command: Commands::Sign {
+                kid: 255,
+                org: "dispatch-corp".to_string(),
+                repo_pattern: "dispatch-corp/*".to_string(),
+                expires_days: 10,
+                license_id: Some("lic_custom_dispatch".to_string()),
+                secret_key: SecretKeyWrapper(raw_hex.to_string()),
+                audit_log: None,
+                test_pubkey: Some(pub_hex),
+            },
+        };
+        assert!(run(args_sign).is_ok());
+    }
+
+    #[test]
+    fn test_secret_key_wrapper_debug_and_parse() {
+        use std::str::FromStr;
+        let wrapper = SecretKeyWrapper::from_str("super_secret_123").unwrap();
+        assert_eq!(format!("{wrapper:?}"), "SecretKeyWrapper([REDACTED])");
+    }
+
+    #[test]
+    fn test_validate_identifier_branches() {
+        assert!(validate_identifier("", "org").is_err());
+        assert!(validate_identifier("   ", "org").is_err());
+        assert!(validate_identifier(" acme", "org").is_err());
+        assert!(validate_identifier("acme ", "org").is_err());
+        assert!(validate_identifier(&"a".repeat(129), "org").is_err());
+        assert!(validate_identifier("invalid@char", "org").is_err());
+        assert!(validate_identifier("valid_org-123.corp", "org").is_ok());
+    }
+
+    #[test]
+    fn test_parse_secret_key_branches() {
+        let raw_32 = [42u8; 32];
+        let hex_64 = hex::encode(raw_32);
+        assert!(parse_secret_key(&hex_64).is_ok());
+
+        // 64 chars but not hex
+        let non_hex_64 = "z".repeat(64);
+        assert!(parse_secret_key(&non_hex_64).is_err());
+
+        // Base64 32-byte key
+        let b64 = base64::prelude::BASE64_STANDARD.encode(raw_32);
+        assert!(parse_secret_key(&b64).is_ok());
+
+        // Base64 invalid length
+        let b64_short = base64::prelude::BASE64_STANDARD.encode([1u8; 16]);
+        assert!(parse_secret_key(&b64_short).is_err());
+
+        // @path file reading
+        let temp_dir = tempfile::tempdir().unwrap();
+        let key_file = temp_dir.path().join("key.txt");
+        std::fs::write(&key_file, &hex_64).unwrap();
+        let at_path = format!("@{}", key_file.display());
+        assert!(parse_secret_key(&at_path).is_ok());
+
+        // @path non-existent file
+        assert!(parse_secret_key("@/non/existent/path/key.txt").is_err());
+
+        // Invalid format
+        assert!(parse_secret_key("too_short").is_err());
+    }
+
+    #[test]
+    fn test_sign_repo_pattern_and_auto_license_id() {
+        let raw_32 = [42u8; 32];
+        let hex_64 = hex::encode(raw_32);
+        let signing_key = SigningKey::from_bytes(&raw_32);
+        let pub_hex = hex::encode(signing_key.verifying_key().to_bytes());
+        let secret_wrapper = SecretKeyWrapper(hex_64);
+
+        let base_opts = SignOptions {
+            kid: 255,
+            org: "acme",
+            repo_pattern: "acme/*",
+            expires_days: 30,
+            license_id: None, // Test automatic license_id generation!
+            secret_key: &secret_wrapper,
+            audit_log: None,
+            test_pubkey: Some(&pub_hex),
+        };
+
+        // 1. Auto-generation of license_id
+        assert!(sign(base_opts).is_ok());
+
+        // 2. Empty repo_pattern
+        let mut opts = base_opts;
+        opts.repo_pattern = "";
+        assert!(sign(opts).is_err());
+
+        // 3. Leading/trailing whitespace in repo_pattern
+        let mut opts = base_opts;
+        opts.repo_pattern = " acme/* ";
+        assert!(sign(opts).is_err());
+
+        // 4. Newline in repo_pattern (without trailing whitespace)
+        let mut opts = base_opts;
+        opts.repo_pattern = "acme\n/*";
+        assert!(sign(opts).is_err());
+
+        // 5. Invalid glob pattern
+        let mut opts = base_opts;
+        opts.repo_pattern = "[";
+        assert!(sign(opts).is_err());
+    }
+
+    #[test]
+    fn test_generate_keypair_failure() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let blocked = temp_dir.path().join("blocked_file");
+        std::fs::write(&blocked, "data").unwrap();
+        let invalid_key = blocked.join("sub").join("key.txt");
+        assert!(generate_keypair(&invalid_key).is_err());
+    }
+
+    #[test]
+    fn test_write_audit_log_parent_error() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let blocked = temp_dir.path().join("blocked_file");
+        std::fs::write(&blocked, "data").unwrap();
+        let invalid_log = blocked.join("sub").join("audit.log");
+
+        let payload = LicensePayload {
+            v: 1,
+            owner: "acme".to_string(),
+            repo_pattern: "acme/*".to_string(),
+            expires_at: 1_000_000,
+            license_id: "lic_1".to_string(),
+        };
+        let err = write_audit_log(&invalid_log, 12345, 1, &payload);
+        assert!(err.is_err());
     }
 }

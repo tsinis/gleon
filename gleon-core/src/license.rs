@@ -264,14 +264,16 @@ pub fn identify_context(env_provider: &dyn crate::env::EnvProvider) -> Execution
 /// Entry point for license verification.
 pub struct LicenseGate;
 
+pub(crate) fn is_official_secret(secret: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(secret.as_bytes());
+    digest.as_slice() == OFFICIAL_SECRET_HASH
+}
+
 impl LicenseGate {
     /// Verifies the license/compliance status for the current process environment.
     pub fn verify(env_provider: &dyn crate::env::EnvProvider) -> LicenseStatus {
-        let is_official = option_env!("GLEON_OFFICIAL_SECRET").is_some_and(|secret| {
-            use sha2::{Digest, Sha256};
-            let digest = Sha256::digest(secret.as_bytes());
-            digest.as_slice() == OFFICIAL_SECRET_HASH
-        });
+        let is_official = option_env!("GLEON_OFFICIAL_SECRET").is_some_and(is_official_secret);
         let build_timestamp_str = option_env!("GLEON_BUILD_TIMESTAMP").unwrap_or("0");
         let build_timestamp: u64 = build_timestamp_str.trim().parse().unwrap_or(0);
 
@@ -297,8 +299,7 @@ impl LicenseGate {
 
         let is_private_ci = match context {
             ExecutionContext::GitHubActions { is_private, .. } => is_private,
-            ExecutionContext::GenericCI { .. } => true, // Treat generic CI as potentially private
-            ExecutionContext::LocalDev => false,
+            _ => true,
         };
 
         // If it's a known public repo on GitHub, it passes silently.
@@ -1352,5 +1353,152 @@ mod tests {
         for (_, bytes) in OFFICIAL_PUBLIC_KEYS {
             assert!(VerifyingKey::from_bytes(bytes).is_ok());
         }
+    }
+
+    #[test]
+    fn test_is_official_secret() {
+        assert!(!is_official_secret("wrong_secret"));
+    }
+
+    #[test]
+    fn test_verify_internal_with_valid_and_grace_period_license() {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
+        PUBLIC_KEYS
+            .with(|keys| *keys.borrow_mut() = vec![(255, signing_key.verifying_key().to_bytes())]);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // 1. Valid token
+        let valid_payload = LicensePayload {
+            v: 1,
+            owner: "acme".to_string(),
+            repo_pattern: "org/repo".to_string(),
+            expires_at: now + 3600,
+            license_id: "lic_1".to_string(),
+        };
+        let valid_token = generate_license_token(255, &valid_payload, &signing_key).unwrap();
+
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("CI".to_string(), "true".to_string());
+        vars.insert("CI_PROJECT_PATH".to_string(), "org/repo".to_string());
+        vars.insert("GLEON_LICENSE_KEY".to_string(), valid_token);
+        let env = MockEnv { vars };
+
+        let status = LicenseGate::verify_internal(&env, false, 0);
+        assert_eq!(status, LicenseStatus::Valid);
+
+        // 2. Grace period token (expired 2 days ago, within 14-day window)
+        let grace_payload = LicensePayload {
+            v: 1,
+            owner: "acme".to_string(),
+            repo_pattern: "org/repo".to_string(),
+            expires_at: now - 2 * 86400,
+            license_id: "lic_grace".to_string(),
+        };
+        let grace_token = generate_license_token(255, &grace_payload, &signing_key).unwrap();
+
+        let mut vars_grace = std::collections::HashMap::new();
+        vars_grace.insert("CI".to_string(), "true".to_string());
+        vars_grace.insert("CI_PROJECT_PATH".to_string(), "org/repo".to_string());
+        vars_grace.insert("GLEON_LICENSE_KEY".to_string(), grace_token);
+        let env_grace = MockEnv { vars: vars_grace };
+
+        let status_grace = LicenseGate::verify_internal(&env_grace, false, 0);
+        assert!(matches!(status_grace, LicenseStatus::GracePeriod { .. }));
+    }
+
+    #[test]
+    fn test_enforce_policy_grace_period() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("GITHUB_ACTIONS".to_string(), "true".to_string());
+        let env_gha = MockEnv { vars };
+
+        let decision_gha = enforce_policy(
+            LicenseStatus::GracePeriod {
+                reason: "expired recently".to_string(),
+            },
+            false,
+            &env_gha,
+        );
+        assert_eq!(decision_gha.action, EnforcementAction::Warn);
+        assert!(
+            decision_gha
+                .message
+                .iter()
+                .any(|l| l.contains("expired recently"))
+        );
+        assert_eq!(
+            decision_gha.gha_annotation.as_deref(),
+            Some("::warning title=Gleon Compliance::License in grace period (expired recently).")
+        );
+
+        let env_non_gha = MockEnv {
+            vars: std::collections::HashMap::new(),
+        };
+        let decision_non_gha = enforce_policy(
+            LicenseStatus::GracePeriod {
+                reason: "expired recently non gha".to_string(),
+            },
+            false,
+            &env_non_gha,
+        );
+        assert_eq!(decision_non_gha.action, EnforcementAction::Warn);
+        assert!(decision_non_gha.gha_annotation.is_none());
+    }
+
+    #[test]
+    fn test_verify_token_too_long() {
+        let long_key = "a".repeat(8193);
+        let err = LicenseGate::verify_key(&long_key, &ExecutionContext::LocalDev, 0).unwrap_err();
+        assert!(matches!(err, LicenseError::TokenTooLong));
+    }
+
+    #[test]
+    fn test_verify_unsupported_version() {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
+        PUBLIC_KEYS
+            .with(|keys| *keys.borrow_mut() = vec![(255, signing_key.verifying_key().to_bytes())]);
+        let payload = LicensePayload {
+            v: 2,
+            owner: "acme".to_string(),
+            repo_pattern: "org/repo".to_string(),
+            expires_at: 1_000_000,
+            license_id: "lic_v2".to_string(),
+        };
+        let token = generate_license_token(255, &payload, &signing_key).unwrap();
+        let err = LicenseGate::verify_key(&token, &ExecutionContext::LocalDev, 0).unwrap_err();
+        assert!(matches!(err, LicenseError::UnsupportedVersion(2)));
+
+        let res = LicenseGate::verify_parsed_payload(&payload, &ExecutionContext::LocalDev, 0);
+        assert!(matches!(
+            res.unwrap_err(),
+            LicenseError::UnsupportedVersion(2)
+        ));
+    }
+
+    #[test]
+    fn test_verify_parsed_payload_contexts() {
+        let payload = LicensePayload {
+            v: 1,
+            owner: "acme".to_string(),
+            repo_pattern: "acme/*".to_string(),
+            expires_at: 2_000_000,
+            license_id: "lic_1".to_string(),
+        };
+        // 1. GitHubActions matching pattern
+        let gha_ctx = ExecutionContext::GitHubActions {
+            repo: "acme/app".to_string(),
+            is_private: true,
+        };
+        let valid = LicenseGate::verify_parsed_payload(&payload, &gha_ctx, 1_000_000).unwrap();
+        assert_eq!(valid, LicenseValidity::Valid);
+
+        // 2. LocalDev context (repo_to_check is None)
+        let local_ctx = ExecutionContext::LocalDev;
+        let valid_local =
+            LicenseGate::verify_parsed_payload(&payload, &local_ctx, 1_000_000).unwrap();
+        assert_eq!(valid_local, LicenseValidity::Valid);
     }
 }
