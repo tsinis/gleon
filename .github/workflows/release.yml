@@ -35,7 +35,15 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --locked --release --target ${{ matrix.target }}
+        env:
+          GLEON_OFFICIAL_SECRET: ${{ secrets.GLEON_OFFICIAL_SECRET }}
+        run: |
+          if [ -z "${GLEON_OFFICIAL_SECRET}" ]; then
+            echo "::error::GLEON_OFFICIAL_SECRET is not configured"
+            exit 1
+          fi
+          export GLEON_BUILD_TIMESTAMP=$(date +%s)
+          cargo build --locked --release --bin gleon --target ${{ matrix.target }}
 
       - name: Prepare asset
         shell: bash

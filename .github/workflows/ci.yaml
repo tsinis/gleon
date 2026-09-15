@@ -64,7 +64,7 @@ jobs:
         run: cargo audit
 
       - name: 🧪 Run tests
-        run: cargo test --workspace
+        run: cargo test --workspace --all-features
 
       - name: 📦 Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov

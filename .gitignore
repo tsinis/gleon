@@ -63,3 +63,8 @@ coverage/
 .agents/
 .env
 .env.local
+
+# --- Secret Keys & Credentials ---
+*.key
+*.pem
+*.secret

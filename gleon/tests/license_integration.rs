@@ -42,3 +42,37 @@ fn test_cli_blocks_execution_in_private_ci_without_valid_license_or_timestamp() 
         "[GLEON COMPLIANCE ERROR] Execution blocked.",
     ));
 }
+
+#[test]
+fn test_cli_allows_execution_in_local_dev() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut cmd = Command::cargo_bin("gleon").unwrap();
+    cmd.current_dir(temp_dir.path());
+    cmd.env_clear();
+    cmd.env("PATH", std::env::var("PATH").unwrap_or_default());
+
+    let assert = cmd.arg("status").assert().failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(!stderr.contains("[GLEON COMPLIANCE ERROR]"));
+    assert!(stderr.contains("gleon workspace is not initialized"));
+}
+
+#[test]
+fn test_cli_allows_execution_in_public_github_actions() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let event_path = temp_dir.path().join("event.json");
+    std::fs::write(&event_path, r#"{"repository":{"private":false}}"#).unwrap();
+
+    let mut cmd = Command::cargo_bin("gleon").unwrap();
+    cmd.current_dir(temp_dir.path());
+    cmd.env_clear();
+    cmd.env("PATH", std::env::var("PATH").unwrap_or_default());
+    cmd.env("GITHUB_ACTIONS", "true");
+    cmd.env("GITHUB_REPOSITORY", "open-source/public-repo");
+    cmd.env("GITHUB_EVENT_PATH", event_path.to_str().unwrap());
+
+    let assert = cmd.arg("status").assert().failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(!stderr.contains("[GLEON COMPLIANCE ERROR]"));
+    assert!(stderr.contains("gleon workspace is not initialized"));
+}

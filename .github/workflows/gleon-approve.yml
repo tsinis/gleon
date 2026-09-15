@@ -68,7 +68,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Trusted gleon Binary
-        run: cargo install --path gleon
+        run: cargo install --path gleon --bin gleon
 
       - name: Fetch PR Branch & Screenshots
         env:

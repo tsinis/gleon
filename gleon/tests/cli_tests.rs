@@ -21,6 +21,23 @@ fn init_temp_dir() -> TempDir {
     dir
 }
 
+/// Creates an initialized temp workspace and copies the given fixture YAML into
+/// `.gleon/gleon.yaml`, replacing the default config written by `gleon init`.
+///
+/// This avoids passing `--config /abs/path` to the binary, which would set the
+/// scanner root to a system temp directory that macOS may pollute with stray
+/// `.app` bundles (e.g. from the Simulator). With the config inside the temp dir,
+/// workspace auto-discovery roots the scanner there — fully isolated.
+fn init_with_config(fixture_yaml: impl AsRef<std::path::Path>) -> TempDir {
+    let dir = init_temp_dir();
+    std::fs::copy(
+        fixture_yaml.as_ref(),
+        dir.path().join(".gleon").join("gleon.yaml"),
+    )
+    .expect("failed to copy fixture config");
+    dir
+}
+
 fn copy_dir_all(
     src: impl AsRef<std::path::Path>,
     dst: impl AsRef<std::path::Path>,
@@ -87,14 +104,12 @@ fn test_init_command() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_status_linux_chrome() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = init_temp_dir();
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let fixture_config = manifest_dir.join("tests/fixtures/platform/linux-chrome.yaml");
+    let dir = init_with_config(&fixture_config);
 
     let mut cmd = Command::cargo_bin("gleon")?;
     cmd.current_dir(dir.path())
-        .arg("--config")
-        .arg(&fixture_config)
         .arg("status")
         .assert()
         .success()
@@ -106,30 +121,23 @@ fn test_status_linux_chrome() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_status_macos_opaque() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = init_temp_dir();
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let fixture_config = manifest_dir.join("tests/fixtures/platform/macos-opaque.yaml");
+    let dir = init_with_config(&fixture_config);
 
     let mut cmd = Command::cargo_bin("gleon")?;
-    cmd.current_dir(dir.path())
-        .arg("--config")
-        .arg(&fixture_config)
-        .arg("status")
-        .assert()
-        .success();
+    cmd.current_dir(dir.path()).arg("status").assert().success();
     Ok(())
 }
 
 #[test]
 fn test_status_minimal_with_overrides() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = init_temp_dir();
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let fixture_config = manifest_dir.join("tests/fixtures/platform/minimal.yaml");
+    let dir = init_with_config(&fixture_config);
 
     let mut cmd = Command::cargo_bin("gleon")?;
     cmd.current_dir(dir.path())
-        .arg("--config")
-        .arg(&fixture_config)
         .arg("--os")
         .arg("windows")
         .arg("--arch")
@@ -363,15 +371,13 @@ fn test_invalid_subcommand() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_verbose_flag_coverage() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = init_temp_dir();
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let fixture_config = manifest_dir.join("tests/fixtures/platform/minimal.yaml");
+    let dir = init_with_config(&fixture_config);
 
     let mut cmd = Command::cargo_bin("gleon")?;
     cmd.current_dir(dir.path())
         .arg("-v")
-        .arg("--config")
-        .arg(&fixture_config)
         .arg("status")
         .assert()
         .success()
@@ -382,15 +388,13 @@ fn test_verbose_flag_coverage() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_quiet_flag_coverage() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = init_temp_dir();
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let fixture_config = manifest_dir.join("tests/fixtures/platform/minimal.yaml");
+    let dir = init_with_config(&fixture_config);
 
     let mut cmd = Command::cargo_bin("gleon")?;
     cmd.current_dir(dir.path())
         .arg("-q")
-        .arg("--config")
-        .arg(&fixture_config)
         .arg("status")
         .assert()
         .success()
