@@ -47,8 +47,13 @@ unsafe fn borrow<'a>(ptr: *const u8, len: usize, name: &str) -> Result<&'a [u8],
 
 /// Compares two PNG-encoded images using JSON `options`.
 ///
-/// Options: `{"mode":"exact"|"pixel"|"ssim", "threshold":f64?, "min_similarity":f64?,
-/// "masks":[{"x":u32,"y":u32,"width":u32,"height":u32}]?}`.
+/// Options (unknown keys are rejected):
+/// - `"mode"`: `"exact"` (every pixel identical), `"pixel"` or `"ssim"`.
+/// - `"threshold"`: required for `"pixel"` only, max fraction of differing pixels in `[0, 1]`.
+/// - `"min_similarity"` and `"color_tolerance"`: both required for `"ssim"` only; minimum local
+///   SSIM in `[0, 1]` and tolerated envelope deviation in 8-bit units (see [`gleon_engine::ssim`]).
+/// - `"masks"`: optional `[{"x":u32,"y":u32,"width":D,"height":D}]`, where `D` is a pixel count or
+///   a percentage string such as `"25%"`.
 ///
 /// # Safety
 /// Each `(ptr, len)` pair must describe a readable buffer of `len` bytes (or be `(null, 0)`) that
@@ -187,6 +192,28 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "reaches the image decoder")]
+    fn test_null_with_zero_length_is_an_empty_buffer() {
+        let opts = br#"{"mode":"exact"}"#;
+        let baseline = b"not a png";
+        let result = unsafe {
+            gleon_compare(
+                baseline.as_ptr(),
+                baseline.len(),
+                std::ptr::null(),
+                0,
+                opts.as_ptr(),
+                opts.len(),
+            )
+        };
+        // The empty candidate is accepted by the ABI and rejected later by the decoder.
+        let json = read_json(result);
+        assert_eq!(json["verdict"], "error");
+        assert!(json["error"].as_str().unwrap().contains("baseline image"));
+        unsafe { gleon_result_free(result) };
+    }
+
+    #[test]
     fn test_getters_tolerate_null() {
         let mut len = 7usize;
         assert!(unsafe { gleon_result_json(std::ptr::null(), &raw mut len) }.is_null());
@@ -194,6 +221,49 @@ mod tests {
         len = 7;
         assert!(unsafe { gleon_result_diff_png(std::ptr::null(), &raw mut len) }.is_null());
         assert_eq!(len, 0);
+    }
+
+    fn png(width: u32, height: u32, paint: impl Fn(u32, u32) -> image::Rgba<u8>) -> Vec<u8> {
+        let img = image::RgbaImage::from_fn(width, height, paint);
+        let mut bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        bytes
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs the image engine, far too slow under Miri")]
+    fn test_mismatch_round_trip_through_the_abi() {
+        let red = image::Rgba([255, 0, 0, 255]);
+        let baseline = png(8, 8, |_, _| red);
+        let candidate = png(8, 8, |x, y| {
+            if (x, y) == (2, 2) {
+                image::Rgba([0, 0, 255, 255])
+            } else {
+                red
+            }
+        });
+        let opts = br#"{"mode":"exact"}"#;
+        let result = unsafe {
+            gleon_compare(
+                baseline.as_ptr(),
+                baseline.len(),
+                candidate.as_ptr(),
+                candidate.len(),
+                opts.as_ptr(),
+                opts.len(),
+            )
+        };
+        assert_eq!(read_json(result)["verdict"], "mismatch");
+        let mut len = 0usize;
+        let diff = unsafe { gleon_result_diff_png(result, &raw mut len) };
+        assert!(!diff.is_null());
+        let diff_bytes = unsafe { std::slice::from_raw_parts(diff, len) };
+        assert!(image::load_from_memory(diff_bytes).is_ok());
+        unsafe { gleon_result_free(result) };
     }
 
     #[test]

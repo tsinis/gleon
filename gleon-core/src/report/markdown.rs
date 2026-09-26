@@ -385,6 +385,20 @@ mod tests {
     use crate::report::ReportGenerator;
 
     #[test]
+    fn test_delta_formatter_mentions_color_excess() {
+        let detail = MismatchDetail::Ssim {
+            ssim_score: 0.99,
+            min_ssim: 0.97,
+            max_excess: 146.4,
+            region: None,
+        };
+        assert_eq!(
+            DeltaFormatter(&detail).to_string(),
+            "0.9700 SSIM, color +146"
+        );
+    }
+
+    #[test]
     fn test_render_pr_comment_with_base_url_and_fallback() {
         let tc = TestCaseResult {
             name: "login_button".to_string(),

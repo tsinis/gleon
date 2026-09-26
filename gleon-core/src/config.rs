@@ -650,40 +650,6 @@ screenshots:
     }
 
     #[test]
-    fn test_dimension_deserialization_and_serialization() {
-        // Test integer pixels
-        let d1: Dimension = serde_yaml::from_str("100").unwrap();
-        assert_eq!(d1, Dimension::Pixels(100));
-        assert_eq!(serde_yaml::to_string(&d1).unwrap().trim(), "100");
-
-        // Test string pixels
-        let d2: Dimension = serde_yaml::from_str("\"150\"").unwrap();
-        assert_eq!(d2, Dimension::Pixels(150));
-        assert_eq!(serde_yaml::to_string(&d2).unwrap().trim(), "150");
-
-        // Test valid percentage
-        let d3: Dimension = serde_yaml::from_str("\"50%\"").unwrap();
-        assert_eq!(d3, Dimension::Percent(50.0));
-        assert_eq!(serde_yaml::to_string(&d3).unwrap().trim(), "50%");
-
-        // Test invalid negative percentage
-        let d_neg_pct: Result<Dimension, _> = serde_yaml::from_str("\"-5%\"");
-        assert!(d_neg_pct.is_err());
-
-        // Test invalid excessive percentage
-        let d_exc_pct: Result<Dimension, _> = serde_yaml::from_str("\"105%\"");
-        assert!(d_exc_pct.is_err());
-
-        // Test invalid format
-        let d_invalid: Result<Dimension, _> = serde_yaml::from_str("\"not_a_number\"");
-        assert!(d_invalid.is_err());
-
-        // Test invalid float inside percentage
-        let d_invalid_pct_float: Result<Dimension, _> = serde_yaml::from_str("\"abc%\"");
-        assert!(d_invalid_pct_float.is_err());
-    }
-
-    #[test]
     fn test_item_or_vec_errors() {
         #[derive(Deserialize, Serialize, Debug, PartialEq)]
         struct TestItem {

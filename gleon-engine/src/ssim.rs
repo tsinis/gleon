@@ -78,8 +78,8 @@ pub struct SsimAnalysis {
     pub mean_ssim: f64,
     /// Lowest local SSIM (the structural gate's value).
     pub min_ssim: f64,
-    /// Largest deviation beyond the local envelope, in 8-bit channel units (the envelope gate's
-    /// value).
+    /// Largest deviation beyond the local envelope among failing regions, in 8-bit channel units
+    /// (0 when the envelope gate passed).
     pub max_excess: f64,
     /// Number of full-resolution pixels failing the policy.
     pub failing_pixels: u64,
@@ -228,7 +228,8 @@ fn pixel_excess(base: Img<'_>, cand: Img<'_>, x: usize, y: usize, tolerance: f32
 }
 
 /// Unexplained pixels over `changed`, grouped into regions; returns the failing mask (over
-/// `changed`) and the largest excess seen.
+/// `changed`) and the largest excess among *failing* regions (tolerated regions don't count, so
+/// the reported excess always explains an envelope failure).
 fn envelope_gate(base: Img<'_>, cand: Img<'_>, changed: Rect, tolerance: f32) -> (Vec<bool>, f32) {
     let cw = changed.width();
     let mut excess = vec![f32::MIN; cw * changed.height()];
@@ -244,9 +245,8 @@ fn envelope_gate(base: Img<'_>, cand: Img<'_>, changed: Rect, tolerance: f32) ->
                 }
             }
         });
-    let max_excess = excess.iter().copied().fold(0.0f32, f32::max);
-
     // 8-connected components of unexplained pixels.
+    let mut max_excess = 0.0f32;
     let mut failing = vec![false; excess.len()];
     let mut seen = vec![false; excess.len()];
     let mut stack = Vec::new();
@@ -274,6 +274,7 @@ fn envelope_gate(base: Img<'_>, cand: Img<'_>, changed: Rect, tolerance: f32) ->
             }
         }
         if component.len() >= MIN_REGION_PIXELS || strongest >= STRONG_EXCESS {
+            max_excess = max_excess.max(strongest);
             for &i in &component {
                 failing[i] = true;
             }
@@ -655,6 +656,24 @@ mod tests {
         let base = solid(32, 32, [255, 255, 255, 255]);
         let cand = solid(32, 32, [255, 255, 255, 0]);
         assert!(!analyze(&base, &cand, &POLICY).passed());
+    }
+
+    #[test]
+    fn test_tolerated_envelope_noise_does_not_inflate_max_excess() {
+        // A lone pixel with a moderate excess (below STRONG_EXCESS, region < MIN_REGION_PIXELS) is
+        // tolerated by the envelope gate; a strict structural gate fails on it instead, and the
+        // reported excess must not blame the tolerated envelope noise.
+        let strict = SsimPolicy {
+            min_similarity: 0.95,
+            ..POLICY
+        };
+        let base = solid(64, 64, [128, 128, 128, 255]);
+        let mut cand = base.clone();
+        cand.put_pixel(30, 30, Rgba([160, 160, 160, 255]));
+        let a = analyze(&base, &cand, &strict);
+        assert!(!a.passed(), "{a:?}");
+        assert!(a.min_ssim < 0.95, "{a:?}");
+        assert_eq!(a.max_excess, 0.0, "{a:?}");
     }
 
     #[test]

@@ -24,7 +24,9 @@ enum RequestedMode {
     Exact,
     /// Tolerates a fraction of differing pixels (`threshold`).
     Pixel,
-    /// Passes when the SSIM score is at least `min_similarity`.
+    /// Tolerates rendering noise under [`gleon_engine::ssim`] policy v2: every local SSIM (half
+    /// resolution) must reach `min_similarity`, and no region may exceed its 3x3 envelope by more
+    /// than `color_tolerance`.
     Ssim,
 }
 
@@ -349,6 +351,17 @@ mod tests {
     }
 
     #[test]
+    fn test_masks_with_dimension_mismatch_still_report_sizes() {
+        let a = png(10, 10, |_, _| RED);
+        let b = png(12, 10, |_, _| RED);
+        let opts = br#"{"mode":"exact","masks":[{"x":0,"y":0,"width":"50%","height":2}]}"#;
+        assert_eq!(
+            report(&compare(&a, &b, opts))["verdict"],
+            "dimension_mismatch"
+        );
+    }
+
+    #[test]
     fn test_dimension_mismatch() {
         let a = png(10, 10, |_, _| RED);
         let b = png(10, 11, |_, _| RED);
@@ -375,6 +388,11 @@ mod tests {
                 &a[..],
                 &a[..],
                 &br#"{"mode":"ssim","min_similarity":0.8}"#[..],
+            ),
+            (
+                &a[..],
+                &a[..],
+                &br#"{"mode":"ssim","min_similarity":0.8,"color_tolerance":-1}"#[..],
             ),
             (
                 &a[..],

@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use gleon_engine::decode::{DecodeError, MAX_DIMENSION, MAX_PIXELS};
+use gleon_engine::decode::{MAX_DIMENSION, MAX_PIXELS};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -156,13 +156,7 @@ impl SingleTestManifest {
     fn make_limited_reader(
         bytes: &[u8],
     ) -> Result<image::ImageReader<std::io::Cursor<&[u8]>>, ManifestError> {
-        gleon_engine::decode::limited_reader(bytes).map_err(|e| match e {
-            DecodeError::Format(io) => ManifestError::StdIo(io),
-            DecodeError::Image(image) => ManifestError::Image(image),
-            DecodeError::TooLarge { width, height } => ManifestError::Validation(format!(
-                "Image dimensions {width}x{height} exceed the decoding budget"
-            )),
-        })
+        gleon_engine::decode::limited_reader(bytes).map_err(ManifestError::StdIo)
     }
 
     /// Safely validates image dimensions from raw bytes before fully decoding the image.

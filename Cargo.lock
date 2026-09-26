@@ -1631,6 +1631,7 @@ dependencies = [
  "serde",
  "thiserror",
  "tracing",
+ "yaml_serde",
 ]
 
 [[package]]

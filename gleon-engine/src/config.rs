@@ -174,3 +174,66 @@ const fn default_min_similarity() -> f64 {
 const fn default_color_tolerance() -> f64 {
     8.0
 }
+
+#[cfg(all(test, not(miri)))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    clippy::pedantic,
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
+)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dimension_deserialization_and_serialization() {
+        // Test integer pixels
+        let d1: Dimension = serde_yaml::from_str("100").unwrap();
+        assert_eq!(d1, Dimension::Pixels(100));
+        assert_eq!(serde_yaml::to_string(&d1).unwrap().trim(), "100");
+
+        // Test string pixels
+        let d2: Dimension = serde_yaml::from_str("\"150\"").unwrap();
+        assert_eq!(d2, Dimension::Pixels(150));
+        assert_eq!(serde_yaml::to_string(&d2).unwrap().trim(), "150");
+
+        // Test valid percentage
+        let d3: Dimension = serde_yaml::from_str("\"50%\"").unwrap();
+        assert_eq!(d3, Dimension::Percent(50.0));
+        assert_eq!(serde_yaml::to_string(&d3).unwrap().trim(), "50%");
+
+        // Test invalid negative percentage
+        let d_neg_pct: Result<Dimension, _> = serde_yaml::from_str("\"-5%\"");
+        assert!(d_neg_pct.is_err());
+
+        // Test invalid excessive percentage
+        let d_exc_pct: Result<Dimension, _> = serde_yaml::from_str("\"105%\"");
+        assert!(d_exc_pct.is_err());
+
+        // Test invalid format
+        let d_invalid: Result<Dimension, _> = serde_yaml::from_str("\"not_a_number\"");
+        assert!(d_invalid.is_err());
+
+        // Test invalid float inside percentage
+        let d_invalid_pct_float: Result<Dimension, _> = serde_yaml::from_str("\"abc%\"");
+        assert!(d_invalid_pct_float.is_err());
+    }
+
+    #[test]
+    fn test_diff_config_rejects_out_of_range_values() {
+        let err = |yaml: &str| {
+            serde_yaml::from_str::<DiffConfig>(yaml)
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(err("min_similarity: 1.5").contains("between 0.0 and 1.0"));
+        assert!(err("threshold: -0.1").contains("between 0.0 and 1.0"));
+        assert!(err("color_tolerance: -1").contains("finite, non-negative"));
+        let defaults: DiffConfig = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(defaults, DiffConfig::default());
+    }
+}

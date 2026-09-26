@@ -190,6 +190,15 @@ mod tests {
     use crate::config::DiffConfig;
 
     #[test]
+    fn test_empty_images_match_in_pixel_mode() {
+        let empty = RgbaImage::new(0, 0);
+        assert_eq!(
+            compare_images(&empty, &empty, Mode::Pixel, &DiffConfig::default()),
+            ComparisonResult::Match
+        );
+    }
+
+    #[test]
     fn test_ssim_detail_display_names_the_failing_gate_and_region() {
         let detail = MismatchDetail::Ssim {
             ssim_score: 0.999,

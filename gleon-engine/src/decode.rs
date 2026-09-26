@@ -33,13 +33,17 @@ pub enum DecodeError {
     },
 }
 
+/// Bytes per pixel of the widest buffer the decoder allocates (16-bit RGBA PNGs decode to
+/// RGBA16 before conversion to RGBA8).
+const MAX_BYTES_PER_PIXEL: u64 = 8;
+
 /// Decoder limits derived from [`MAX_DIMENSION`] and [`MAX_PIXELS`].
 #[must_use]
 pub fn limits() -> Limits {
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_DIMENSION);
     limits.max_image_height = Some(MAX_DIMENSION);
-    limits.max_alloc = Some(MAX_PIXELS * 4);
+    limits.max_alloc = Some(MAX_PIXELS * MAX_BYTES_PER_PIXEL);
     limits
 }
 
@@ -54,11 +58,10 @@ pub const fn fits_budget(width: u32, height: u32) -> bool {
 /// An image reader over `bytes` with the format guessed and [`limits`] applied.
 ///
 /// # Errors
-/// Returns [`DecodeError::Format`] if the format cannot be detected.
-pub fn limited_reader(bytes: &[u8]) -> Result<ImageReader<std::io::Cursor<&[u8]>>, DecodeError> {
+/// Returns the I/O error of format detection.
+pub fn limited_reader(bytes: &[u8]) -> std::io::Result<ImageReader<std::io::Cursor<&[u8]>>> {
     ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
-        .map_err(DecodeError::Format)
         .map(|mut reader| {
             reader.limits(limits());
             reader
@@ -73,13 +76,15 @@ pub fn limited_reader(bytes: &[u8]) -> Result<ImageReader<std::io::Cursor<&[u8]>
 /// [`DecodeError::Format`] if the format cannot be detected, or [`DecodeError::Image`] if the
 /// header or pixel data is invalid.
 pub fn decode_rgba(bytes: &[u8]) -> Result<RgbaImage, DecodeError> {
-    let (width, height) = limited_reader(bytes)?
+    let (width, height) = limited_reader(bytes)
+        .map_err(DecodeError::Format)?
         .into_dimensions()
         .map_err(DecodeError::Image)?;
     if !fits_budget(width, height) {
         return Err(DecodeError::TooLarge { width, height });
     }
-    limited_reader(bytes)?
+    limited_reader(bytes)
+        .map_err(DecodeError::Format)?
         .decode()
         .map(|img| img.to_rgba8())
         .map_err(DecodeError::Image)
@@ -122,6 +127,58 @@ mod tests {
             decode_rgba(b"definitely not an image"),
             Err(DecodeError::Format(_) | DecodeError::Image(_))
         ));
+    }
+
+    #[test]
+    fn test_decode_rgba_accepts_16_bit_png() {
+        let img: ImageBuffer<Rgba<u16>, Vec<u16>> =
+            ImageBuffer::from_pixel(4, 3, Rgba([65535, 0, 32768, 65535]));
+        let mut bytes = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut bytes), ImageFormat::Png)
+            .unwrap();
+        let decoded = decode_rgba(&bytes).unwrap();
+        assert_eq!(decoded.get_pixel(0, 0), &Rgba([255, 0, 128, 255]));
+    }
+
+    #[test]
+    fn test_decode_rgba_rejects_header_over_pixel_budget_before_decoding() {
+        // A PNG declaring 16384x4097 (per-side limits pass, total pixels do not) with an empty
+        // IDAT, so reaching the decoder would fail with a different error.
+        let mut ihdr = b"IHDR".to_vec();
+        ihdr.extend_from_slice(&16384u32.to_be_bytes());
+        ihdr.extend_from_slice(&4097u32.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.extend_from_slice(&13u32.to_be_bytes());
+        bytes.extend_from_slice(&ihdr);
+        bytes.extend_from_slice(&crc32(&ihdr).to_be_bytes());
+        for chunk in [&b"IDAT"[..], &b"IEND"[..]] {
+            bytes.extend_from_slice(&0u32.to_be_bytes());
+            bytes.extend_from_slice(chunk);
+            bytes.extend_from_slice(&crc32(chunk).to_be_bytes());
+        }
+        assert!(matches!(
+            decode_rgba(&bytes),
+            Err(DecodeError::TooLarge {
+                width: 16384,
+                height: 4097
+            })
+        ));
+    }
+
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &byte in data {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
     }
 
     #[test]
