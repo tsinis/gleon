@@ -1,5 +1,9 @@
 //! Core library for the gleon visual regression testing CLI.
 
+// "Log Output Separation for CLI": only the `gleon` binary owns stdout/stderr;
+// the library reports through return values and `tracing`.
+#![deny(clippy::print_stdout, clippy::print_stderr)]
+
 pub mod config;
 /// Resolves the effective run context (platform, branch, renderer) from CLI flags, config, and environment.
 pub mod context;

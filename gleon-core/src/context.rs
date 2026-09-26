@@ -1,6 +1,6 @@
-use crate::config::{ConfigError, GleonConfig};
-use crate::platform::{
-    PlatformEnv, PlatformError, PlatformInfo, PlatformOverrides, PlatformResolver,
+use crate::{
+    config::{ConfigError, GleonConfig},
+    platform::{PlatformEnv, PlatformError, PlatformInfo, PlatformOverrides, PlatformResolver},
 };
 
 /// Errors that can occur while resolving a `ResolvedContext` from CLI arguments.
@@ -229,14 +229,15 @@ impl ResolvedContext {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
-    use std::fs::File;
-    use std::io::Write;
-    use std::path::PathBuf;
+    use std::{fs::File, io::Write, path::PathBuf};
+
     use tempfile::tempdir;
+
+    use super::*;
 
     struct EmptyEnv;
     impl crate::env::EnvProvider for EmptyEnv {

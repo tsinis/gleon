@@ -108,7 +108,10 @@ fn resolve_context(
     .map_err(|e| anyhow::anyhow!(e))
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "top-level subcommand dispatch: one match arm per command"
+)]
 async fn run(cli: &Cli, current_dir: &Path, env: &dyn EnvProvider) -> anyhow::Result<i32> {
     let code = match &cli.command {
         Commands::Init => commands::init::run_init(&resolve_context(cli, current_dir, env)?),

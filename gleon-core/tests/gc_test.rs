@@ -7,24 +7,27 @@
     clippy::missing_errors_doc,
     clippy::pedantic,
     clippy::nursery,
-    missing_docs
+    missing_docs,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 
 //! Unit and integration tests for storage garbage collection.
 
-use std::collections::HashSet;
-use std::fs;
-use std::path::Path;
+use std::{collections::HashSet, fs, path::Path};
 
 use chrono::{Duration, Utc};
-use gleon_core::context::{ContextOptions, ResolvedContext};
-use gleon_core::manifest::{ImageHash, SingleTestManifest};
-use gleon_core::ops::gc::{
-    GcError, GcMode, GcOptions, RemoteBlobEntry, collect_all_referenced_hashes,
-    filter_orphans_to_delete, garbage_collect, partition_remote_blobs,
+use gleon_core::{
+    context::{ContextOptions, ResolvedContext},
+    manifest::{ImageHash, SingleTestManifest},
+    ops::{
+        gc::{
+            GcError, GcMode, GcOptions, RemoteBlobEntry, collect_all_referenced_hashes,
+            filter_orphans_to_delete, garbage_collect, partition_remote_blobs,
+        },
+        init_workspace,
+    },
+    storage::adapter::{ObjectStoreAdapter, StorageConfig},
 };
-use gleon_core::ops::init_workspace;
-use gleon_core::storage::adapter::{ObjectStoreAdapter, StorageConfig};
 use tempfile::tempdir;
 
 fn file_url(path: &Path) -> String {

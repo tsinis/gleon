@@ -1,5 +1,5 @@
 //! Tests for the keygen binary.
-#![allow(missing_docs, unused_imports)]
+#![cfg(not(miri))]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -7,18 +7,21 @@
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    missing_docs,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
-use std::fs;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    fs,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use assert_cmd::Command;
 use ed25519_dalek::SigningKey;
-use gleon_core::license::{ExecutionContext, LicenseGate, LicensePayload, LicenseValidity};
+use gleon_core::license::{ExecutionContext, LicenseGate, LicenseValidity};
 use predicates::prelude::*;
 
 #[test]
-#[cfg(not(miri))]
 fn test_keygen_sign_happy_path_with_test_key() {
     let secret = [42u8; 32];
     let secret_hex = hex::encode(secret);
@@ -69,7 +72,6 @@ fn test_keygen_sign_happy_path_with_test_key() {
 }
 
 #[test]
-#[cfg(not(miri))]
 fn test_keygen_sign_with_dummy_key_fails_self_check() {
     let secret = [99u8; 32];
     let secret_hex = hex::encode(secret);
@@ -97,7 +99,6 @@ fn test_keygen_sign_with_dummy_key_fails_self_check() {
 }
 
 #[test]
-#[cfg(not(miri))]
 fn test_keygen_sign_audit_log_format() {
     let temp_dir = tempfile::tempdir().unwrap();
     let audit_file = temp_dir.path().join("audit.jsonl");
@@ -144,7 +145,6 @@ fn test_keygen_sign_audit_log_format() {
 }
 
 #[test]
-#[cfg(not(miri))]
 fn test_keygen_error_cases() {
     // Error 1: --expires-days 0
     let mut cmd1 = Command::cargo_bin("keygen").unwrap();
@@ -240,7 +240,6 @@ newline",
 }
 
 #[test]
-#[cfg(not(miri))]
 fn test_keygen_generate_keypair() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_file = temp_dir.path().join("secret.key");
@@ -266,7 +265,6 @@ fn test_keygen_generate_keypair() {
 }
 
 #[test]
-#[cfg(not(miri))]
 fn test_keygen_generate_keypair_write_failure() {
     let temp_dir = tempfile::tempdir().unwrap();
     let blocked_file = temp_dir.path().join("blocked");
@@ -287,7 +285,6 @@ fn test_keygen_generate_keypair_write_failure() {
 }
 
 #[test]
-#[cfg(not(miri))]
 fn test_keygen_generate_keypair_already_exists_fails() {
     let temp_dir = tempfile::tempdir().unwrap();
     let existing_key = temp_dir.path().join("secret.key");
@@ -306,7 +303,6 @@ fn test_keygen_generate_keypair_already_exists_fails() {
 }
 
 #[test]
-#[cfg(not(miri))]
 fn test_keygen_secret_key_from_stdin_fails_self_check() {
     let secret = [66u8; 32];
     let secret_hex = hex::encode(secret);
@@ -333,7 +329,6 @@ fn test_keygen_secret_key_from_stdin_fails_self_check() {
 }
 
 #[test]
-#[cfg(not(miri))]
 fn test_gleon_binary_with_real_master_key_unblocks_private_ci() {
     let master_secret_hex = match std::env::var("GLEON_MASTER_SECRET_KEY") {
         Ok(v) if !v.trim().is_empty() => v.trim().to_string(),

@@ -7,12 +7,14 @@
     clippy::missing_errors_doc,
     clippy::pedantic,
     clippy::nursery,
-    missing_docs
+    missing_docs,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
+
+use std::fs;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
-use std::fs;
 use tempfile::tempdir;
 
 const VALID_PNG_BYTES: &[u8] =

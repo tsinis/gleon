@@ -7,15 +7,21 @@
     clippy::missing_errors_doc,
     clippy::pedantic,
     clippy::nursery,
-    missing_docs
+    missing_docs,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 
-use gleon_core::config::{DiffConfig, Mode};
-use gleon_core::engine::{ComparisonResult, MismatchDetail, compare_images};
-use gleon_core::report::ReportGenerator;
-use gleon_core::results::{TestCaseResult, TestImageResult};
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+use gleon_core::{
+    config::{DiffConfig, Mode},
+    engine::{ComparisonResult, MismatchDetail, compare_images},
+    report::ReportGenerator,
+    results::{TestCaseResult, TestImageResult},
+};
 
 #[test]
 fn test_report_generation_with_real_images_and_durability() {

@@ -1,8 +1,9 @@
 //! Safe ignore-zone masking engine implementation.
 
-use crate::config::{Dimension, Zone};
 use image::RgbaImage;
 use tracing::warn;
+
+use crate::config::{Dimension, Zone};
 
 /// Modifies the provided image buffer, setting masked pixels to absolute black (0, 0, 0, 255).
 ///
@@ -67,7 +68,10 @@ pub fn apply_masks(img: &mut RgbaImage, zones: &[Zone]) {
             let start_idx = (y_min as usize) * img_w_usize * 4;
             let end_idx = (y_max as usize) * img_w_usize * 4;
 
-            #[allow(clippy::expect_used)]
+            #[expect(
+                clippy::expect_used,
+                reason = "indices are clamped to image bounds above"
+            )]
             let block_slice = raw_pixels
                 .get_mut(start_idx..end_idx)
                 .expect("block indices are clamped to image bounds above");
@@ -83,7 +87,10 @@ pub fn apply_masks(img: &mut RgbaImage, zones: &[Zone]) {
             let start_idx = row_start + (x_min as usize) * 4;
             let end_idx = row_start + (x_max as usize) * 4;
 
-            #[allow(clippy::expect_used)]
+            #[expect(
+                clippy::expect_used,
+                reason = "indices are clamped to image bounds above"
+            )]
             let row_slice = raw_pixels
                 .get_mut(start_idx..end_idx)
                 .expect("pixel indices are clamped to image bounds above");
@@ -99,9 +106,7 @@ fn fill_black(slice: &mut [u8]) {
     if let Ok(u32_slice) = bytemuck::try_cast_slice_mut::<u8, u32>(slice) {
         u32_slice.fill(pixel_val);
     } else {
-        for chunk in slice.chunks_exact_mut(4) {
-            chunk.copy_from_slice(&[0, 0, 0, 255]);
-        }
+        slice.as_chunks_mut::<4>().0.fill([0, 0, 0, 255]);
     }
 }
 
@@ -118,7 +123,11 @@ fn resolve_dimension(dimension: Dimension, dim_px: u32) -> u32 {
             // `pct` is validated at config load time to lie within [0.0, 100.0], so the
             // rounded result is always non-negative and within [0, dim_px], fitting `u32`
             // without truncation or sign loss.
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "`pct` is validated to lie in [0.0, 100.0], so the result fits `u32` without truncation or sign loss"
+            )]
             let resolved = (pct / 100.0 * f64::from(dim_px)).round() as u32;
             resolved
         }
@@ -133,12 +142,14 @@ fn resolve_dimension(dimension: Dimension, dim_px: u32) -> u32 {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
+    use image::{ImageBuffer, Rgba, RgbaImage};
+
     use super::*;
     use crate::config::Dimension;
-    use image::{ImageBuffer, Rgba, RgbaImage};
 
     fn red_image(w: u32, h: u32) -> RgbaImage {
         ImageBuffer::from_pixel(w, h, Rgba([255, 0, 0, 255]))

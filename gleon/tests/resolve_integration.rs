@@ -6,7 +6,8 @@
     clippy::missing_errors_doc,
     clippy::pedantic,
     clippy::nursery,
-    missing_docs
+    missing_docs,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 //! Integration tests for `gleon resolve`.
 

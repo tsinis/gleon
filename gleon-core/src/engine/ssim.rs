@@ -36,11 +36,13 @@ pub fn compare_ssim(
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
     use image::{ImageBuffer, Rgba};
+
+    use super::*;
 
     #[test]
     fn test_compare_ssim_identical() {
@@ -58,9 +60,10 @@ mod tests {
         let mut img2 = ImageBuffer::from_pixel(100, 100, Rgba([255, 0, 0, 255]));
         // Make half of img2 green
         let half_bytes = 50 * 100 * 4;
-        for chunk in (&mut *img2)[..half_bytes].chunks_exact_mut(4) {
-            chunk.copy_from_slice(&[0, 255, 0, 255]);
-        }
+        (&mut *img2)[..half_bytes]
+            .as_chunks_mut::<4>()
+            .0
+            .fill([0, 255, 0, 255]);
 
         let (score, _diff_img) = compare_ssim(&img1, &img2).unwrap();
         // Different images should have an SSIM score strictly less than 1.0

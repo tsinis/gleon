@@ -3,8 +3,7 @@
 use gleon_core::context::ResolvedContext;
 use tracing::info;
 
-use crate::commands::report_failure;
-use crate::exit_code::ExitCode;
+use crate::{commands::report_failure, exit_code::ExitCode};
 
 /// Runs the `gleon init` subcommand.
 pub fn run_init(ctx: &ResolvedContext) -> ExitCode {

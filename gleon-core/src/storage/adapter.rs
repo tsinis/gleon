@@ -1,14 +1,15 @@
 //! Object store storage adapter implementing baseline and blob synchronization.
 
-use std::collections::{BTreeMap, HashSet};
-use std::fmt;
-use std::io::Write as _;
-use std::path::Path;
-use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt,
+    io::Write as _,
+    path::Path,
+    sync::Arc,
+};
 
 use futures::StreamExt as _;
-use object_store::path::Path as ObjPath;
-use object_store::{ObjectStore, ObjectStoreExt, parse_url_opts};
+use object_store::{ObjectStore, ObjectStoreExt, parse_url_opts, path::Path as ObjPath};
 use tempfile::NamedTempFile;
 use tracing::{debug, instrument, warn};
 
@@ -405,7 +406,10 @@ impl ObjectStoreAdapter {
         let mut file = tokio::fs::File::from_std(std_file);
         // `len` was validated above to be <= MAX_BLOB_SIZE (100 MiB), which fits comfortably
         // in `usize` on all supported platforms (including 32-bit targets).
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "length is bounded by a size limit checked above and fits `usize` on all supported targets"
+        )]
         let mut bytes = Vec::with_capacity(len as usize);
         tokio::io::AsyncReadExt::read_to_end(&mut file, &mut bytes).await?;
 
@@ -908,11 +912,13 @@ impl ObjectStoreAdapter {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
     use std::collections::HashMap;
+
+    use super::*;
 
     struct MapEnv(HashMap<String, String>);
     impl crate::env::EnvProvider for MapEnv {

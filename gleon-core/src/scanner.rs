@@ -1,10 +1,12 @@
 //! File scanner and image decoder for visual regression tests.
 
-use crate::config::GleonConfig;
-use crate::naming::{normalize_test_name, validate_test_name};
-use crate::walk::build_globset;
-
 use std::path::{Path, PathBuf};
+
+use crate::{
+    config::GleonConfig,
+    naming::{normalize_test_name, validate_test_name},
+    walk::build_globset,
+};
 
 /// Errors that can occur during visual regression testing files scanning.
 #[derive(Debug, thiserror::Error)]
@@ -221,7 +223,8 @@ impl FileScanner {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
     use crate::config::GlobPattern;
@@ -241,8 +244,10 @@ mod tests {
         }
     }
     use super::*;
-    use crate::engine::MismatchDetail;
-    use crate::results::{TestCaseResult, TestImageResult};
+    use crate::{
+        engine::MismatchDetail,
+        results::{TestCaseResult, TestImageResult},
+    };
 
     // Tiny 1x1 valid PNG bytes
     const VALID_PNG_BYTES: &[u8] = &[

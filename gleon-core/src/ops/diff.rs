@@ -1,17 +1,21 @@
 //! Diff operation for running visual comparison tests against baseline snapshots.
 
-use crate::context::ResolvedContext;
-use crate::engine::{ComparisonResult, compare_images};
-use crate::manifest::WorkspaceIndex;
-use crate::masking::apply_masks;
-use crate::ops::common::{
-    CoreError, ensure_initialized, load_config_and_scan, load_merged_index_with_fallback,
-    platform_key, sha256_hex_matches,
-};
-use crate::report::{ReportError, ReportGenerator};
-use crate::results::{TestCaseResult, TestImageResult};
 use std::path::{Path, PathBuf};
+
 use thiserror::Error;
+
+use crate::{
+    context::ResolvedContext,
+    engine::{ComparisonResult, compare_images},
+    manifest::WorkspaceIndex,
+    masking::apply_masks,
+    ops::common::{
+        CoreError, ensure_initialized, load_config_and_scan, load_merged_index_with_fallback,
+        platform_key, sha256_hex_matches,
+    },
+    report::{ReportError, ReportGenerator},
+    results::{TestCaseResult, TestImageResult},
+};
 
 /// Errors that can occur during diff execution.
 #[derive(Debug, Error)]
@@ -45,7 +49,10 @@ pub struct DiffReportResult {
 // Genuinely long from the sheer number of distinct byte-identical/missing-baseline/decode/mask/
 // compare branches, each returning a different `TestImageResult` variant with its own message —
 // not from duplicated logic.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "long by design; see the comment above"
+)]
 pub(crate) fn process_diff_case(
     case: &crate::scanner::TestCase,
     workspace_index: &WorkspaceIndex,
@@ -320,15 +327,16 @@ pub fn run_diff(context: &ResolvedContext) -> Result<DiffReportResult, DiffOpErr
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
-    use crate::config::ConfigError;
-    use crate::context::ContextError;
-    use crate::manifest::ManifestError;
-    use crate::scanner::ScannerError;
     use sha2::Digest;
+
+    use super::*;
+    use crate::{
+        config::ConfigError, context::ContextError, manifest::ManifestError, scanner::ScannerError,
+    };
 
     #[test]
     fn test_diff_error_display() {
@@ -589,7 +597,10 @@ mod tests {
     fn test_process_diff_case_io_errors() {
         use std::os::unix::fs::PermissionsExt;
         // SAFETY: `libc::geteuid()` is a side-effect-free POSIX syscall query that returns the process EUID.
-        #[allow(unsafe_code)]
+        #[expect(
+            unsafe_code,
+            reason = "`libc::geteuid()` is a side-effect-free POSIX query (see SAFETY comment)"
+        )]
         if unsafe { libc::geteuid() } == 0 {
             return;
         }

@@ -1,16 +1,16 @@
 //! Implementation of the `gleon dashboard` subcommand.
 
-use std::num::NonZeroUsize;
-use std::path::Path;
+use std::{num::NonZeroUsize, path::Path};
 
 use anyhow::{Context, Result, anyhow};
-use gleon_core::context::ResolvedContext;
-use gleon_core::dashboard::{DashboardCompiler, DashboardOptions};
-use gleon_core::ops::common::ensure_initialized;
-use gleon_core::storage::StorageConfig;
+use gleon_core::{
+    context::ResolvedContext,
+    dashboard::{DashboardCompiler, DashboardOptions},
+    ops::common::ensure_initialized,
+    storage::StorageConfig,
+};
 
-use crate::commands::report_failure;
-use crate::exit_code::ExitCode;
+use crate::{commands::report_failure, exit_code::ExitCode};
 
 /// Runs the `gleon dashboard` subcommand.
 ///
@@ -104,11 +104,13 @@ async fn run_dashboard_inner(
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
     use gleon_core::context::ContextOptions;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_run_dashboard_uninitialized() {

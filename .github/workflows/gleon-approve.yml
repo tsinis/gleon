@@ -67,8 +67,11 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
+      - name: Set up Rust (pinned nightly from rust-toolchain.toml)
+        run: rustup toolchain install
+
       - name: Install Trusted gleon Binary
-        run: cargo install --path gleon --bin gleon
+        run: cargo install --locked --path gleon --bin gleon
 
       - name: Fetch PR Branch & Screenshots
         env:

@@ -1,13 +1,15 @@
 //! Resolution operation for handling Git merge conflicts in manifest JSON files.
 
-use crate::io::{IoError, save_json_atomically};
-use crate::manifest::{
-    ConflictManifest, ConflictParseError, SingleTestManifest, parse_conflict_manifest,
-};
-use crate::ops::common::resolve_platform_filter_dir;
-use crate::paths::GleonPaths;
 use std::path::{Path, PathBuf};
+
 use thiserror::Error;
+
+use crate::{
+    io::{IoError, save_json_atomically},
+    manifest::{ConflictManifest, ConflictParseError, SingleTestManifest, parse_conflict_manifest},
+    ops::common::resolve_platform_filter_dir,
+    paths::GleonPaths,
+};
 
 /// Errors that can occur during conflict resolution scan or application.
 #[derive(Debug, Error)]
@@ -146,11 +148,13 @@ pub fn apply_resolution(
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn test_scan_and_apply_resolution() {

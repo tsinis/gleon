@@ -1,5 +1,6 @@
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Errors that can occur during platform resolution.
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -250,7 +251,10 @@ impl PlatformInfo {
         match validate_segment(&self.os) {
             Ok(os) => {
                 // Writing to a `String` via `fmt::Write` never fails.
-                #[allow(clippy::expect_used)]
+                #[expect(
+                    clippy::expect_used,
+                    reason = "`fmt::Write` for `String` is infallible"
+                )]
                 write!(&mut key_out, "{}:{}", os.len(), os)
                     .expect("write! to a String cannot fail");
             }
@@ -266,7 +270,10 @@ impl PlatformInfo {
             match validate_segment(arch) {
                 Ok(clean_arch) => {
                     // Writing to a `String` via `fmt::Write` never fails.
-                    #[allow(clippy::expect_used)]
+                    #[expect(
+                        clippy::expect_used,
+                        reason = "`fmt::Write` for `String` is infallible"
+                    )]
                     write!(&mut key_out, "-{}:{}", clean_arch.len(), clean_arch)
                         .expect("write! to a String cannot fail");
                 }
@@ -282,7 +289,10 @@ impl PlatformInfo {
             match validate_segment(renderer) {
                 Ok(clean_renderer) => {
                     // Writing to a `String` via `fmt::Write` never fails.
-                    #[allow(clippy::expect_used)]
+                    #[expect(
+                        clippy::expect_used,
+                        reason = "`fmt::Write` for `String` is infallible"
+                    )]
                     write!(&mut key_out, "-{}:{}", clean_renderer.len(), clean_renderer)
                         .expect("write! to a String cannot fail");
                 }
@@ -312,7 +322,10 @@ impl PlatformInfo {
                 }
             };
             // Writing to a `String` via `fmt::Write` never fails.
-            #[allow(clippy::expect_used)]
+            #[expect(
+                clippy::expect_used,
+                reason = "`fmt::Write` for `String` is infallible"
+            )]
             write!(&mut key_out, "-{}:{}={}:{}", key.len(), key, val.len(), val)
                 .expect("write! to a String cannot fail");
         }
@@ -419,7 +432,10 @@ impl PlatformResolver {
     // Parameter list already consolidated into `PlatformOverrides` (C2); the remaining length
     // is the field-resolution body itself (os/arch/renderer/labels merge logic), not split here
     // to avoid fragmenting a single linear precedence chain across helper functions.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "long by design; see the comment above"
+    )]
     pub fn resolve(
         overrides: &PlatformOverrides<'_>,
         env: &PlatformEnv,
@@ -584,7 +600,8 @@ impl PlatformResolver {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
     use super::*;

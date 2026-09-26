@@ -1,9 +1,13 @@
 //! Single test manifest schema and serialization.
 
-use crate::io::{load_json, save_json_atomically};
-use crate::manifest::{ImageHash, ManifestError};
-use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    io::{load_json, save_json_atomically},
+    manifest::{ImageHash, ManifestError},
+};
 
 /// Supported schema version for individual test manifests.
 pub const SUPPORTED_SINGLE_MANIFEST_SCHEMA_VERSION: u32 = 1;
@@ -228,11 +232,13 @@ impl SingleTestManifest {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn test_single_manifest_lifecycle() {

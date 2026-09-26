@@ -6,18 +6,22 @@
 //! behind a progress bar. This module factors out the parts that are identical (or differ only
 //! in the per-item transfer closure) so each op keeps just its direction-specific logic.
 
-use std::collections::BTreeMap;
-use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    path::{Path, PathBuf},
+};
 
 use futures::{StreamExt as _, TryStreamExt as _};
 use indicatif::ProgressBar;
 
-use crate::context::{ContextError, ResolvedContext};
-use crate::manifest::{ImageHash, WorkspaceIndex};
-use crate::ops::common::CoreError;
-use crate::platform::validate_segment;
-use crate::storage::StorageConfig;
+use crate::{
+    context::{ContextError, ResolvedContext},
+    manifest::{ImageHash, WorkspaceIndex},
+    ops::common::CoreError,
+    platform::validate_segment,
+    storage::StorageConfig,
+};
 
 /// Truncates a hash's hex value to its first 8 characters (or fewer, if shorter) for a
 /// human-readable progress-bar message — not for any addressing/lookup purpose.
@@ -212,11 +216,13 @@ where
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn test_short_hash_truncates_without_panicking_on_short_values() {
@@ -382,7 +388,10 @@ mod tests {
     fn test_list_platform_dirs_propagates_metadata_error() {
         use std::os::unix::fs::PermissionsExt;
         // SAFETY: `libc::geteuid()` is a side-effect-free POSIX syscall query that returns the process EUID.
-        #[allow(unsafe_code)]
+        #[expect(
+            unsafe_code,
+            reason = "`libc::geteuid()` is a side-effect-free POSIX query (see SAFETY comment)"
+        )]
         if unsafe { libc::geteuid() } == 0 {
             return;
         }

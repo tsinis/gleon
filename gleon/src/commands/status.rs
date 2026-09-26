@@ -1,10 +1,10 @@
 //! Implementation of the `gleon status` subcommand.
 
-use gleon_core::context::ResolvedContext;
 use std::io::Write;
 
-use crate::commands::report_failure;
-use crate::exit_code::ExitCode;
+use gleon_core::context::ResolvedContext;
+
+use crate::{commands::report_failure, exit_code::ExitCode};
 
 /// Errors that can occur when serializing or writing status reports to stdout.
 #[derive(Debug)]
@@ -85,12 +85,15 @@ pub fn run_status(ctx: &ResolvedContext, json: bool) -> ExitCode {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
-    use gleon_core::ops::StatusReport;
     use std::path::PathBuf;
+
+    use gleon_core::ops::StatusReport;
+
+    use super::*;
 
     #[test]
     fn test_write_status_text() {

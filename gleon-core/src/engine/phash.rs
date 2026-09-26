@@ -1,9 +1,9 @@
 //! Perceptual hashing using the `image_hasher` crate.
 
+use std::sync::OnceLock;
+
 use image::RgbaImage;
 use image_hasher::{HashAlg, HasherConfig};
-
-use std::sync::OnceLock;
 
 /// Errors that can occur during perceptual hashing operations.
 #[derive(Debug, thiserror::Error)]
@@ -88,11 +88,13 @@ pub fn calculate_hamming_distance(phash1: &str, phash2: &str) -> Result<u32, Pha
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
     use image::{ImageBuffer, Rgba};
+
+    use super::*;
 
     #[test]
     fn test_compute_phash_and_distance() {

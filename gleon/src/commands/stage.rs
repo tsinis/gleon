@@ -1,11 +1,11 @@
 //! Implementation of the `gleon stage` subcommand.
 
-use gleon_core::context::ResolvedContext;
 use std::path::PathBuf;
+
+use gleon_core::context::ResolvedContext;
 use tracing::info;
 
-use crate::commands::report_failure;
-use crate::exit_code::ExitCode;
+use crate::{commands::report_failure, exit_code::ExitCode};
 
 /// Runs the `gleon stage` subcommand, optionally restricted to `paths`.
 pub fn run_stage(ctx: &ResolvedContext, paths: &[PathBuf]) -> ExitCode {

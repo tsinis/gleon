@@ -12,7 +12,7 @@ Follow these 5 steps to add visual regression testing to any codebase (Flutter, 
 
 ### 1. Install the CLI
 
-Ensure you have stable Rust installed (Edition 2024, Rust 1.97+), then install `gleon`:
+Ensure you have [rustup](https://rustup.rs) installed. The toolchain is pinned to Rust 1.100 nightly (`nightly-2026-09-25`, Edition 2024) in `rust-toolchain.toml`, and rustup installs it automatically when you build from the repository root. Then install `gleon`:
 
 ```bash
 cargo install --path gleon --bin gleon --force
@@ -328,7 +328,7 @@ When a golden test is removed from the codebase:
 
 ### Prerequisites
 
-- Stable Rust toolchain (Edition 2024, Rust 1.97+)
+- Rust 1.100 nightly (Edition 2024), pinned in `rust-toolchain.toml` and installed automatically by rustup
 
 ### Commands
 

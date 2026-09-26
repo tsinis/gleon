@@ -1,13 +1,17 @@
 //! Staging operation for processing, masking, and persisting baseline screenshots.
 
-use crate::context::ResolvedContext;
-use crate::manifest::{ManifestError, WorkspaceIndex};
-use crate::ops::common::{
-    CoreError, build_manifest, ensure_initialized, hash_and_measure, index_keys_missing_from,
-};
-use crate::scanner::FileScanner;
 use std::path::PathBuf;
+
 use thiserror::Error;
+
+use crate::{
+    context::ResolvedContext,
+    manifest::{ManifestError, WorkspaceIndex},
+    ops::common::{
+        CoreError, build_manifest, ensure_initialized, hash_and_measure, index_keys_missing_from,
+    },
+    scanner::FileScanner,
+};
 
 /// Errors that can occur during staging.
 #[derive(Debug, Error)]
@@ -194,13 +198,12 @@ pub fn stage_workspace(
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
     use super::*;
-    use crate::config::ConfigError;
-    use crate::context::ContextError;
-    use crate::scanner::ScannerError;
+    use crate::{config::ConfigError, context::ContextError, scanner::ScannerError};
 
     #[test]
     fn test_stage_error_display() {
@@ -257,8 +260,9 @@ mod tests {
 
     #[test]
     fn test_filter_test_cases() {
-        use crate::scanner::{TestCase, TestImage};
         use std::sync::Arc;
+
+        use crate::scanner::{TestCase, TestImage};
 
         let rule = Arc::new(crate::config::ScreenshotRule {
             include: vec![],

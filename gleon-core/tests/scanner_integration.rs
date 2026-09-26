@@ -7,13 +7,16 @@
     clippy::missing_errors_doc,
     clippy::pedantic,
     clippy::nursery,
-    missing_docs
+    missing_docs,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 
-use gleon_core::config::{DiffConfig, GleonConfig, GlobPattern, Mode, ScreenshotRule};
-use gleon_core::scanner::{FileScanner, TestCase};
-use std::path::Path;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
+
+use gleon_core::{
+    config::{DiffConfig, GleonConfig, GlobPattern, Mode, ScreenshotRule},
+    scanner::{FileScanner, TestCase},
+};
 
 #[test]
 fn test_scanner_with_real_fixture() {

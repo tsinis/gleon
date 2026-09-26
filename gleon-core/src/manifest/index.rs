@@ -1,12 +1,11 @@
 //! In-memory workspace index built from per-test manifest files.
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::Path;
+use std::{collections::BTreeMap, fs, path::Path};
 
-use crate::manifest::ManifestError;
-use crate::manifest::single::SingleTestManifest;
-use crate::naming::normalize_test_name;
+use crate::{
+    manifest::{ManifestError, single::SingleTestManifest},
+    naming::normalize_test_name,
+};
 
 /// Validates a relative test path (e.g. `auth/login_screen`).
 /// Splits on both `/` and `\`, verifying that each segment contains only valid characters `[a-z0-9_.-]`.
@@ -257,7 +256,8 @@ fn remove_file_ignore_missing(path: &Path) -> Result<(), ManifestError> {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
     use super::*;
@@ -287,8 +287,9 @@ mod tests {
         ));
         assert!(dir.exists());
     }
-    use crate::manifest::ImageHash;
     use tempfile::tempdir;
+
+    use crate::manifest::ImageHash;
 
     #[test]
     fn test_save_and_load_dotted_test_name() {

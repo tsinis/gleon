@@ -1,23 +1,18 @@
-# Nightly toolchain (pinned) is used ONLY for strict developer checks.
-# End users and release builds use stable Rust.
+# The toolchain (a pinned nightly) is defined once in `rust-toolchain.toml`
+# and is shared by developer checks, CI and release builds.
 
 [config]
 default_to_workspace = false
-
-[env]
-NIGHTLY = "nightly-2026-05-02"
 
 [tasks.fmt]
 command = "cargo"
 args = ["fmt", "--all", "--", "--check"]
 
 [tasks.clippy]
-toolchain = "${NIGHTLY}"
 command = "cargo"
 args = ["clippy", "--all-targets", "--all-features", "--", "-D", "warnings"]
 
 [tasks.test]
-toolchain = "${NIGHTLY}"
 command = "cargo"
 args = ["nextest", "run", "--all-features"]
 
@@ -35,7 +30,6 @@ args = [
 
 [tasks.miri]
 env = { MIRIFLAGS = "-Zmiri-disable-isolation" }
-toolchain = "${NIGHTLY}"
 command = "cargo"
 args = ["miri", "test"]
 
@@ -45,28 +39,23 @@ command = "cargo"
 args = ["semver-checks", "check-release", "--baseline-root", "."]
 
 [tasks.udeps]
-toolchain = "${NIGHTLY}"
 command = "cargo"
 args = ["udeps", "--all-targets"]
 
 [tasks.mutants]
-toolchain = "${NIGHTLY}"
 ignore_errors = true
 command = "cargo"
 args = ["mutants"]
 
 [tasks.hack]
-toolchain = "${NIGHTLY}"
 command = "cargo"
 args = ["hack", "test", "--feature-powerset"]
 
 [tasks.llvm-lines]
-toolchain = "${NIGHTLY}"
 command = "cargo"
 args = ["llvm-lines", "--package", "gleon", "--release"]
 
 [tasks.expand]
-toolchain = "${NIGHTLY}"
 command = "cargo"
 args = ["expand"]
 
@@ -80,17 +69,14 @@ fi
 '''
 
 [tasks.llvm-cov]
-toolchain = "${NIGHTLY}"
 command = "cargo"
-args = ["llvm-cov", "--all-features", "--lcov", "--output-path", "lcov.info", "--fail-under-lines", "20"]
+args = ["llvm-cov", "nextest", "--all-features", "--workspace", "--lcov", "--output-path", "lcov.info", "--fail-under-lines", "20"]
 
 [tasks.call-stack]
-toolchain = "${NIGHTLY}"
 command = "cargo"
 args = ["call-stack"]
 
 [tasks.bloat]
-toolchain = "${NIGHTLY}"
 ignore_errors = true
 command = "cargo"
 args = ["bloat", "--release", "--crates"]

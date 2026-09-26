@@ -6,14 +6,18 @@
 //! `.gitignore`/scaffold file management) to the helpers here, wrapping [`CoreError`] via
 //! `#[error(transparent)] Core(#[from] CoreError)`.
 
-use crate::config::ConfigError;
-use crate::context::{ContextError, ResolvedContext};
-use crate::engine::phash::compute_phash;
-use crate::manifest::{ImageHash, ManifestError, SingleTestManifest, WorkspaceIndex};
-use crate::paths::GleonPaths;
-use crate::scanner::{FileScanner, ScannerError, TestCase};
-use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+
+use sha2::{Digest, Sha256};
+
+use crate::{
+    config::ConfigError,
+    context::{ContextError, ResolvedContext},
+    engine::phash::compute_phash,
+    manifest::{ImageHash, ManifestError, SingleTestManifest, WorkspaceIndex},
+    paths::GleonPaths,
+    scanner::{FileScanner, ScannerError, TestCase},
+};
 
 /// Errors shared across `ops::*` operations.
 #[derive(Debug, thiserror::Error)]
@@ -264,7 +268,10 @@ pub fn append_missing_gitignore_lines(
         if !existing_lines.contains(entry.as_str()) {
             use std::fmt::Write as _;
             // Writing to a `String` via `fmt::Write` never fails.
-            #[allow(clippy::expect_used)]
+            #[expect(
+                clippy::expect_used,
+                reason = "`fmt::Write` for `String` is infallible"
+            )]
             writeln!(to_append, "{entry}").expect("write! to a String cannot fail");
             added.push(entry.clone());
         }
@@ -298,7 +305,13 @@ pub fn append_missing_gitignore_lines(
 /// # Errors
 /// Returns [`CoreError::Io`] if file creation, writing, or syncing fails for a reason other
 /// than the file already existing.
-#[cfg_attr(windows, allow(unused_variables))]
+#[cfg_attr(
+    windows,
+    expect(
+        unused_variables,
+        reason = "`dir_to_sync` is only used for the directory fsync, which is skipped on Windows"
+    )
+)]
 pub fn create_new_file_with_content(
     path: &Path,
     content: &[u8],
@@ -335,11 +348,13 @@ pub fn create_new_file_with_content(
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn test_ensure_initialized_missing_and_present() {

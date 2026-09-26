@@ -1,0 +1,7 @@
+# Nightly-only rustfmt options (the toolchain is pinned to nightly in `rust-toolchain.toml`).
+style_edition = "2024"
+# One `use` item per crate, grouped as std / external crates / local (`crate`, `self`, `super`).
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"
+# Format Rust code blocks inside doc comments.
+format_code_in_doc_comments = true

@@ -2,15 +2,11 @@
 //! `render_pr_comment` can link directly to signed URLs instead of falling back to
 //! `base_image_url`-relative links.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use tokio::sync::Semaphore;
 
-use crate::results::TestCaseResult;
-use crate::storage::ObjectStoreAdapter;
+use crate::{results::TestCaseResult, storage::ObjectStoreAdapter};
 
 impl super::ReportGenerator {
     /// Signs remote storage URLs for the images referenced by up to
@@ -59,7 +55,7 @@ impl super::ReportGenerator {
             join_set.spawn(async move {
                 // `sem` is owned by this task set and never closed while permits are
                 // outstanding, so `acquire_owned` cannot fail here.
-                #[allow(clippy::expect_used)]
+                #[expect(clippy::expect_used, reason = "the semaphore is owned by this task set and never closed while permits are outstanding")]
                 let _permit = sem
                     .acquire_owned()
                     .await
@@ -98,13 +94,12 @@ impl super::ReportGenerator {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
     use super::*;
-    use crate::report::ReportGenerator;
-    use crate::results::TestImageResult;
-    use crate::storage::StorageConfig;
+    use crate::{report::ReportGenerator, results::TestImageResult, storage::StorageConfig};
 
     #[tokio::test]
     async fn test_sign_image_urls_signs_referenced_paths_only() {

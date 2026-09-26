@@ -1,11 +1,11 @@
 //! Handler for `gleon approve` subcommand.
 
-use gleon_core::context::ResolvedContext;
 use std::path::PathBuf;
+
+use gleon_core::context::ResolvedContext;
 use tracing::info;
 
-use crate::commands::report_failure;
-use crate::exit_code::ExitCode;
+use crate::{commands::report_failure, exit_code::ExitCode};
 
 /// Runs the `approve` command.
 pub fn run_approve(ctx: &ResolvedContext, paths: &[PathBuf], from: Option<&PathBuf>) -> ExitCode {

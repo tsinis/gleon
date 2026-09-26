@@ -1,14 +1,17 @@
 //! Status operation for categorizing workspace screenshots against baseline manifests.
 
-use crate::context::ResolvedContext;
-use crate::ops::common::{
-    CoreError, ensure_initialized, index_keys_missing_from, load_config_and_scan,
-    load_merged_index_with_fallback, platform_key, sha256_hex_matches,
-};
-use serde::Serialize;
-
 use std::path::PathBuf;
+
+use serde::Serialize;
 use thiserror::Error;
+
+use crate::{
+    context::ResolvedContext,
+    ops::common::{
+        CoreError, ensure_initialized, index_keys_missing_from, load_config_and_scan,
+        load_merged_index_with_fallback, platform_key, sha256_hex_matches,
+    },
+};
 
 /// Errors that can occur during status evaluation.
 #[derive(Debug, Error)]
@@ -257,15 +260,19 @@ pub fn check_status(context: &ResolvedContext) -> Result<StatusReport, StatusErr
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
-    use crate::config::ConfigError;
-    use crate::context::ContextError;
-    use crate::manifest::{ManifestError, WorkspaceIndex};
-    use crate::scanner::ScannerError;
     use sha2::Digest;
+
+    use super::*;
+    use crate::{
+        config::ConfigError,
+        context::ContextError,
+        manifest::{ManifestError, WorkspaceIndex},
+        scanner::ScannerError,
+    };
 
     #[test]
     fn test_status_error_display() {

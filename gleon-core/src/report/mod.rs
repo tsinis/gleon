@@ -12,24 +12,37 @@ mod markdown;
 mod presign;
 mod xml;
 
-use crate::results::TestCaseResult;
 use std::sync::LazyLock;
+
+use crate::results::TestCaseResult;
 
 pub(crate) static JINJA_ENV: LazyLock<minijinja::Environment<'static>> = LazyLock::new(|| {
     let mut env = minijinja::Environment::new();
     // Bundled templates are compiled into the binary and validated by the test
     // suite; a syntax error here would be a build-time bug caught immediately,
     // not a runtime condition callers need to handle.
-    #[allow(clippy::expect_used)]
+    #[expect(
+        clippy::expect_used,
+        reason = "bundled templates are compile-time assets validated by the test suite"
+    )]
     env.add_template("report.html", include_str!("../templates/report.html"))
         .expect("bundled report.html template is valid minijinja syntax");
-    #[allow(clippy::expect_used)]
+    #[expect(
+        clippy::expect_used,
+        reason = "bundled templates are compile-time assets validated by the test suite"
+    )]
     env.add_template("junit.xml", include_str!("../templates/junit.xml"))
         .expect("bundled junit.xml template is valid minijinja syntax");
-    #[allow(clippy::expect_used)]
+    #[expect(
+        clippy::expect_used,
+        reason = "bundled templates are compile-time assets validated by the test suite"
+    )]
     env.add_template("pr_comment.md", include_str!("../templates/pr_comment.md"))
         .expect("bundled pr_comment.md template is valid minijinja syntax");
-    #[allow(clippy::expect_used)]
+    #[expect(
+        clippy::expect_used,
+        reason = "bundled templates are compile-time assets validated by the test suite"
+    )]
     env.add_template(
         "dashboard.html",
         include_str!("../templates/dashboard.html"),
@@ -155,7 +168,8 @@ impl ReportGenerator {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
     use super::*;

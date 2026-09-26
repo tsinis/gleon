@@ -53,7 +53,10 @@ pub fn compare_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> (u64, RgbaIma
 
     // `diff_raw` is allocated above as exactly `baseline_raw.len()` bytes, which is always
     // `width * height * 4` for a valid `RgbaImage`, so `from_raw` can never return `None`.
-    #[allow(clippy::expect_used)]
+    #[expect(
+        clippy::expect_used,
+        reason = "`diff_raw` is allocated as exactly `width * height * 4` bytes"
+    )]
     let diff_image = RgbaImage::from_raw(width, height, diff_raw)
         .expect("invariant: diff_raw length must be exactly width * height * 4");
 
@@ -106,11 +109,13 @@ pub fn count_mismatched_pixels(baseline: &RgbaImage, actual: &RgbaImage) -> u64 
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
     use image::{ImageBuffer, Rgba};
+
+    use super::*;
 
     #[test]
     fn test_compare_pixels_identical() {

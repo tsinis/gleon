@@ -7,16 +7,20 @@
     clippy::missing_errors_doc,
     clippy::pedantic,
     clippy::nursery,
-    missing_docs
+    missing_docs,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 
 //! Integration tests for Phase 3.5 push and pull operations.
 
-use gleon_core::context::{ContextOptions, ResolvedContext};
-use gleon_core::manifest::{ImageHash, SingleTestManifest, WorkspaceIndex};
-use gleon_core::ops::{init_workspace, pull_blobs, push_blobs, stage_workspace};
-use gleon_core::storage::StorageConfig;
 use std::fs;
+
+use gleon_core::{
+    context::{ContextOptions, ResolvedContext},
+    manifest::{ImageHash, SingleTestManifest, WorkspaceIndex},
+    ops::{init_workspace, pull_blobs, push_blobs, stage_workspace},
+    storage::StorageConfig,
+};
 use tempfile::tempdir;
 
 #[tokio::test]

@@ -1,15 +1,20 @@
 //! Push operation for uploading baseline blobs to remote storage.
 
 use std::collections::HashSet;
+
 use thiserror::Error;
 
-use crate::context::ResolvedContext;
-use crate::ops::common::{CoreError, ensure_initialized};
-use crate::ops::sync::{
-    active_storage_config, collect_referenced_hashes, resolve_platform_dirs, short_hash,
-    transfer_with_progress,
+use crate::{
+    context::ResolvedContext,
+    ops::{
+        common::{CoreError, ensure_initialized},
+        sync::{
+            active_storage_config, collect_referenced_hashes, resolve_platform_dirs, short_hash,
+            transfer_with_progress,
+        },
+    },
+    storage::{ObjectStoreAdapter, StorageConfig, StorageError},
 };
-use crate::storage::{ObjectStoreAdapter, StorageConfig, StorageError};
 
 /// Errors that can occur during a push operation.
 #[derive(Debug, Error)]
@@ -159,12 +164,12 @@ pub async fn push_blobs(
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
     use super::*;
-    use crate::context::ContextError;
-    use crate::platform::PlatformError;
+    use crate::{context::ContextError, platform::PlatformError};
 
     #[test]
     fn test_push_error_display() {

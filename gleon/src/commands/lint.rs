@@ -1,11 +1,9 @@
 //! Implementation of the `gleon lint-manifests` subcommand.
 
-use gleon_core::context::ResolvedContext;
-use gleon_core::ops::lint_workspace_manifests;
+use gleon_core::{context::ResolvedContext, ops::lint_workspace_manifests};
 use tracing::{error, info};
 
-use crate::commands::report_failure;
-use crate::exit_code::ExitCode;
+use crate::{commands::report_failure, exit_code::ExitCode};
 
 /// Runs manifest linting across the workspace.
 ///
@@ -61,12 +59,14 @@ pub fn run_lint(ctx: &ResolvedContext, platform_filter: Option<&str>) -> ExitCod
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
     use gleon_core::context::ContextOptions;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn test_run_lint_branches() {

@@ -1,17 +1,20 @@
 //! Remote storage garbage collector orchestration for pruning unreferenced baseline blobs.
 
-use std::collections::HashSet;
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use chrono::{DateTime, Duration, Utc};
 use tracing::{info, instrument, warn};
 
-use crate::context::ResolvedContext;
-use crate::manifest::ImageHash;
-use crate::ops::common::{CoreError, ensure_initialized};
 pub use crate::storage::RemoteBlobEntry;
-use crate::storage::StorageError;
-use crate::storage::adapter::{ObjectStoreAdapter, StorageConfig};
+use crate::{
+    context::ResolvedContext,
+    manifest::ImageHash,
+    ops::common::{CoreError, ensure_initialized},
+    storage::{
+        StorageError,
+        adapter::{ObjectStoreAdapter, StorageConfig},
+    },
+};
 
 /// Errors that can occur during storage garbage collection.
 #[derive(Debug, thiserror::Error)]
@@ -576,11 +579,13 @@ pub async fn garbage_collect(
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     fn commit_test_tree<'a>(
         repo: &'a gix::Repository,

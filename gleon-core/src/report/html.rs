@@ -3,10 +3,11 @@
 use minijinja::context;
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 
-use super::ReportError;
-use super::format::FormattedPath;
-use crate::engine::MismatchDetail;
-use crate::results::{TestCaseResult, TestImageResult};
+use super::{ReportError, format::FormattedPath};
+use crate::{
+    engine::MismatchDetail,
+    results::{TestCaseResult, TestImageResult},
+};
 
 struct FormattedDimensions(u32, u32);
 
@@ -245,7 +246,10 @@ impl super::ReportGenerator {
             return Ok(None);
         }
 
-        #[allow(clippy::expect_used)]
+        #[expect(
+            clippy::expect_used,
+            reason = "bundled templates are compile-time assets validated by the test suite"
+        )]
         let tmpl = super::JINJA_ENV
             .get_template("report.html")
             .expect("bundled report.html template is registered");
@@ -278,12 +282,14 @@ impl super::ReportGenerator {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use super::*;
     use crate::report::ReportGenerator;
-    use std::path::{Path, PathBuf};
 
     #[test]
     fn test_generate_html_skips_on_success() {

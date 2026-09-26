@@ -1,5 +1,5 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "gleon-core",
     "gleon"
@@ -11,6 +11,7 @@ edition = "2024"
 license = "BUSL-1.1"
 version = "0.2.2"
 publish = false
+rust-version = "1.100"
 
 
 [workspace.dependencies]
@@ -72,3 +73,16 @@ panic = "deny"
 pedantic = { level = "deny", priority = -1 }
 todo = "deny"
 unwrap_used = "deny"
+# Selected `restriction` lints that enforce rules from `.agents/AGENTS.md`.
+# Every `#[allow]`/`#[expect]` must say why; point suppression use `#[expect]` so stale ones fail.
+allow_attributes_without_reason = "deny"
+dbg_macro = "deny"
+# "Allocation-Free String Appending": use `write!`/`writeln!` instead of `push_str(&format!(..))`.
+format_push_string = "deny"
+
+# Distributed CLI binary: trade longer release builds for a smaller, faster executable.
+# `panic` stays at the default `unwind` on purpose.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
