@@ -165,7 +165,7 @@ storage:
 
 ## 🚀 CI/CD Integration (GitHub Actions)
 
-`gleon` provides a composite GitHub Action (`tsinis/gleon`) for turnkey CI verification.
+`gleon` provides a composite GitHub Action (`gleon-rs/gleon`) for turnkey CI verification.
 
 ### CI/CD Prerequisites (Shallow Clone Constraint)
 
@@ -209,7 +209,7 @@ jobs:
         run: npm test # or flutter test, cargo test, etc.
 
       - name: Run gleon Visual Regression Verify
-        uses: tsinis/gleon@main
+        uses: gleon-rs/gleon@main
         with:
           command: "verify"
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -266,7 +266,7 @@ jobs:
       actions: write
       contents: write
       pull-requests: read
-    uses: tsinis/gleon/.github/workflows/approve.yml@main
+    uses: gleon-rs/gleon/.github/workflows/approve.yml@main
     with:
       trigger-workflow: "visual-tests.yml" # Optional: auto-rerun CI after baseline approval
     secrets: inherit
@@ -287,7 +287,7 @@ jobs:
   cleanup:
     permissions:
       contents: write
-    uses: tsinis/gleon/.github/workflows/cleanup.yml@main
+    uses: gleon-rs/gleon/.github/workflows/cleanup.yml@main
 ```
 
 ---
