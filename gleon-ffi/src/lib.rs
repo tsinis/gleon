@@ -195,7 +195,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "reaches the image decoder")]
     fn test_null_with_zero_length_is_an_empty_buffer() {
         let opts = br#"{"mode":"exact"}"#;
-        let baseline = b"not a png";
+        let baseline = png(1, 1, |_, _| image::Rgba([0, 0, 0, 255]));
         let result = unsafe {
             gleon_compare(
                 baseline.as_ptr(),
@@ -206,10 +206,14 @@ mod tests {
                 opts.len(),
             )
         };
-        // The empty candidate is accepted by the ABI and rejected later by the decoder.
+        // The empty candidate is accepted by the ABI (not a `borrow` error) and rejected by the
+        // decoder once the valid baseline has been decoded.
         let json = read_json(result);
         assert_eq!(json["verdict"], "error");
-        assert!(json["error"].as_str().unwrap().contains("baseline image"));
+        assert!(
+            json["error"].as_str().unwrap().contains("candidate image"),
+            "{json}"
+        );
         unsafe { gleon_result_free(result) };
     }
 

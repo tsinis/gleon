@@ -355,10 +355,11 @@ mod tests {
         let a = png(10, 10, |_, _| RED);
         let b = png(12, 10, |_, _| RED);
         let opts = br#"{"mode":"exact","masks":[{"x":0,"y":0,"width":"50%","height":2}]}"#;
-        assert_eq!(
-            report(&compare(&a, &b, opts))["verdict"],
-            "dimension_mismatch"
-        );
+        let r = report(&compare(&a, &b, opts));
+        assert_eq!(r["verdict"], "dimension_mismatch");
+        assert_eq!(r["baseline_size"], serde_json::json!([10, 10]));
+        assert_eq!(r["candidate_size"], serde_json::json!([12, 10]));
+        assert!(r.get("total_pixels").is_none(), "{r}");
     }
 
     #[test]
