@@ -1,11 +1,12 @@
 //! Implementation of the `gleon diff` subcommand.
 
-use gleon_core::context::ResolvedContext;
-use gleon_core::storage::StorageConfig;
+use gleon_core::{context::ResolvedContext, storage::StorageConfig};
 use tracing::info;
 
-use crate::commands::{pull, report_failure, resolve};
-use crate::exit_code::ExitCode;
+use crate::{
+    commands::{pull, report_failure, resolve},
+    exit_code::ExitCode,
+};
 
 /// Runs the `gleon diff` subcommand.
 ///

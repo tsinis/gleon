@@ -6,14 +6,14 @@
     clippy::missing_errors_doc,
     clippy::pedantic,
     clippy::nursery,
-    missing_docs
+    missing_docs,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 //! Integration test for `ObjectStoreAdapter` using file:// backend with local disk & tempdir.
 
 #![cfg(not(miri))]
 
-use std::fs;
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 use gleon_core::storage::{ObjectStoreAdapter, StorageConfig};
 use tempfile::tempdir;

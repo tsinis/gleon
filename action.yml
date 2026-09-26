@@ -104,12 +104,12 @@ runs:
       run: |
         VERSION="$GLEON_VERSION"
         if [ "$VERSION" = "latest" ] || [ -z "$VERSION" ]; then
-          BASE_URL="https://github.com/tsinis/gleon/releases/latest/download"
+          BASE_URL="https://github.com/gleon-rs/gleon/releases/latest/download"
         else
           if [[ "$VERSION" =~ ^[0-9] ]]; then
             VERSION="v${VERSION}"
           fi
-          BASE_URL="https://github.com/tsinis/gleon/releases/download/${VERSION}"
+          BASE_URL="https://github.com/gleon-rs/gleon/releases/download/${VERSION}"
         fi
 
         ASSET_NAME="gleon-${{ steps.resolve.outputs.target }}"

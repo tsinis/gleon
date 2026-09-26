@@ -6,10 +6,11 @@ use serde::{
     ser::{SerializeSeq, SerializeStruct},
 };
 
-use super::ReportError;
-use super::format::FormattedPath;
-use crate::engine::MismatchDetail;
-use crate::results::{TestCaseResult, TestImageResult};
+use super::{ReportError, format::FormattedPath};
+use crate::{
+    engine::MismatchDetail,
+    results::{TestCaseResult, TestImageResult},
+};
 
 /// Lazy view prepending a static prefix (`"Decode error: "`, `"IO error: "`, ...) to a failure
 /// message, shared by every `TestImageResult` variant whose XML `failure_message` is just
@@ -208,7 +209,10 @@ impl super::ReportGenerator {
         let total_tests = test_cases.len();
         let failed_tests = test_cases.iter().filter(|tc| !tc.passed()).count();
 
-        #[allow(clippy::expect_used)]
+        #[expect(
+            clippy::expect_used,
+            reason = "bundled templates are compile-time assets validated by the test suite"
+        )]
         let tmpl = super::JINJA_ENV
             .get_template("junit.xml")
             .expect("bundled junit.xml template is registered");
@@ -234,12 +238,14 @@ impl super::ReportGenerator {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::report::ReportGenerator;
-    use std::path::PathBuf;
 
     #[test]
     fn test_generate_junit_xml() {

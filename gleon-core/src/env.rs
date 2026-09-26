@@ -1,7 +1,10 @@
 //! Environment variable access, injection, and `.gleon/.env` file loading.
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
+
 use tracing::debug;
 
 /// Abstraction over environment variable access.
@@ -95,12 +98,15 @@ fn merge_env_file(map: &mut HashMap<String, String>, path: &Path) {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
     use std::collections::HashMap as Map;
+
     use tempfile::tempdir;
+
+    use super::*;
 
     struct MapEnv(Map<String, String>);
 

@@ -1,7 +1,8 @@
 //! Git branch resolution and gitignore validation.
 
-use crate::env::{EnvProvider, OsEnv};
 use std::path::Path;
+
+use crate::env::{EnvProvider, OsEnv};
 
 /// Errors that can occur during Git operations.
 #[derive(Debug, thiserror::Error)]
@@ -607,14 +608,15 @@ fn resolve_ci_branch(env: &dyn EnvProvider) -> Option<String> {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
-    use std::collections::HashMap;
-    use std::fs::File;
-    use std::io::Write;
+    use std::{collections::HashMap, fs::File, io::Write};
+
     use tempfile::tempdir;
+
+    use super::*;
 
     struct MockEnv {
         vars: HashMap<String, String>,

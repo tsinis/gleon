@@ -7,12 +7,13 @@
     clippy::missing_errors_doc,
     clippy::pedantic,
     clippy::nursery,
-    missing_docs
+    missing_docs,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 
+use std::{env, path::PathBuf};
+
 use gleon_core::git::GitResolver;
-use std::env;
-use std::path::PathBuf;
 
 fn find_repo_root() -> Option<PathBuf> {
     let mut repo_root = env::current_dir().ok()?;

@@ -1,7 +1,8 @@
 //! Parser for Git merge conflict markers in per-test JSON manifest files.
 
-use crate::manifest::single::SingleTestManifest;
 use thiserror::Error;
+
+use crate::manifest::single::SingleTestManifest;
 
 /// Errors occurring during parsing of conflicted manifest JSON files.
 #[derive(Debug, Error)]
@@ -206,7 +207,8 @@ pub fn parse_conflict_manifest(content: &str) -> Result<ConflictManifest, Confli
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
     use super::*;

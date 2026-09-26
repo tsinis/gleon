@@ -9,18 +9,18 @@
     clippy::missing_errors_doc,
     clippy::pedantic,
     clippy::nursery,
-    missing_docs
+    missing_docs,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 
-use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::{num::NonZeroUsize, path::PathBuf};
 
-use gleon_core::context::{ContextOptions, ResolvedContext};
-use gleon_core::dashboard::{
-    DashboardCompiler, DashboardError, DashboardHistory, DashboardOptions,
+use gleon_core::{
+    context::{ContextOptions, ResolvedContext},
+    dashboard::{DashboardCompiler, DashboardError, DashboardHistory, DashboardOptions},
+    paths::GleonPaths,
+    storage::{ObjectStoreAdapter, StorageConfig},
 };
-use gleon_core::paths::GleonPaths;
-use gleon_core::storage::{ObjectStoreAdapter, StorageConfig};
 
 #[tokio::test]
 #[cfg(not(miri))]

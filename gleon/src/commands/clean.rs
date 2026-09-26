@@ -1,11 +1,12 @@
 //! Handler for `gleon clean` subcommand.
 
-use gleon_core::context::ResolvedContext;
-use gleon_core::ops::clean::{CleanOptions, clean_workspace};
+use gleon_core::{
+    context::ResolvedContext,
+    ops::clean::{CleanOptions, clean_workspace},
+};
 use tracing::info;
 
-use crate::commands::report_failure;
-use crate::exit_code::ExitCode;
+use crate::{commands::report_failure, exit_code::ExitCode};
 
 /// Runs the `clean` command.
 pub fn run_clean(
@@ -70,12 +71,14 @@ pub fn run_clean(
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
     use gleon_core::context::ContextOptions;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn test_run_clean_dry_run_and_actual_flow() {

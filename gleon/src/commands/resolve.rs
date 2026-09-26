@@ -1,15 +1,16 @@
 //! Implementation of the `gleon resolve` subcommand for interactive conflict resolution.
 
-use dialoguer::Select;
-use gleon_core::context::ResolvedContext;
-use gleon_core::ops::resolve::ConflictedManifestItem;
-use gleon_core::ops::{apply_resolution, scan_conflicts};
-use gleon_core::storage::{ObjectStoreAdapter, StorageConfig};
 use std::io::IsTerminal;
+
+use dialoguer::Select;
+use gleon_core::{
+    context::ResolvedContext,
+    ops::{apply_resolution, resolve::ConflictedManifestItem, scan_conflicts},
+    storage::{ObjectStoreAdapter, StorageConfig},
+};
 use tracing::{error, info, warn};
 
-use crate::commands::report_failure;
-use crate::exit_code::ExitCode;
+use crate::{commands::report_failure, exit_code::ExitCode};
 
 /// Runs interactive resolution for conflicted manifest files.
 pub async fn run_resolve(
@@ -214,12 +215,14 @@ where
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
     use gleon_core::context::ContextOptions;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_run_resolve_missing_manifest_dir() {

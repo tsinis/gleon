@@ -6,10 +6,10 @@ pub mod single;
 
 pub use conflict::{ConflictManifest, ConflictParseError, parse_conflict_manifest};
 pub use index::{WorkspaceIndex, validate_test_path};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub use single::{SUPPORTED_SINGLE_MANIFEST_SCHEMA_VERSION, SingleTestManifest};
 
 use crate::io::IoError;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Errors that can occur during manifest operations.
 #[derive(Debug, thiserror::Error)]
@@ -175,7 +175,8 @@ impl std::fmt::Display for ImageHash {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
     use super::*;

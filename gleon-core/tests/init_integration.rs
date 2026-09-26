@@ -7,13 +7,17 @@
     clippy::missing_errors_doc,
     clippy::pedantic,
     clippy::nursery,
-    missing_docs
+    missing_docs,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 
-use gleon_core::config::GleonConfig;
-use gleon_core::context::{ContextOptions, ResolvedContext};
-use gleon_core::ops::init_workspace;
 use std::fs;
+
+use gleon_core::{
+    config::GleonConfig,
+    context::{ContextOptions, ResolvedContext},
+    ops::init_workspace,
+};
 
 #[test]
 fn test_init_workspace_creates_real_structure_and_valid_config() {

@@ -7,14 +7,17 @@
     clippy::missing_errors_doc,
     clippy::pedantic,
     clippy::nursery,
-    missing_docs
+    missing_docs,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 
-use gleon_core::context::{ContextOptions, ResolvedContext};
-use gleon_core::ops::{StageError, check_status, init_workspace, stage_workspace};
+use std::{fs, path::Path};
+
+use gleon_core::{
+    context::{ContextOptions, ResolvedContext},
+    ops::{StageError, check_status, init_workspace, stage_workspace},
+};
 use sha2::Digest;
-use std::fs;
-use std::path::Path;
 
 #[test]
 fn test_stage_uninitialized_fails() {

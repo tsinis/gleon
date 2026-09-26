@@ -6,15 +6,15 @@
     clippy::missing_errors_doc,
     clippy::pedantic,
     clippy::nursery,
-    missing_docs
+    missing_docs,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 //! Live cloud smoke test for Cloudflare R2 / AWS S3 compatibility.
 //! Runs only when explicitly invoked via `cargo test --test r2_smoke_test -- --ignored`.
 
 #![cfg(not(miri))]
 
-use std::fs;
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 use gleon_core::storage::{ObjectStoreAdapter, StorageConfig};
 use tempfile::tempdir;

@@ -1,10 +1,11 @@
 //! Shared directory-traversal and glob-set construction helpers built on `ignore`/`globset`.
 
-use crate::config::GlobPattern;
-use crate::naming::DEFAULT_PRUNED_DIRECTORIES;
+use std::path::Path;
+
 use globset::{GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
-use std::path::Path;
+
+use crate::{config::GlobPattern, naming::DEFAULT_PRUNED_DIRECTORIES};
 
 /// Returns `true` if `name` is one of [`DEFAULT_PRUNED_DIRECTORIES`].
 #[must_use]
@@ -23,12 +24,9 @@ pub fn is_default_pruned_dir(name: &str) -> bool {
 pub fn pruned_walker(dir: &Path) -> WalkBuilder {
     let mut builder = WalkBuilder::new(dir);
     builder.standard_filters(false).filter_entry(|entry| {
-        if entry.file_type().is_some_and(|ft| ft.is_dir())
-            && matches!(entry.file_name().to_str(), Some(name) if name != ".gleon" && is_default_pruned_dir(name))
-        {
-            return false;
-        }
-        true
+        let is_pruned_dir = entry.file_type().is_some_and(|ft| ft.is_dir())
+            && matches!(entry.file_name().to_str(), Some(name) if name != ".gleon" && is_default_pruned_dir(name));
+        !is_pruned_dir
     });
     builder
 }
@@ -42,13 +40,10 @@ pub fn pruned_walker(dir: &Path) -> WalkBuilder {
 pub fn manifest_walker(dir: &Path) -> WalkBuilder {
     let mut builder = WalkBuilder::new(dir);
     builder.standard_filters(false).filter_entry(|entry| {
-        if entry.file_type().is_some_and(|ft| ft.is_dir())
+        let is_hidden_subdir = entry.file_type().is_some_and(|ft| ft.is_dir())
             && entry.depth() > 0
-            && matches!(entry.file_name().to_str(), Some(name) if name.starts_with('.'))
-        {
-            return false;
-        }
-        true
+            && matches!(entry.file_name().to_str(), Some(name) if name.starts_with('.'));
+        !is_hidden_subdir
     });
     builder
 }
@@ -74,11 +69,13 @@ pub fn build_globset(patterns: &[GlobPattern]) -> Result<GlobSet, globset::Error
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn test_is_default_pruned_dir() {

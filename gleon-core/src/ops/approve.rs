@@ -1,14 +1,18 @@
 //! Baseline approval operation for replacing snapshots with actual run images.
 
-use crate::context::ResolvedContext;
-use crate::manifest::ManifestError;
-use crate::ops::common::{
-    CoreError, build_manifest, ensure_initialized, hash_and_measure, load_index_with_fallback,
-    platform_key,
-};
-use rayon::prelude::*;
 use std::path::{Path, PathBuf};
+
+use rayon::prelude::*;
 use thiserror::Error;
+
+use crate::{
+    context::ResolvedContext,
+    manifest::ManifestError,
+    ops::common::{
+        CoreError, build_manifest, ensure_initialized, hash_and_measure, load_index_with_fallback,
+        platform_key,
+    },
+};
 
 struct ApprovedItem {
     test_name: String,
@@ -43,7 +47,10 @@ fn process_approve_candidate(
 
     // Safe: metadata.len() was just checked against MAX_IMAGE_FILE_SIZE (64 MB) above,
     // which fits in a usize on every supported target.
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "length is bounded by a size limit checked above and fits `usize` on all supported targets"
+    )]
     let mut raw_png_bytes = Vec::with_capacity(metadata.len() as usize);
     let bytes_read = (&mut file)
         .take(MAX_IMAGE_FILE_SIZE + 1)
@@ -148,7 +155,10 @@ pub struct ApproveResult {
 // parallel decode+hash, manifest/blob persistence with fallback-aware pruning), not from
 // duplicated logic — see ops/common.rs for the helpers that already factor out what *is* shared
 // with other operations.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "long by design; see the comment above"
+)]
 pub fn approve_workspace(
     context: &ResolvedContext,
     paths: &[PathBuf],
@@ -194,13 +204,10 @@ pub fn approve_workspace(
     let walker = ignore::WalkBuilder::new(&source_dir)
         .standard_filters(false)
         .filter_entry(|e| {
-            if e.depth() > 0
+            let is_pruned_dir = e.depth() > 0
                 && e.file_type().is_some_and(|ft| ft.is_dir())
-                && matches!(e.file_name().to_str(), Some(name) if name.starts_with('.') || crate::naming::DEFAULT_PRUNED_DIRECTORIES.contains(&name))
-            {
-                return false;
-            }
-            true
+                && matches!(e.file_name().to_str(), Some(name) if name.starts_with('.') || crate::naming::DEFAULT_PRUNED_DIRECTORIES.contains(&name));
+            !is_pruned_dir
         })
         .build();
 
@@ -333,15 +340,19 @@ pub fn approve_workspace(
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
-    use crate::config::ConfigError;
-    use crate::context::ContextError;
-    use crate::manifest::{ImageHash, SingleTestManifest};
-    use crate::scanner::ScannerError;
     use sha2::{Digest, Sha256};
+
+    use super::*;
+    use crate::{
+        config::ConfigError,
+        context::ContextError,
+        manifest::{ImageHash, SingleTestManifest},
+        scanner::ScannerError,
+    };
 
     #[test]
     fn test_approve_error_display() {

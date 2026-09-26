@@ -4,8 +4,10 @@ use minijinja::context;
 use serde::Serialize;
 
 use super::{ImageUrlResolver, MarkdownReportOptions, RenderTarget};
-use crate::engine::MismatchDetail;
-use crate::results::{TestCaseResult, TestImageResult};
+use crate::{
+    engine::MismatchDetail,
+    results::{TestCaseResult, TestImageResult},
+};
 
 /// Displays a path using forward slashes regardless of platform, for embedding in
 /// Markdown/URLs (e.g. `foo/bar.png` even on Windows).
@@ -282,7 +284,10 @@ impl super::ReportGenerator {
 
         // Bundled template validated by the test suite; a syntax/context mismatch here would be
         // a build-time bug caught immediately, not a runtime condition callers need to handle.
-        #[allow(clippy::expect_used)]
+        #[expect(
+            clippy::expect_used,
+            reason = "bundled templates are compile-time assets validated by the test suite"
+        )]
         let tmpl = super::JINJA_ENV
             .get_template("pr_comment.md")
             .expect("bundled pr_comment.md template is registered");
@@ -296,7 +301,10 @@ impl super::ReportGenerator {
             footer => footer,
         };
 
-        #[allow(clippy::expect_used)]
+        #[expect(
+            clippy::expect_used,
+            reason = "bundled templates are compile-time assets validated by the test suite"
+        )]
         tmpl.render(ctx)
             .expect("bundled pr_comment.md template renders against a well-formed context")
     }
@@ -310,7 +318,10 @@ impl super::ReportGenerator {
         let failed = test_cases.iter().filter(|tc| !tc.passed()).count();
 
         let mut out = String::new();
-        #[allow(clippy::expect_used)]
+        #[expect(
+            clippy::expect_used,
+            reason = "`fmt::Write` for `String` is infallible"
+        )]
         writeln!(
             out,
             "# gleon Visual Regression Summary\n\n**Total Tests:** {total}\n**Failed:** {failed}\n"
@@ -333,7 +344,10 @@ impl super::ReportGenerator {
 
             let path_fmt = PosixPathFormatter(res.relative_path());
             let path_str = path_fmt.to_string();
-            #[allow(clippy::expect_used)]
+            #[expect(
+                clippy::expect_used,
+                reason = "`fmt::Write` for `String` is infallible"
+            )]
             writeln!(
                 out,
                 "| {} | {} | {} |",
@@ -356,12 +370,14 @@ impl super::ReportGenerator {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::report::ReportGenerator;
-    use std::path::PathBuf;
 
     #[test]
     fn test_render_pr_comment_with_base_url_and_fallback() {

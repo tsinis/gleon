@@ -4,8 +4,9 @@
 //! [`crate::report`] — they describe comparison outcomes, not files being scanned, so they
 //! live apart from [`crate::scanner`].
 
-use crate::engine::MismatchDetail;
 use std::path::{Path, PathBuf};
+
+use crate::engine::MismatchDetail;
 
 /// Represents the result of running a test on a single screenshot.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -147,7 +148,8 @@ impl TestCaseResult {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
     use super::*;

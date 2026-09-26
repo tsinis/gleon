@@ -3,10 +3,12 @@
 //! Generates and signs Ed25519 license tokens offline for commercial visual regression
 //! entitlements.
 
-use std::fmt;
-use std::io::Write;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    fmt,
+    io::Write,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use base64::Engine;
 use clap::{Parser, Subcommand};
@@ -419,7 +421,8 @@ fn main() -> anyhow::Result<()> {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
     use super::*;

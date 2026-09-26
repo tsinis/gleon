@@ -6,7 +6,8 @@
     clippy::missing_errors_doc,
     clippy::pedantic,
     clippy::nursery,
-    missing_docs
+    missing_docs,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 //! End-to-end integration test verifying sparse multi-platform fallback baselines.
 //!
@@ -22,18 +23,18 @@
 
 #![cfg(not(miri))]
 
-use gleon_core::config::GleonConfig;
-use gleon_core::context::ResolvedContext;
-use gleon_core::ops::approve::approve_workspace;
-use gleon_core::ops::diff::run_diff;
-use gleon_core::ops::pull::pull_blobs;
-use gleon_core::ops::push::push_blobs;
-use gleon_core::ops::stage::stage_workspace;
-use gleon_core::ops::status::check_status;
-use gleon_core::platform::PlatformInfo;
-use gleon_core::storage::StorageConfig;
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
+
+use gleon_core::{
+    config::GleonConfig,
+    context::ResolvedContext,
+    ops::{
+        approve::approve_workspace, diff::run_diff, pull::pull_blobs, push::push_blobs,
+        stage::stage_workspace, status::check_status,
+    },
+    platform::PlatformInfo,
+    storage::StorageConfig,
+};
 use tempfile::tempdir;
 
 fn make_png(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {
@@ -90,14 +91,12 @@ screenshots:
     std::fs::write(&config_file, config_yaml).unwrap();
     let config = GleonConfig::load_from_file(&config_file).unwrap();
 
-    #[allow(clippy::field_reassign_with_default)]
     let mut macos_ctx = ResolvedContext::default();
     macos_ctx.platform = macos_platform;
     macos_ctx.fallback_platform_key = None;
     macos_ctx.config = Some(config.clone());
     macos_ctx.base_dir = base_path.to_path_buf();
 
-    #[allow(clippy::field_reassign_with_default)]
     let mut linux_ctx = ResolvedContext::default();
     linux_ctx.platform = linux_platform;
     linux_ctx.fallback_platform_key = Some(macos_key.clone());

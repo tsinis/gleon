@@ -4,10 +4,13 @@
 //! untracks them from the Git index (using `gix`), appends wildcard entries to
 //! `.gitignore`, and purges temporary `.gleon/runs/` and `.gleon/diffs/` directories.
 
-use crate::context::ResolvedContext;
-use crate::git::GitResolver;
-use crate::ops::common::{CoreError, append_missing_gitignore_lines, load_config_and_scan};
 use std::path::PathBuf;
+
+use crate::{
+    context::ResolvedContext,
+    git::GitResolver,
+    ops::common::{CoreError, append_missing_gitignore_lines, load_config_and_scan},
+};
 
 /// Error types that can occur during the clean operation.
 #[derive(Debug, thiserror::Error)]
@@ -52,7 +55,10 @@ pub struct CleanResult {
 // Genuinely long from four sequential, independent steps (delete+prune, git untrack,
 // .gitignore update, cache cleanup), not from duplicated logic — see ops/common.rs for the
 // helpers that already factor out what *is* shared with other operations.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "long by design; see the comment above"
+)]
 pub fn clean_workspace(
     context: &ResolvedContext,
     options: &CleanOptions,
@@ -235,15 +241,14 @@ pub fn clean_workspace(
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
-    use crate::config::ConfigError;
-    use crate::context::ContextError;
-    use crate::git::GitError;
-    use crate::scanner::ScannerError;
     use tempfile::tempdir;
+
+    use super::*;
+    use crate::{config::ConfigError, context::ContextError, git::GitError, scanner::ScannerError};
 
     #[test]
     fn test_clean_workspace_dry_run_and_execution() {

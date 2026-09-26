@@ -61,7 +61,10 @@ fn format_failure(context: &str, err: &dyn std::error::Error) -> String {
         // whose name happens to appear inside the parent text (e.g. cause "report").
         if !is_interpolated_cause(&parent, &rendered) {
             // Writing to a `String` via `fmt::Write` never fails.
-            #[allow(clippy::expect_used)]
+            #[expect(
+                clippy::expect_used,
+                reason = "`fmt::Write` for `String` is infallible"
+            )]
             write!(out, ": {rendered}").expect("write! to a String cannot fail");
         }
         source = cause.source();
@@ -87,7 +90,8 @@ pub fn report_failure(context: &str, err: &dyn std::error::Error) -> ExitCode {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
     use super::*;

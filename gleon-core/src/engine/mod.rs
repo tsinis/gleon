@@ -4,12 +4,12 @@ pub mod phash;
 pub mod pixel;
 pub mod ssim;
 
+use image::RgbaImage;
 pub use phash::{calculate_hamming_distance, compute_phash};
 pub use pixel::compare_pixels;
 pub use ssim::{SsimError, compare_ssim};
 
 use crate::config::{DiffConfig, Mode};
-use image::RgbaImage;
 
 /// Detailed breakdown of a mismatch between baseline and actual images.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -74,7 +74,10 @@ fn execute_pixel_comparison(
     } else {
         // Pixel counts here are always far below 2^52, so converting to `f64` is exact for
         // any realistic image size; the ratio itself is just a heuristic threshold comparison.
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "counts are far below 2^52, so the f64 conversion is exact for any realistic input"
+        )]
         let mismatch_ratio = diff_count as f64 / total_pixels as f64;
         mismatch_ratio <= threshold
     };
@@ -148,12 +151,14 @@ pub fn compare_images(
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
+    use image::{ImageBuffer, Rgba};
+
     use super::*;
     use crate::config::DiffConfig;
-    use image::{ImageBuffer, Rgba};
 
     #[test]
     fn test_dimension_mismatch() {
@@ -244,9 +249,10 @@ mod tests {
 
         // A large change should mismatch
         let half_bytes = 50 * 100 * 4;
-        for chunk in (&mut *img2)[..half_bytes].chunks_exact_mut(4) {
-            chunk.copy_from_slice(&[0, 255, 0, 255]);
-        }
+        (&mut *img2)[..half_bytes]
+            .as_chunks_mut::<4>()
+            .0
+            .fill([0, 255, 0, 255]);
         let result2 = compare_images(&img1, &img2, Mode::Ssim, &config);
         assert!(matches!(
             result2,

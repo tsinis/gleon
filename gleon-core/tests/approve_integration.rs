@@ -7,15 +7,18 @@
     clippy::missing_errors_doc,
     clippy::pedantic,
     clippy::nursery,
-    missing_docs
+    missing_docs,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 
-use gleon_core::context::{ContextOptions, ResolvedContext};
-use gleon_core::ops::{
-    ApproveError, approve_workspace, check_status, init_workspace, run_diff, stage_workspace,
+use std::{fs, path::Path};
+
+use gleon_core::{
+    context::{ContextOptions, ResolvedContext},
+    ops::{
+        ApproveError, approve_workspace, check_status, init_workspace, run_diff, stage_workspace,
+    },
 };
-use std::fs;
-use std::path::Path;
 
 #[test]
 fn test_approve_uninitialized_fails() {

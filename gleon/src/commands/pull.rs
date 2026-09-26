@@ -1,12 +1,9 @@
 //! Implementation of the `gleon pull` subcommand.
 
-use gleon_core::context::ResolvedContext;
-use gleon_core::ops::pull_blobs;
-use gleon_core::storage::StorageConfig;
+use gleon_core::{context::ResolvedContext, ops::pull_blobs, storage::StorageConfig};
 use tracing::info;
 
-use crate::commands::report_failure;
-use crate::exit_code::ExitCode;
+use crate::{commands::report_failure, exit_code::ExitCode};
 
 /// Runs the `gleon pull` subcommand.
 ///
@@ -50,12 +47,14 @@ pub async fn run_pull(
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
     use gleon_core::context::ContextOptions;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_run_pull_uninitialized_and_local_mode() {

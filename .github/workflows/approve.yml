@@ -115,7 +115,7 @@ jobs:
           fi
 
       - name: Pull Existing Baseline Blobs
-        uses: tsinis/gleon@main
+        uses: gleon-rs/gleon@main
         with:
           version: ${{ inputs.version }}
           checksum: ${{ inputs.checksum }}
@@ -151,7 +151,7 @@ jobs:
           fi
 
       - name: Run Gleon Approve
-        uses: tsinis/gleon@main
+        uses: gleon-rs/gleon@main
         with:
           version: ${{ inputs.version }}
           checksum: ${{ inputs.checksum }}
@@ -167,7 +167,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
       - name: Push Approved Blobs to Storage
-        uses: tsinis/gleon@main
+        uses: gleon-rs/gleon@main
         with:
           version: ${{ inputs.version }}
           checksum: ${{ inputs.checksum }}

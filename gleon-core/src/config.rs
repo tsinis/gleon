@@ -1,10 +1,11 @@
 //! Configuration and manifest models for gleon.
 
-use crate::platform::PlatformConfig;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
 use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
+
+use crate::platform::PlatformConfig;
 
 /// Errors that can occur during configuration loading or manifest operations.
 #[derive(Debug, Error)]
@@ -463,7 +464,10 @@ const DEFAULT_VERSION_REQ: &str = ">=0.1.0";
 use std::sync::LazyLock;
 
 static DEFAULT_VERSION: LazyLock<semver::VersionReq> = LazyLock::new(|| {
-    #[allow(clippy::expect_used)]
+    #[expect(
+        clippy::expect_used,
+        reason = "hard-coded default is statically valid and covered by tests"
+    )]
     semver::VersionReq::parse(DEFAULT_VERSION_REQ)
         .expect("DEFAULT_VERSION_REQ must be a valid semver requirement")
 });
@@ -477,7 +481,10 @@ impl Default for GleonConfig {
             platform: None,
             fallback_platform: None,
             screenshots: vec![ScreenshotRule {
-                #[allow(clippy::expect_used)]
+                #[expect(
+                    clippy::expect_used,
+                    reason = "hard-coded default is statically valid and covered by tests"
+                )]
                 include: vec![
                     GlobPattern::new("**/*.png").expect("Default glob pattern must be valid"),
                 ],
@@ -486,13 +493,25 @@ impl Default for GleonConfig {
                 masks: vec![],
             }],
             exclude: vec![
-                #[allow(clippy::expect_used)]
+                #[expect(
+                    clippy::expect_used,
+                    reason = "hard-coded default is statically valid and covered by tests"
+                )]
                 GlobPattern::new("node_modules/**").expect("Valid pattern"),
-                #[allow(clippy::expect_used)]
+                #[expect(
+                    clippy::expect_used,
+                    reason = "hard-coded default is statically valid and covered by tests"
+                )]
                 GlobPattern::new("target/**").expect("Valid pattern"),
-                #[allow(clippy::expect_used)]
+                #[expect(
+                    clippy::expect_used,
+                    reason = "hard-coded default is statically valid and covered by tests"
+                )]
                 GlobPattern::new("build/**").expect("Valid pattern"),
-                #[allow(clippy::expect_used)]
+                #[expect(
+                    clippy::expect_used,
+                    reason = "hard-coded default is statically valid and covered by tests"
+                )]
                 GlobPattern::new("example/**").expect("Valid pattern"),
             ],
         }
@@ -508,12 +527,14 @@ impl Default for GleonConfig {
     clippy::missing_errors_doc,
     clippy::float_cmp,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
     use semver::VersionReq;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn test_default_yaml_snapshot() {

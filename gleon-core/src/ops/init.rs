@@ -1,10 +1,14 @@
 //! Initialization operation for gleon workspace.
 
-use crate::config::GleonConfig;
-use crate::ops::common::{CoreError, append_missing_gitignore_lines, create_new_file_with_content};
-use crate::paths::GleonPaths;
 use std::path::PathBuf;
+
 use thiserror::Error;
+
+use crate::{
+    config::GleonConfig,
+    ops::common::{CoreError, append_missing_gitignore_lines, create_new_file_with_content},
+    paths::GleonPaths,
+};
 
 /// Errors that can occur during workspace initialization.
 #[derive(Debug, Error)]
@@ -98,7 +102,8 @@ pub fn init_workspace(context: &crate::context::ResolvedContext) -> Result<InitR
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
     use super::*;

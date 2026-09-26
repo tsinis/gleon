@@ -7,12 +7,16 @@
     clippy::missing_errors_doc,
     clippy::pedantic,
     clippy::nursery,
-    missing_docs
+    missing_docs,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 
-use gleon_core::config::{Dimension, Zone};
-use gleon_core::masking;
 use std::path::Path;
+
+use gleon_core::{
+    config::{Dimension, Zone},
+    masking,
+};
 
 #[test]
 fn test_masking_integration() {

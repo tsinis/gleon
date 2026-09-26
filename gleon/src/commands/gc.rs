@@ -1,10 +1,11 @@
-use gleon_core::context::ResolvedContext;
-use gleon_core::ops::gc::{GcMode, GcOptions, garbage_collect};
-use gleon_core::storage::StorageConfig;
+use gleon_core::{
+    context::ResolvedContext,
+    ops::gc::{GcMode, GcOptions, garbage_collect},
+    storage::StorageConfig,
+};
 use tracing::info;
 
-use crate::commands::report_failure;
-use crate::exit_code::ExitCode;
+use crate::{commands::report_failure, exit_code::ExitCode};
 
 /// Formats a byte count into a human-readable string.
 #[must_use]
@@ -13,7 +14,10 @@ pub fn format_bytes(bytes: u64) -> String {
     const MIB: u64 = 1024 * 1024;
     const GIB: u64 = 1024 * 1024 * 1024;
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "human-readable formatting tolerates f64 rounding"
+    )]
     if bytes >= GIB {
         format!("{:.2} GiB", bytes as f64 / GIB as f64)
     } else if bytes >= MIB {
@@ -106,13 +110,14 @@ pub async fn run_gc(
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
-    use gleon_core::context::ContextOptions;
-    use gleon_core::storage::ObjectStoreAdapter;
+    use gleon_core::{context::ContextOptions, storage::ObjectStoreAdapter};
     use tempfile::tempdir;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_run_gc_uninitialized_and_local_mode() {

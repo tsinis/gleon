@@ -1,12 +1,13 @@
 //! Implementation of the `gleon report` subcommand.
 
 use anyhow::{Context, Result, anyhow};
-use gleon_core::io::load_json;
-use gleon_core::report::{MarkdownReportOptions, ReportGenerator};
-use gleon_core::results::TestCaseResult;
+use gleon_core::{
+    io::load_json,
+    report::{MarkdownReportOptions, ReportGenerator},
+    results::TestCaseResult,
+};
 
-use crate::commands::report_failure;
-use crate::exit_code::ExitCode;
+use crate::{commands::report_failure, exit_code::ExitCode};
 
 /// Runs the `gleon report` subcommand.
 ///
@@ -142,7 +143,8 @@ async fn run_report_inner(
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
     use super::*;

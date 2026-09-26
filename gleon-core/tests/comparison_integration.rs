@@ -7,13 +7,17 @@
     clippy::missing_errors_doc,
     clippy::pedantic,
     clippy::nursery,
-    missing_docs
+    missing_docs,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 
-use gleon_core::config::{DiffConfig, Mode};
-use gleon_core::engine::{ComparisonResult, MismatchDetail, compare_images};
-use image::{Rgba, RgbaImage};
 use std::path::Path;
+
+use gleon_core::{
+    config::{DiffConfig, Mode},
+    engine::{ComparisonResult, MismatchDetail, compare_images},
+};
+use image::{Rgba, RgbaImage};
 
 fn load_fixture(name: &str) -> RgbaImage {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))

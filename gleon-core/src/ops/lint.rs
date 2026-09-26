@@ -1,11 +1,13 @@
 //! Lint operation for validating manifest schema integrity and checking for Git merge conflict markers.
 
-use crate::context::ResolvedContext;
-use crate::manifest::single::SingleTestManifest;
-use crate::ops::common::resolve_platform_filter_dir;
-use crate::paths::GleonPaths;
 use std::path::PathBuf;
+
 use thiserror::Error;
+
+use crate::{
+    context::ResolvedContext, manifest::single::SingleTestManifest,
+    ops::common::resolve_platform_filter_dir, paths::GleonPaths,
+};
 
 /// Errors that can occur during manifest linting.
 #[derive(Debug, Error)]
@@ -136,11 +138,13 @@ pub fn lint_workspace_manifests(
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn test_lint_clean_manifests() {

@@ -7,12 +7,16 @@
     clippy::missing_errors_doc,
     clippy::pedantic,
     clippy::nursery,
-    missing_docs
+    missing_docs,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 
-use gleon_core::context::{ContextOptions, ResolvedContext};
-use gleon_core::ops::clean::{CleanOptions, clean_workspace};
 use std::fs;
+
+use gleon_core::{
+    context::{ContextOptions, ResolvedContext},
+    ops::clean::{CleanOptions, clean_workspace},
+};
 use tempfile::tempdir;
 
 const VALID_PNG_BYTES: &[u8] = include_bytes!("fixtures/baseline_100x100.png");

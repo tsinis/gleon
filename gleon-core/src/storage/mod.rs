@@ -1,13 +1,14 @@
 pub mod adapter;
 
-pub use crate::ops::gc::{
-    GcError, GcMode, GcOptions, GcResult, collect_all_referenced_hashes, filter_orphans_to_delete,
-    garbage_collect,
-};
 pub use adapter::{
     DeleteSummary, ObjectStoreAdapter, RemoteBlobEntry, RemoteObject, StorageConfig,
 };
 use object_store::path::Path as ObjPath;
+
+pub use crate::ops::gc::{
+    GcError, GcMode, GcOptions, GcResult, collect_all_referenced_hashes, filter_orphans_to_delete,
+    garbage_collect,
+};
 
 /// Optional metadata attached to an uploaded blob in cloud storage.
 ///
@@ -151,7 +152,8 @@ pub fn is_usable_blob(path: &std::path::Path) -> bool {
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
     use super::*;

@@ -4,19 +4,23 @@
 //! interactive static HTML dashboard (`dashboard.html`) for visual reporting across
 //! branches and platforms without requiring external server hosting.
 
-use std::collections::BTreeSet;
-use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeSet,
+    num::NonZeroUsize,
+    path::{Path, PathBuf},
+};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 use tracing::instrument;
 
-use crate::context::ResolvedContext;
-use crate::paths::GleonPaths;
-use crate::results::{TestCaseResult, TestImageResult};
-use crate::storage::{ObjectStoreAdapter, StorageConfig, StorageError};
+use crate::{
+    context::ResolvedContext,
+    paths::GleonPaths,
+    results::{TestCaseResult, TestImageResult},
+    storage::{ObjectStoreAdapter, StorageConfig, StorageError},
+};
 
 /// Current supported schema version for `history.json`.
 pub const SUPPORTED_SCHEMA_VERSION: u32 = 1;
@@ -386,7 +390,10 @@ impl DashboardCompiler {
             .filter(|r| r.summary.failed == 0)
             .count();
         let failed_runs = total_runs.saturating_sub(passed_runs);
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "counts are far below 2^52, so the f64 conversion is exact for any realistic input"
+        )]
         let run_pass_rate = if total_runs == 0 {
             None
         } else {
@@ -395,7 +402,10 @@ impl DashboardCompiler {
 
         let total_tests: usize = history.runs.iter().map(|r| r.summary.total).sum();
         let passed_tests: usize = history.runs.iter().map(|r| r.summary.passed).sum();
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "counts are far below 2^52, so the f64 conversion is exact for any realistic input"
+        )]
         let test_pass_rate = if total_tests == 0 {
             None
         } else {
@@ -625,7 +635,10 @@ fn load_report_test_cases(report_path: &Path) -> Result<Vec<TestCaseResult>, Das
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors the independent etag/version/create-only preconditions of the two uploads"
+)]
 async fn upload_history_and_dashboard(
     adapter: &ObjectStoreAdapter,
     history_json: Vec<u8>,
@@ -715,12 +728,13 @@ fn generate_run_id(timestamp: DateTime<Utc>, branch: &str, platform: &str) -> St
     clippy::missing_panics_doc,
     clippy::missing_errors_doc,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    reason = "test code: panics are assertions, and pedantic/nursery style lints are not enforced in tests"
 )]
 mod tests {
-    use super::*;
-
     use std::num::NonZeroUsize;
+
+    use super::*;
 
     #[test]
     fn test_history_parse_empty_and_valid() {
