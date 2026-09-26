@@ -32,6 +32,20 @@ use serde::{Deserialize, Serialize};
 /// Version of the decision policy; bumped whenever verdicts can change for the same inputs.
 pub const POLICY_VERSION: u32 = 2;
 
+/// Largest image (in pixels, 4096x4096) admitted to [`analyze`].
+///
+/// The analysis workspace grows with the changed area (roughly 16 bytes per pixel on top of the two
+/// decoded images in the worst case), so it is bounded separately from, and well below, the decoder
+/// budget: realistic goldens (a full `MaterialApp` capture is 2400x1800, a 5K screen 14.7 MP) fit,
+/// decoder-limit images cannot exhaust memory.
+pub const MAX_ANALYSIS_PIXELS: u64 = 4096 * 4096;
+
+/// Returns whether a `width` x `height` image fits [`MAX_ANALYSIS_PIXELS`].
+#[must_use]
+pub const fn fits_analysis_budget(width: u32, height: u32) -> bool {
+    (width as u64) * (height as u64) <= MAX_ANALYSIS_PIXELS
+}
+
 /// Unexplained regions of at least this many pixels fail.
 pub const MIN_REGION_PIXELS: usize = 3;
 /// Smaller unexplained regions still fail if a pixel exceeds its envelope by this much (8-bit).
@@ -245,38 +259,50 @@ fn envelope_gate(base: Img<'_>, cand: Img<'_>, changed: Rect, tolerance: f32) ->
                 }
             }
         });
-    // 8-connected components of unexplained pixels.
+    // 8-connected components of unexplained pixels. Indices are `u32` (the analysis budget is far
+    // below 2^32 pixels) and no per-component list is kept: a failing component is re-flooded to
+    // mark it, so the workspace stays at a few bytes per pixel.
+    let (ch, unexplained) = (changed.height(), |i: usize| excess[i] > 0.0);
+    let neighbors = |i: u32| {
+        let i = i as usize;
+        let (cx, cy) = (i % cw, i / cw);
+        (cy.saturating_sub(1)..=(cy + 1).min(ch - 1)).flat_map(move |ny| {
+            (cx.saturating_sub(1)..=(cx + 1).min(cw - 1)).map(move |nx| ny * cw + nx)
+        })
+    };
+    let to_u32 = |i: usize| u32::try_from(i).unwrap_or(u32::MAX);
     let mut max_excess = 0.0f32;
     let mut failing = vec![false; excess.len()];
     let mut seen = vec![false; excess.len()];
-    let mut stack = Vec::new();
-    let mut component = Vec::new();
+    let mut stack: Vec<u32> = Vec::new();
     for start in 0..excess.len() {
-        if seen[start] || excess[start] <= 0.0 {
+        if seen[start] || !unexplained(start) {
             continue;
         }
         seen[start] = true;
-        stack.push(start);
-        component.clear();
-        let mut strongest = f32::MIN;
+        stack.push(to_u32(start));
+        let (mut size, mut strongest) = (0usize, f32::MIN);
         while let Some(i) = stack.pop() {
-            component.push(i);
-            strongest = strongest.max(excess[i]);
-            let (cx, cy) = (i % cw, i / cw);
-            for ny in cy.saturating_sub(1)..=(cy + 1).min(changed.height() - 1) {
-                for nx in cx.saturating_sub(1)..=(cx + 1).min(cw - 1) {
-                    let n = ny * cw + nx;
-                    if !seen[n] && excess[n] > 0.0 {
-                        seen[n] = true;
-                        stack.push(n);
-                    }
+            size += 1;
+            strongest = strongest.max(excess[i as usize]);
+            for n in neighbors(i) {
+                if !seen[n] && unexplained(n) {
+                    seen[n] = true;
+                    stack.push(to_u32(n));
                 }
             }
         }
-        if component.len() >= MIN_REGION_PIXELS || strongest >= STRONG_EXCESS {
+        if size >= MIN_REGION_PIXELS || strongest >= STRONG_EXCESS {
             max_excess = max_excess.max(strongest);
-            for &i in &component {
-                failing[i] = true;
+            failing[start] = true;
+            stack.push(to_u32(start));
+            while let Some(i) = stack.pop() {
+                for n in neighbors(i) {
+                    if !failing[n] && unexplained(n) {
+                        failing[n] = true;
+                        stack.push(to_u32(n));
+                    }
+                }
             }
         }
     }
@@ -461,13 +487,18 @@ fn diff_bbox(base: Img<'_>, cand: Img<'_>) -> Option<Rect> {
 /// Compares two images of identical dimensions under the decision policy.
 ///
 /// # Panics
-/// Panics if `baseline` and `actual` have different dimensions.
+/// Panics if `baseline` and `actual` have different dimensions, or if they exceed
+/// [`MAX_ANALYSIS_PIXELS`] (check [`fits_analysis_budget`] first; `compare_images` does).
 #[must_use]
 pub fn analyze(baseline: &RgbaImage, actual: &RgbaImage, policy: &SsimPolicy) -> SsimAnalysis {
     assert_eq!(
         baseline.dimensions(),
         actual.dimensions(),
         "Image dimensions must match for SSIM analysis"
+    );
+    assert!(
+        fits_analysis_budget(baseline.width(), baseline.height()),
+        "Image exceeds the SSIM analysis budget"
     );
     let (width, height) = (baseline.width() as usize, baseline.height() as usize);
     let base = Img {
@@ -674,6 +705,13 @@ mod tests {
         assert!(!a.passed(), "{a:?}");
         assert!(a.min_ssim < 0.95, "{a:?}");
         assert_eq!(a.max_excess, 0.0, "{a:?}");
+    }
+
+    #[test]
+    fn test_analysis_budget_boundaries() {
+        assert!(fits_analysis_budget(4096, 4096));
+        assert!(fits_analysis_budget(2400, 1800));
+        assert!(!fits_analysis_budget(4097, 4096));
     }
 
     #[test]

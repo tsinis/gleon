@@ -247,6 +247,13 @@ pub fn compare(baseline: &[u8], candidate: &[u8], options_json: &[u8]) -> Outcom
         };
         match compare_images(&baseline_img, &candidate_img, mode, &config) {
             ComparisonResult::Match => Ok(Outcome::from_report(&report, None)),
+            ComparisonResult::TooLarge {
+                size: (width, height),
+            } => Err(format!(
+                "{width}x{height} exceeds the SSIM analysis budget of {} pixels; use exact or \
+                 pixel mode or a smaller capture",
+                gleon_engine::ssim::MAX_ANALYSIS_PIXELS
+            )),
             ComparisonResult::DimensionMismatch { .. } => {
                 report.verdict = Verdict::DimensionMismatch;
                 report.total_pixels = None;
@@ -360,6 +367,21 @@ mod tests {
         assert_eq!(r["baseline_size"], serde_json::json!([10, 10]));
         assert_eq!(r["candidate_size"], serde_json::json!([12, 10]));
         assert!(r.get("total_pixels").is_none(), "{r}");
+    }
+
+    #[test]
+    fn test_ssim_over_analysis_budget_is_an_error() {
+        let big = png(4097, 4096, |_, _| RED);
+        let opts = br#"{"mode":"ssim","min_similarity":0.8,"color_tolerance":8}"#;
+        let r = report(&compare(&big, &big, opts));
+        assert_eq!(r["verdict"], "error");
+        assert!(
+            r["error"]
+                .as_str()
+                .unwrap()
+                .contains("SSIM analysis budget"),
+            "{r}"
+        );
     }
 
     #[test]

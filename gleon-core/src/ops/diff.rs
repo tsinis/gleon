@@ -195,6 +195,15 @@ pub(crate) fn process_diff_case(
         ComparisonResult::Match => TestImageResult::Success {
             relative_path: case.image.relative_path.clone(),
         },
+        ComparisonResult::TooLarge {
+            size: (width, height),
+        } => TestImageResult::DecodeError {
+            relative_path: case.image.relative_path.clone(),
+            error: format!(
+                "{width}x{height} exceeds the SSIM analysis budget of {} pixels; use pixel mode or a smaller capture",
+                gleon_engine::ssim::MAX_ANALYSIS_PIXELS
+            ),
+        },
         ComparisonResult::DimensionMismatch {
             baseline_size,
             actual_size,

@@ -75,6 +75,12 @@ pub enum ComparisonResult {
         /// The generated visualization diff image.
         diff_image: RgbaImage,
     },
+    /// SSIM mode only: the images exceed [`ssim::MAX_ANALYSIS_PIXELS`], so they were not analyzed
+    /// (the analysis workspace is bounded separately from the decoder budget).
+    TooLarge {
+        /// Dimensions of both images.
+        size: (u32, u32),
+    },
     /// The images have different dimensions.
     DimensionMismatch {
         /// Dimensions of the baseline image.
@@ -147,6 +153,9 @@ pub fn compare_images(
 
     match mode {
         Mode::Pixel => execute_pixel_comparison(baseline, actual, config.threshold),
+        Mode::Ssim if !ssim::fits_analysis_budget(w1, h1) => {
+            ComparisonResult::TooLarge { size: (w1, h1) }
+        }
         Mode::Ssim => {
             let analysis = ssim::analyze(
                 baseline,
@@ -188,6 +197,20 @@ mod tests {
 
     use super::*;
     use crate::config::DiffConfig;
+
+    #[test]
+    fn test_ssim_rejects_images_over_the_analysis_budget() {
+        let big = RgbaImage::new(4097, 4096);
+        assert_eq!(
+            compare_images(&big, &big, Mode::Ssim, &DiffConfig::default()),
+            ComparisonResult::TooLarge { size: (4097, 4096) }
+        );
+        // Pixel mode has no analysis workspace and keeps working at that size.
+        assert_eq!(
+            compare_images(&big, &big, Mode::Pixel, &DiffConfig::default()),
+            ComparisonResult::Match
+        );
+    }
 
     #[test]
     fn test_empty_images_match_in_pixel_mode() {
