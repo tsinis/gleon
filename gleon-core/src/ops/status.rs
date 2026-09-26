@@ -167,8 +167,8 @@ fn classify_test_case(
 
     let mut b_rgba = b_img.to_rgba8();
     let mut a_rgba = a_img.to_rgba8();
-    crate::masking::apply_masks(&mut b_rgba, &matched_zones);
-    crate::masking::apply_masks(&mut a_rgba, &matched_zones);
+    gleon_engine::masking::apply_masks(&mut b_rgba, &matched_zones);
+    gleon_engine::masking::apply_masks(&mut a_rgba, &matched_zones);
     if b_rgba == a_rgba {
         return Ok((None, None));
     }
@@ -465,15 +465,15 @@ mod tests {
             config: Some(crate::config::GleonConfig {
                 screenshots: vec![crate::config::ScreenshotRule {
                     include: vec![crate::config::GlobPattern::new("**/*.png").unwrap()],
-                    mode: crate::config::Mode::Pixel,
-                    diff: crate::config::DiffConfig::default(),
+                    mode: gleon_engine::config::Mode::Pixel,
+                    diff: gleon_engine::config::DiffConfig::default(),
                     masks: vec![crate::config::MaskRule {
                         path: crate::config::GlobPattern::new("**/*.png").unwrap(),
-                        zones: vec![crate::config::Zone {
+                        zones: vec![gleon_engine::config::Zone {
                             x: 0,
                             y: 0,
-                            width: crate::config::Dimension::Pixels(1),
-                            height: crate::config::Dimension::Pixels(1),
+                            width: gleon_engine::config::Dimension::Pixels(1),
+                            height: gleon_engine::config::Dimension::Pixels(1),
                         }],
                     }],
                 }],
@@ -790,15 +790,15 @@ screenshots:
             config: Some(crate::config::GleonConfig {
                 screenshots: vec![crate::config::ScreenshotRule {
                     include: vec![crate::config::GlobPattern::new("**/*.png").unwrap()],
-                    mode: crate::config::Mode::Pixel,
-                    diff: crate::config::DiffConfig::default(),
+                    mode: gleon_engine::config::Mode::Pixel,
+                    diff: gleon_engine::config::DiffConfig::default(),
                     masks: vec![crate::config::MaskRule {
                         path: crate::config::GlobPattern::new("**/*.png").unwrap(),
-                        zones: vec![crate::config::Zone {
+                        zones: vec![gleon_engine::config::Zone {
                             x: 0,
                             y: 0,
-                            width: crate::config::Dimension::Pixels(1),
-                            height: crate::config::Dimension::Pixels(1),
+                            width: gleon_engine::config::Dimension::Pixels(1),
+                            height: gleon_engine::config::Dimension::Pixels(1),
                         }],
                     }],
                 }],
